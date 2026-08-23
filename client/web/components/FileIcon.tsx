@@ -38,10 +38,10 @@ export function FolderIcon({ open, name, size = 16 }: { open: boolean; name: str
   return <Img icon={open ? `${base}-open` : base} fallback={open ? "folder-open" : "folder"} size={size} />;
 }
 
-/** Altrina brand mark (the hexagon-in-hexagon emblem) — monochrome via
+/** VibeStudio brand mark — monochrome via
  *  currentColor so it adapts to light/dark (color it with `text-brand`). Used in
  *  the app chrome (nav bar). */
-export function AltrinaMark({ className }: { className?: string }) {
+export function VibeStudioMark({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 1052 1197"

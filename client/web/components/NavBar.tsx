@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { AltrinaMark } from "./FileIcon";
+import { VibeStudioMark } from "./FileIcon";
 import { ThemeToggle } from "./ui";
 import RemoteMenu from "./RemoteMenu";
 import { credentialsPath, studioPath } from "@/lib/routes";
@@ -139,7 +139,7 @@ export default function NavBar({
 
   const brand = (
     <span className="flex items-center gap-1.5 text-brand">
-      <AltrinaMark className="h-5 w-auto shrink-0" />
+      <VibeStudioMark className="h-5 w-auto shrink-0" />
       {/* Phones show just the mark (it's the home button and carries the brand);
           the wordmark + version appear at ≥sm, where there's room. Keeps the bar
           from crowding the destinations/status cluster off a narrow screen. */}

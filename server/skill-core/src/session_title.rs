@@ -603,8 +603,8 @@ mod tests {
     #[test]
     fn claude_encoding() {
         assert_eq!(
-            claude_encode(Path::new("/home/harvey/altrina/skillviewer")),
-            "-home-harvey-altrina-skillviewer"
+            claude_encode(Path::new("/home/harvey/projects/skillviewer")),
+            "-home-harvey-projects-skillviewer"
         );
         assert_eq!(
             claude_encode(Path::new("/home/harvey/.agents/skills")),
@@ -615,8 +615,8 @@ mod tests {
     #[test]
     fn cursor_encoding() {
         assert_eq!(
-            cursor_encode(Path::new("/home/harvey/altrina/skillviewer")),
-            "home-harvey-altrina-skillviewer"
+            cursor_encode(Path::new("/home/harvey/projects/skillviewer")),
+            "home-harvey-projects-skillviewer"
         );
     }
 

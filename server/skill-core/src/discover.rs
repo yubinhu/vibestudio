@@ -448,7 +448,7 @@ mod tests {
     fn project_shapes() {
         let p = |s: &str| PathBuf::from(s);
         assert_eq!(
-            project_attribution(&p("/home/u/altrina/Tesseract/.claude/skills/tesseract-debug")),
+            project_attribution(&p("/home/u/work/Tesseract/.claude/skills/tesseract-debug")),
             Some(("Claude Code", "Tesseract".to_string()))
         );
         assert_eq!(
@@ -460,7 +460,7 @@ mod tests {
             Some(("Agent Skills", "repo".to_string()))
         );
         assert_eq!(
-            project_attribution(&p("/home/u/altrina/Tesseract/.agent/skills/skill-miner")),
+            project_attribution(&p("/home/u/work/Tesseract/.agent/skills/skill-miner")),
             Some(("Agent Skills", "Tesseract".to_string()))
         );
         assert_eq!(project_attribution(&p("/home/u/repo/src/skills/x")), None);

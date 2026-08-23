@@ -2,7 +2,7 @@
 name = "vibestudio"
 version = "0.0.0"
 description = "View and edit Agent Skills"
-authors = ["Altrina"]
+authors = ["Yubin Hu"]
 edition = "2021"
 rust-version = "1.77"
 

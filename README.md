@@ -4,7 +4,7 @@ Manage the coding agents running on your machine — from anywhere. Available on
 
 ![VibeStudio — run, teach, and connect your coding agents from one dashboard](./dashboard.png)
 
-**Download →** [macOS](https://github.com/AltrinaAI/vibestudio/releases/latest/download/VibeStudio-macOS.dmg) · [Windows](https://github.com/AltrinaAI/vibestudio/releases/latest/download/VibeStudio-Windows-x64-setup.exe) · [Linux](https://github.com/AltrinaAI/vibestudio/releases/latest/download/VibeStudio-Linux-x86_64.deb) — free, runs locally, no account. ([install notes](#install))
+**Download →** [macOS](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-macOS.dmg) · [Windows](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Windows-x64-setup.exe) · [Linux](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Linux-x86_64.deb) — free, runs locally, no account. ([install notes](#install))
 
 Your coding agents work best where your code, keys, and tools already live: your own machine. But you're not always sitting at it. VibeStudio is one dashboard for every agent running there — Claude Code, Codex, Cursor, Gemini CLI, opencode — driven from your desktop, a browser, or your phone.
 
@@ -26,9 +26,9 @@ Grab the latest build for your platform:
 
 | Platform | |
 |----------|--|
-| **macOS** — Apple silicon & Intel | [Download](https://github.com/AltrinaAI/vibestudio/releases/latest/download/VibeStudio-macOS.dmg) |
-| **Windows** | [Download](https://github.com/AltrinaAI/vibestudio/releases/latest/download/VibeStudio-Windows-x64-setup.exe) |
-| **Linux** — Debian/Ubuntu | [Download](https://github.com/AltrinaAI/vibestudio/releases/latest/download/VibeStudio-Linux-x86_64.deb) |
+| **macOS** — Apple silicon & Intel | [Download](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-macOS.dmg) |
+| **Windows** | [Download](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Windows-x64-setup.exe) |
+| **Linux** — Debian/Ubuntu | [Download](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Linux-x86_64.deb) |
 
 ### First launch
 
@@ -48,7 +48,7 @@ The backend serves the full app over plain HTTP, meaning all you need is a brows
 Install Rust, Node.js/npm, and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS, then:
 
 ```bash
-git clone https://github.com/AltrinaAI/vibestudio.git
+git clone https://github.com/yubinhu/vibestudio.git
 cd vibestudio
 npm install
 npm run tauri -- build

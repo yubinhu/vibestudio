@@ -148,7 +148,7 @@ the normalized record (`_norm(...)`). The rest of the pipeline is unchanged. Cur
 
 Run standalone, the results are plain files: the artifacts under `./out`, and the
 skills you changed (edited in place, or staged under `generated-skills/`). This skill
-also ships with [VibeStudio](https://github.com/AltrinaAI/vibestudio), a desktop
+also ships with [VibeStudio](https://github.com/yubinhu/vibestudio), a desktop
 app where the user watches the run live, reviews each new skill staged under
 `generated-skills/` as a **Proposed** card to **Accept** or **Discard**, and sees
 in-place edits as git-tracked changes to save as a version or revert.

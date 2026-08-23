@@ -77,8 +77,8 @@ Hash router (`createHashRouter`, Tauri webview) with one persistent shell + lazy
   class-based dark (`.dark`, set pre-paint). **Two-axis palette: `--brand` (navy) = identity
   only; `--accent` (teal) = all interaction.** Primitives: one `Modal`,
   `btn{Primary,Ghost,Danger}` (one filled primary per row), `Badge` via `color-mix`,
-  `useConfirm` (`window.confirm` is a no-op in the `wry` webview). **Never render "altrina" in
-  UI**; app name is "VibeStudio" (camelCase, one word).
+  `useConfirm` (`window.confirm` is a no-op in the `wry` webview). **Never render legacy company
+  branding in UI**; app name is "VibeStudio" (camelCase, one word).
 
 ## Skill versioning: tracked by default
 

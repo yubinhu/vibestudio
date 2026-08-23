@@ -5,7 +5,7 @@ import { ConfirmProvider } from "@/components/confirm";
 import { initLogging } from "@/lib/log";
 import { initPush } from "@/lib/push";
 import { initSoftKeyboard } from "@/lib/softKeyboard";
-// Self-hosted Inter (variable) — the Altrina UI font; bundled so it works offline
+// Self-hosted Inter (variable) — the UI font; bundled so it works offline
 // in the desktop build. Falls back to system fonts via --font-geist-sans.
 import "@fontsource-variable/inter";
 import "./globals.css";

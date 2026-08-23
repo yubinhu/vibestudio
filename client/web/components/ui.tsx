@@ -2,7 +2,7 @@
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
-/* Shared button classes — the Altrina teal primary (filled, white text, deepens on
+/* Shared button classes — the teal primary (filled, white text, deepens on
    hover) and a bordered secondary/ghost. Exported as strings so the dialogs that
    build raw <button>s (which carry their own busy/disabled logic) stay consistent
    without each redefining the look. */

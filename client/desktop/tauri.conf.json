@@ -33,7 +33,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/AltrinaAI/vibestudio/releases/latest/download/latest.json"
+        "https://github.com/yubinhu/vibestudio/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU1ODBFMTJBQzc2RUQwM0QKUldROTBHN0hLdUdBVmJhUnducHhzMzd1NkZzeWRWbnhjSzRRdGlYcjlyQjFTbW1JNXlhNWFYS0gK",
       "windows": {
