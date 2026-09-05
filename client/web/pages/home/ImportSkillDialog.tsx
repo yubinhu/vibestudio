@@ -120,7 +120,7 @@ export default function ImportSkillDialog({
 
   return (
     <>
-      <Modal title="Import skill" onClose={onClose}>
+      <Modal title="Import skill" onClose={onClose} dismissDisabled={pickerOpen}>
         <div className="space-y-4 px-5 py-4">
           {/* Location is chosen first so every source lands in the same home. */}
           <div>
@@ -245,6 +245,9 @@ export default function ImportSkillDialog({
 
       {pickerOpen && (
         <FolderPicker
+          context="import"
+          title="Choose a skill to import"
+          selectLabel="Choose this folder"
           onSelect={(p) => {
             setPickerOpen(false);
             void attempt((ow) => api.importSkillFolder(p, target, ow));

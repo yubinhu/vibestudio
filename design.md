@@ -80,6 +80,17 @@ Hash router (`createHashRouter`, Tauri webview) with one persistent shell + lazy
   `useConfirm` (`window.confirm` is a no-op in the `wry` webview). **Never render legacy company
   branding in UI**; app name is "VibeStudio" (camelCase, one word).
 
+## Workspace defaults and history
+
+Paths and launch settings belong to the **active server**, reached over ordinary
+proxied `/api/preferences*` and `/api/recents/*` routes. `preferences.json` remembers
+picker directories per workflow and session defaults per agent, including the last
+agent; `recents.json` keeps the last 30 successful skill/standalone Markdown opens.
+These JSON stores use file locks and atomic replacement across server processes.
+Theme and panel layout remain client-side. Home shows a horizontal Recent row
+below the greeting, with a View all action for searchable history in a dialog.
+See [the persistence audit](docs/persistence.md).
+
 ## Skill versioning: tracked by default
 
 Each personal skill is its **own git repo** (versioned/diffed/rolled-back/synced

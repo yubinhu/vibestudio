@@ -496,7 +496,8 @@ pub fn list_dir_impl(path: &str, include_files: bool) -> Result<DirListing, Stri
         return Err(format!("Not a directory: {}", p.display()));
     }
     let mut entries = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&p) {
+    {
+        let rd = std::fs::read_dir(&p).map_err(|e| e.to_string())?;
         for e in rd.filter_map(|e| e.ok()) {
             let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
             let name = e.file_name().to_string_lossy().into_owned();

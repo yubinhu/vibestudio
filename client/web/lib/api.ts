@@ -247,11 +247,34 @@ export interface Recent {
   name: string;
   /** "skill" (default when absent) routes via studioPath; "markdown" via markdownPath. */
   kind?: "skill" | "markdown";
+  /** Unix seconds; absent on entries recorded by older versions. */
+  openedAt?: number;
 }
 export const recentsList = () => http<Recent[]>("GET", "recents/list");
 export const recentsAdd = (r: Recent) =>
   http<Recent[]>("POST", "recents/add", { root: r.root, name: r.name, kind: r.kind });
 export const recentsRemove = (root: string) => http<Recent[]>("POST", "recents/remove", { root });
+
+// Filesystem and session defaults live on the active server. Visual preferences
+// (theme, panel sizes) stay in browser storage.
+export type PickerContext = "open" | "session" | "import";
+export interface TerminalPrefs {
+  cwd: string;
+  ide: boolean;
+  skip: boolean;
+  auto: boolean;
+  extra: string;
+}
+export interface WorkspacePreferences {
+  pickerLocations: Partial<Record<PickerContext, string>>;
+  terminal: Record<string, TerminalPrefs>;
+  lastAgent: string | null;
+}
+export const preferencesGet = () => http<WorkspacePreferences>("GET", "preferences");
+export const rememberPicker = (context: PickerContext, path: string) =>
+  http<WorkspacePreferences>("POST", "preferences/picker", { context, path });
+export const rememberTerminal = (agentId: string, prefs: TerminalPrefs) =>
+  http<WorkspacePreferences>("POST", "preferences/terminal", { agentId, prefs });
 
 // --- app auto-update (the server checks GitHub releases; the desktop shell installs) ---
 export interface UpdateAvailable {

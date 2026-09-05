@@ -1,7 +1,7 @@
 // Persisted Studio layout: which sidebar sections are open, any user-pinned
 // section heights, and the agent panel width — so the visual setup survives
-// closing and reopening a skill. Same plain localStorage approach as theme.ts /
-// terminalPrefs.ts. One global setup (not per skill): it's the user's preferred
+// closing and reopening a skill. Same client-local approach as theme.ts.
+// One global setup (not per skill): it's the user's preferred
 // workbench shape.
 
 export interface StudioLayoutPrefs {

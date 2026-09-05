@@ -72,22 +72,31 @@ export default function NewSessionDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [prefs, setPrefs] = useState<api.WorkspacePreferences | null>(null);
+  const [prefsError, setPrefsError] = useState<string | null>(null);
 
   useEffect(() => {
-    api
-      .terminalAgents()
-      .then((a) => {
+    let alive = true;
+    void Promise.all([
+      api.terminalAgents(),
+      loadTerminalPrefs().catch(() => {
+        if (alive) setPrefsError("Saved session defaults are unavailable. You can still start a session.");
+        return null;
+      }),
+    ]).then(([a, p]) => {
+        if (!alive) return;
+        setPrefs(p);
         setAgents(a);
-        // Default to the first real agent (not the plain shell), else the shell.
-        setAgentId((a.find((x) => x.agent !== "shell") ?? a[0])?.id ?? "");
+        setAgentId((a.find((x) => x.id === p?.lastAgent) ?? a.find((x) => x.agent !== "shell") ?? a[0])?.id ?? "");
       })
-      .catch((e) => setError(e instanceof Error ? e.message : "Couldn't list agents."));
+      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : "Couldn't list agents."); });
+    return () => { alive = false; };
   }, []);
   // Restore the agent's last-used config when it's selected (incl. the initial
   // default); falls back to an empty form for agents never launched before.
   useEffect(() => {
     if (!agentId) return;
-    const p = loadTerminalPrefs(agentId);
+    const p = prefs?.terminal[agentId];
     const wantAuto = p?.auto ?? false;
     setCwd(defaultCwd ?? p?.cwd ?? "");
     setAuto(wantAuto);
@@ -95,7 +104,7 @@ export default function NewSessionDialog({
     // handlers and the create() gating, in case stored prefs ever have both.
     setSkip((p?.skip ?? false) && !wantAuto);
     setExtra(p?.extra ?? "");
-  }, [agentId, defaultCwd]);
+  }, [agentId, defaultCwd, prefs]);
 
   const selected = useMemo(() => agents?.find((a) => a.id === agentId), [agents, agentId]);
 
@@ -120,7 +129,9 @@ export default function NewSessionDialog({
         autoMode: auto && selected.agent === "claude",
         extraArgs: tokenizeArgs(extra),
       });
-      saveTerminalPrefs(selected.id, { cwd: cwd.trim(), ide: false, skip, auto, extra });
+      // Preferences failing must not make a created session look like a failed
+      // launch (which could cause a duplicate on retry).
+      await saveTerminalPrefs(selected.id, { cwd: s.cwd, ide: false, skip, auto, extra }).catch(() => {});
       onCreated(s);
     } catch (e) {
       setBusy(false);
@@ -130,7 +141,7 @@ export default function NewSessionDialog({
 
   return (
     <>
-      <Modal title="New session" onClose={onClose}>
+      <Modal title="New session" onClose={onClose} dismissDisabled={pickerOpen}>
         <div className="space-y-4 px-5 py-4">
           {/* Agent */}
           <div>
@@ -232,6 +243,7 @@ export default function NewSessionDialog({
             </div>
           )}
 
+          {prefsError && <p role="status" className="text-xs text-muted">{prefsError}</p>}
           {error && <p className="text-xs text-danger">{error}</p>}
 
           <div className="flex justify-end gap-2 pt-1">
@@ -247,6 +259,10 @@ export default function NewSessionDialog({
 
       {pickerOpen && (
         <FolderPicker
+          context="session"
+          initialPath={cwd || undefined}
+          title="Choose a working directory"
+          selectLabel="Use this folder"
           onSelect={(p) => {
             setPickerOpen(false);
             setCwd(p);

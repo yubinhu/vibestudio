@@ -22,7 +22,7 @@ use std::thread;
 
 use serde_json::{json, Value};
 use skill_core::{
-    commit_agent, commitmsg, connections, discover, engine, github, gitops, mining, recents,
+    commit_agent, commitmsg, connections, discover, engine, github, gitops, mining, preferences, recents,
     reveal, secrets, skill, sync, update,
 };
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
@@ -1406,11 +1406,21 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
         // like /api/remote/*): while connected it proxies to the remote, so recents
         // belong to whichever machine you're working on — same list whether you reach
         // it locally or over SSH.
-        (Method::Get, "/api/recents/list") => json_reply(Ok(recents::list())),
+        (Method::Get, "/api/recents/list") => json_reply(recents::list()),
         (Method::Post, "/api/recents/add") => {
             json_reply(recents::add(&s("root"), &s("name"), v.get("kind").and_then(|x| x.as_str())))
         }
         (Method::Post, "/api/recents/remove") => json_reply(recents::remove(&s("root"))),
+        // Workspace defaults follow the active server, just like recents.
+        (Method::Get, "/api/preferences") => json_reply(preferences::get()),
+        (Method::Post, "/api/preferences/picker") => {
+            json_reply(preferences::remember_picker(&s("context"), &s("path")))
+        }
+        (Method::Post, "/api/preferences/terminal") => {
+            let prefs = serde_json::from_value(v.get("prefs").cloned().unwrap_or(Value::Null));
+            json_reply(prefs.map_err(|e| format!("Invalid terminal preferences: {e}"))
+                .and_then(|p| preferences::remember_terminal(&s("agentId"), p)))
+        }
         (Method::Get, "/api/secrets/status") => json_reply(secrets::secrets_status()),
         (Method::Get, "/api/secrets/list") => json_reply(secrets::secrets_list()),
         (Method::Post, "/api/secrets/set") => {

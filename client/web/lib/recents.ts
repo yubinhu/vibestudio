@@ -1,112 +1,112 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import * as api from "./api";
 
-// Recents are now SERVER-SIDE (see api.ts): persisted in the active server's config
-// dir and reached over `/api/recents`, which proxies to the remote while connected.
-// So the list belongs to whichever machine you're working on — the same recents
-// whether you opened it locally or over SSH — and the post-connect SPA reload
-// re-fetches them for the now-active server automatically.
-//
-// The public surface (useRecents / addRecent / removeRecent) is unchanged and stays
-// synchronous-looking: mutations update an in-memory cache optimistically (the client
-// mirrors the server's dedup/cap/newest-first) and fire-and-forget the server write;
-// load() re-syncs the authoritative list on each mount/reload.
 export type { Recent } from "./api";
 type Recent = api.Recent;
 
+// The active server owns history; a connection change reloads the SPA. Serialize
+// requests so fast open/remove actions reach the server in the user's order.
 const listeners = new Set<() => void>();
 let cache: Recent[] = [];
+let status: { loading: boolean; error: string | null } = { loading: true, error: null };
+let queue = Promise.resolve();
+let revision = 0;
+let pendingMutations = 0;
+let refreshing = false;
 
-function emit() {
-  for (const l of listeners) l();
+function emit() { for (const l of listeners) l(); }
+function subscribe(cb: () => void) {
+  listeners.add(cb);
+  return () => { listeners.delete(cb); };
 }
-
-/** Pull the authoritative list from the active server, then migrate any legacy
- *  localStorage recents — but ONLY if the server answered, so a slow cold start
- *  can't mark migration "done" and drop the old entries. */
-async function load() {
-  let reachable = false;
-  try {
-    cache = await api.recentsList();
-    reachable = true;
+function enqueue(task: () => Promise<void>) {
+  queue = queue.then(task).catch(() => {
+    status = { loading: false, error: "Recent history could not be saved. Try refreshing when the server is available." };
     emit();
-  } catch {
-    /* server unreachable (cold start / mid-connect) — keep what we have, skip migration */
-  }
-  if (reachable) void migrateLegacy();
+  });
 }
 
-// One-time lift of the old client-only localStorage recents onto the server. Only
-// reached once the server is reachable (see load()); the marker is set AFTER the
-// entries land, so an interrupted/offline run retries next launch instead of losing
-// them. Runs on the FIRST launch with this build — always Local, since the resume host
-// is only persisted after a successful connect with this code — so entries go to the
-// right machine; later launches short-circuit on the marker.
-const LEGACY_KEY = "skillviewer-recents";
-const MIGRATED_KEY = "skillviewer-recents-migrated";
-async function migrateLegacy() {
-  let old: Recent[];
+async function migrateLegacy(items: Recent[]): Promise<Recent[]> {
+  const key = "skillviewer-recents";
   try {
-    if (localStorage.getItem(MIGRATED_KEY)) return;
-    const raw = localStorage.getItem(LEGACY_KEY);
-    old = raw ? JSON.parse(raw) : [];
-  } catch {
-    return;
-  }
-  if (Array.isArray(old) && old.length > 0) {
-    // Push oldest-first so the newest ends up on top after the server prepends each.
+    if (!["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) return items;
+    const raw = localStorage.getItem(key);
+    if (!raw || (await api.remoteStatus()).state !== "idle") return items;
+    const old: unknown = JSON.parse(raw);
+    if (!Array.isArray(old)) return items;
+    // Never replay an old entry over an entry already opened on the server.
+    const existing = new Set(items.map((r) => r.root));
     for (const r of [...old].reverse()) {
-      if (!r || typeof r.root !== "string") continue;
-      try {
-        cache = await api.recentsAdd({ root: r.root, name: r.name ?? r.root, kind: r.kind });
-        emit();
-      } catch {
-        return; // server dropped mid-migration — leave it unmarked and retry next launch
-      }
+      if (!r || typeof r.root !== "string" || existing.has(r.root)) continue;
+      items = await api.recentsAdd({ root: r.root, name: typeof r.name === "string" ? r.name : r.root, kind: r.kind === "markdown" ? "markdown" : "skill" });
     }
-  }
-  // Done: mark migrated and drop the legacy copy. Best-effort — if this throws, the
-  // next launch re-reads an already-migrated (now empty) legacy list and no-ops.
-  try {
-    localStorage.setItem(MIGRATED_KEY, "1");
-    localStorage.removeItem(LEGACY_KEY);
+    localStorage.removeItem(key);
   } catch {
-    /* ignore */
+    // Keep legacy history for a later attempt if migration was interrupted.
   }
+  return items;
+}
+
+export function refreshRecents() {
+  if (refreshing) return;
+  refreshing = true;
+  enqueue(async () => {
+    try {
+      const items = await migrateLegacy(await api.recentsList());
+      // A cold-start GET must not erase a newer optimistic open/remove.
+      if (!pendingMutations) cache = items;
+      status = { loading: false, error: null };
+    } catch {
+      status = { loading: false, error: "Recent history is unavailable. Check the server connection and try again." };
+    } finally {
+      refreshing = false;
+      emit();
+    }
+  });
+}
+
+function mutate(call: () => Promise<Recent[]>) {
+  const id = ++revision;
+  pendingMutations++;
+  emit();
+  enqueue(async () => {
+    try {
+      const items = await call();
+      if (id === revision) cache = items;
+      status = { loading: false, error: null };
+    } finally {
+      pendingMutations--;
+      emit();
+    }
+  });
 }
 
 export function addRecent(r: Recent) {
-  // Optimistic AND authoritative: the client mirrors the server's dedup/cap/newest-
-  // first, so we keep the local result rather than overwriting from the response —
-  // which, under rapid mutations, can arrive out of order and clobber a newer state.
-  // The server is the source of truth on disk; load() re-syncs on the next reload.
-  cache = [r, ...cache.filter((x) => x.root !== r.root)].slice(0, 8);
-  emit();
-  void api.recentsAdd(r).catch(() => {
-    /* best-effort; the optimistic entry stands and re-syncs on reload */
-  });
+  cache = [{ ...r, openedAt: Math.floor(Date.now() / 1000) }, ...cache.filter((x) => x.root !== r.root)].slice(0, 30);
+  mutate(() => api.recentsAdd(r));
 }
 
 export function removeRecent(root: string) {
   cache = cache.filter((x) => x.root !== root);
-  emit();
-  void api.recentsRemove(root).catch(() => {
-    /* best-effort; the optimistic removal stands and re-syncs on reload */
-  });
-}
-
-function subscribe(cb: () => void) {
-  listeners.add(cb);
-  return () => {
-    listeners.delete(cb);
-  };
+  mutate(() => api.recentsRemove(root));
 }
 
 export function useRecents(): Recent[] {
+  useEffect(() => {
+    refreshRecents();
+    // Each mounted consumer owns its listener, so closing the history dialog
+    // cannot remove the navbar/gallery's focus refresh registration.
+    const onFocus = () => refreshRecents();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
   return useSyncExternalStore(subscribe, () => cache, () => cache);
 }
 
-// Load on import (cold start / post-reload) so recents reflect the active server.
-void load();
+export function useRecentsStatus() {
+  return useSyncExternalStore(subscribe, () => status, () => status);
+}
+
+refreshRecents();

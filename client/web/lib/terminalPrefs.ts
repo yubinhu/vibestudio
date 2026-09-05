@@ -1,53 +1,35 @@
-"use client";
+import * as api from "./api";
 
-// Remembers the last New-terminal selections per agent (working directory and
-// the per-agent toggles) in localStorage, so opening the dialog and picking an
-// agent restores what you used last time instead of an empty form. Same plain
-// localStorage approach as theme.ts / recents.ts. Keyed by AgentOption.id
-// (e.g. "claude:cli"), so each agent flavor remembers its own config.
+export type { TerminalPrefs } from "./api";
 
-export interface TerminalPrefs {
-  cwd: string;
-  ide: boolean;
-  skip: boolean;
-  auto: boolean;
-  extra: string;
-}
-
-const KEY = "skillviewer-terminal-prefs";
-
-type Store = Record<string, TerminalPrefs>;
-
-function read(): Store {
+/** Agent choice, working directories and flags follow the active server. */
+export async function loadTerminalPrefs(): Promise<api.WorkspacePreferences> {
+  let prefs = await api.preferencesGet();
+  // Lift old origin-only defaults only when the answering switchboard is known
+  // to be Local. A remote/phone must never inherit this browser's local paths.
+  const key = "skillviewer-terminal-prefs";
   try {
-    const raw = localStorage.getItem(KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    return parsed && typeof parsed === "object" ? (parsed as Store) : {};
+    if (!["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) return prefs;
+    const raw = localStorage.getItem(key);
+    if (!raw) return prefs;
+    const status = await api.remoteStatus();
+    if (status.state !== "idle") return prefs;
+    const old: unknown = JSON.parse(raw);
+    if (!old || typeof old !== "object" || Array.isArray(old)) return prefs;
+    for (const [agentId, value] of Object.entries(old)) {
+      if (prefs.terminal[agentId] || !value || typeof value !== "object") continue;
+      const p = value as Partial<api.TerminalPrefs>;
+      prefs = await api.rememberTerminal(agentId, {
+        cwd: typeof p.cwd === "string" ? p.cwd : "",
+        ide: !!p.ide, skip: !!p.skip, auto: !!p.auto,
+        extra: typeof p.extra === "string" ? p.extra : "",
+      });
+    }
+    localStorage.removeItem(key);
   } catch {
-    return {};
+    // Keep the old copy when migration cannot finish; server prefs remain usable.
   }
+  return prefs;
 }
 
-/** Last-used config for an agent, or null if it has never been launched. */
-export function loadTerminalPrefs(agentId: string): TerminalPrefs | null {
-  const p = read()[agentId];
-  if (!p || typeof p !== "object") return null;
-  return {
-    cwd: typeof p.cwd === "string" ? p.cwd : "",
-    ide: !!p.ide,
-    skip: !!p.skip,
-    auto: !!p.auto,
-    extra: typeof p.extra === "string" ? p.extra : "",
-  };
-}
-
-export function saveTerminalPrefs(agentId: string, prefs: TerminalPrefs) {
-  if (!agentId) return;
-  const store = read();
-  store[agentId] = prefs;
-  try {
-    localStorage.setItem(KEY, JSON.stringify(store));
-  } catch {
-    /* ignore */
-  }
-}
+export const saveTerminalPrefs = api.rememberTerminal;

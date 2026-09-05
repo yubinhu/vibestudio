@@ -8,6 +8,7 @@ import { Spinner } from "@/components/ui";
 import PhoneModal from "@/components/PhoneModal";
 import { RemoteDialog } from "@/components/RemoteMenu";
 import NewSessionDialog from "@/components/NewSessionDialog";
+import RecentStrip from "@/components/RecentStrip";
 import SkillGallery from "@/pages/home/SkillGallery";
 import * as api from "@/lib/api";
 import type { ConnectionInfo, TermSession } from "@/lib/api";
@@ -349,6 +350,8 @@ export function Component() {
             </button>
           </div>
         </section>
+
+        <RecentStrip />
 
         {/* Phone/browser only: the one gesture-gated moment to opt into pushes. */}
         <PushNudge />
