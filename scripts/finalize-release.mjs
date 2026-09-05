@@ -28,7 +28,7 @@ function decode64(value) {
   return bytes;
 }
 
-// Catch missing/malformed signatures and a mistakenly restored DIFFERENT key.
+// Reject missing/malformed signatures and signatures from a different key.
 // The updater performs cryptographic verification against the actual payload.
 function validateSignature(signature, pubkey) {
   const lines = decode64(signature).toString('utf8').trim().split(/\r?\n/);
@@ -82,8 +82,8 @@ export function planRelease({ repo, tag, release, signatures, previous, pubkey }
       signature = signatures[sidecar.name]?.trim();
       if (sidecar.name !== `${bundle.stable}.sig`) renames.push({ id: sidecar.id, name: `${bundle.stable}.sig` });
     } else {
-      // Old releases deleted their .sig assets. Reuse only signatures attached to
-      // this exact repository/tag/payload in a complete matching prior manifest.
+      // Without sidecars, require a complete manifest whose signatures reference
+      // this exact repository, tag, and payload.
       if (previous?.version !== version) throw new Error(`Missing signature for ${asset.name}`);
       const entries = bundle.platforms.map(platform => previous.platforms?.[platform]);
       signature = entries[0]?.signature;

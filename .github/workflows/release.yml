@@ -56,13 +56,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::Restore the original TAURI_SIGNING_PRIVATE_KEY repository secret. See docs/releasing.md."
+            echo "::error::Set TAURI_SIGNING_PRIVATE_KEY to the key matching tauri.conf.json. See RELEASING.md."
             exit 1
           fi
           node --input-type=module -e '
             import fs from "node:fs";
             const key = JSON.parse(fs.readFileSync("client/desktop/tauri.conf.json")).plugins.updater.pubkey;
-            if (!key || key.includes("PLACEHOLDER")) throw new Error("Commit the original updater public key before releasing");
+            if (!key || key.includes("PLACEHOLDER")) throw new Error("Configure plugins.updater.pubkey before releasing");
           '
 
   build:
@@ -109,10 +109,8 @@ jobs:
 
       - run: npm ci
 
-      # NOTE: the on-device llama.cpp engine + CUDA bridge are no longer bundled.
-      # Commit-message drafting defaults to shelling out to a logged-in coding-agent
-      # CLI (see skill-core/commit_agent.rs); the engine is an opt-in offline
-      # backend the user provides (scripts/fetch-engine.sh + VIBESTUDIO_LLAMA_SERVER).
+      # Commit-message drafting uses a logged-in coding-agent CLI. The optional
+      # offline engine is user-provided, so it is not a release bundle resource.
 
       # Stamp the release version (the pushed tag, minus the leading `v`) into the
       # server workspace and desktop package so both binaries build at the tag version.
@@ -155,19 +153,10 @@ jobs:
           includeUpdaterJson: false
           retryAttempts: 3
           # Per-platform args (&& / || precedence: each `A && B` resolves before the `||`s):
-          #  • macOS → `--target universal-apple-darwin`: one universal (arm64+x86_64) .dmg
-          #    built on the fast Apple-Silicon runner; the slow macos-15-intel leg is gone
-          #    (it took ~3x as long for identical output).
-          #  • Linux → `--bundles deb`: ship only the .deb and SKIP AppImage. Tauri's
-          #    AppImage bundler (linuxdeploy) is currently flaky on GitHub runners — it
-          #    fails even with APPIMAGE_EXTRACT_AND_RUN=1 (upstream tauri#14796, open) —
-          #    and a failed AppImage fails the whole job, so the working .deb never
-          #    uploads. The .deb is a fine Ubuntu/Debian installer; re-enable AppImage by
-          #    dropping this branch once upstream is fixed (the env var above is kept ready).
-          #  • Windows ships UNSIGNED for now: no signCommand/cert is configured
-          #    (signCommand was removed from tauri.conf.json; --no-sign was dropped
-          #    because it also suppressed the updater .sig files). Re-enable
-          #    Authenticode by restoring signCommand + the cert secrets.
+          #  • macOS: one universal (arm64+x86_64) .dmg on the Apple-Silicon runner.
+          #  • Linux: .deb only; AppImage bundling is disabled on CI.
+          #  • Windows: no Authenticode signCommand is configured. Updater .sig
+          #    generation remains enabled on every platform.
           args: ${{ startsWith(matrix.platform, 'macos') && '--target universal-apple-darwin' || startsWith(matrix.platform, 'ubuntu') && '--bundles deb' || '' }}
 
       - name: Upload desktop bundles

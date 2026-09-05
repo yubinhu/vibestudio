@@ -3,8 +3,27 @@
 How a desktop release is cut, verified, and shipped. Read this end-to-end before
 your first release; after that the **Checklist** is the working copy.
 
-For the repository move, see [the migration guide](docs/releasing.md), including
-signing-secret recovery and the bridge for apps still using the old updater feed.
+## Signing configuration
+
+Configure the following [repository Actions secrets](https://github.com/yubinhu/vibestudio/settings/secrets/actions):
+
+| Secret | Value |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | Updater signing private key matching `plugins.updater.pubkey` in `client/desktop/tauri.conf.json` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Private-key password, if encrypted; otherwise leave unset |
+| `APPLE_CERTIFICATE` | Base64-encoded Developer ID certificate and private key export (`.p12`) |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for the `.p12` export |
+| `APPLE_SIGNING_IDENTITY` | Developer ID identity associated with the certificate |
+| `APPLE_ID` | Apple account used for notarization |
+| `APPLE_PASSWORD` | App-specific password for that Apple account |
+| `APPLE_TEAM_ID` | Apple Developer team associated with the certificate |
+
+Use the settings page or `gh secret set --repo yubinhu/vibestudio NAME`, supplying
+values through standard input. Keep private keys and certificate contents out of
+git and logs. Keep the updater signing key and app identifier stable so installed
+apps can verify updates. Actions provides `GITHUB_TOKEN` automatically.
+
+Windows installers use updater signatures but are not Authenticode-signed.
 
 ## How the pipeline works
 
@@ -54,6 +73,7 @@ Until you publish, **nothing reaches users** — a draft is invisible to the upd
    ```bash
    npm run build          # tsc --noEmit && vite build
    npm run lint           # eslint
+   node --test scripts/finalize-release.test.mjs
    cargo test --workspace
    ```
    Also review the full diff since the last **published** release
@@ -61,7 +81,7 @@ Until you publish, **nothing reaches users** — a draft is invisible to the upd
 2. **Visual check — the 3 key pages.** Render and *look* (tsc won't catch layout
    bugs). Screenshot **Home**, **Studio**, **Terminals** and confirm no console
    errors. See "Screenshot harness" below. **Gotcha: the SPA is a hash router** —
-   `goto("…/studio/<root>")` lands on Home; you must use `…/#/skills/<root>`.
+   `goto("…/studio/<root>")` lands on Home; you must use `…/#/studio/<root>`.
 3. **Confirm the tag will be on-branch.** The tagged commit **must be an ancestor
    of `master` and pushed** (`git rev-list --left-right --count origin/master...HEAD`
    → `0  0`). This ensures releases contain reviewed code. Release jobs explicitly
@@ -130,7 +150,7 @@ VITE_API_TARGET=http://127.0.0.1:8799 npx vite --port 1421 --strictPort &
 Then drive `http://localhost:1421` with `playwright-core` if installed, or any
 headless Chromium/CDP harness against cached Chromium
 (`~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`). Studio needs a real
-skill root from `GET /api/skills/discover`, reached via `/#/skills/<encoded-root>`.
+skill root from `GET /api/skills/discover`, reached via `/#/studio/<encoded-root>`.
 
 ## Key facts & gotchas
 
@@ -143,8 +163,8 @@ skill root from `GET /api/skills/discover`, reached via `/#/skills/<encoded-root
 - **Hash router** — screenshots/deep links need `/#/…`.
 - **Updater signing guard** — CI fails fast if the signing secret is absent or
   `tauri.conf.json` still carries a placeholder pubkey. Finalization rejects
-  signatures from a different key. Restore the original private key (historically
-  `~/.tauri/vibestudio.key`); GitHub cannot return existing secret values.
+  signatures from a key that does not match the configured public key. Configure
+  the secrets listed in "Signing configuration" before building.
 - **macOS** signing/notarization secrets and the **updater signing key** live in
   repo Actions secrets (see `release.yml` env). Windows Authenticode is currently
-  off; unused Azure/Java signing preparation is not part of the build.
+  off.

@@ -50,7 +50,7 @@ test('a rerun after complete or partial renaming produces the same manifest', ()
   assert.deepEqual(planRelease(input), { renames: [], manifest: first.manifest });
 });
 
-test('legacy releases without sidecars retain a complete canonical manifest', () => {
+test('releases without sidecars retain a complete canonical manifest', () => {
   const input = fixture();
   const first = planRelease(input);
   for (const rename of first.renames) input.release.assets.find(a => a.id === rename.id).name = rename.name;
@@ -86,11 +86,11 @@ test('rejects malformed signatures and signatures from a different updater key',
   assert.throws(() => planRelease(input), /signing key/);
 });
 
-test('rejects another repository, version, or payload in a legacy manifest', () => {
+test('rejects another repository, version, or payload in an existing manifest', () => {
   for (const change of ['repo', 'version', 'payload']) {
     const input = fixture();
     input.previous = planRelease(input).manifest;
-    // Restore the original names to test legacy manifests before installer renaming.
+    // Use versioned filenames to test manifests before installer renaming.
     for (const entry of Object.values(input.previous.platforms)) {
       entry.url = entry.url.replace('VibeStudio-Linux-x86_64.deb', 'VibeStudio_1.2.3_amd64.deb')
         .replace('VibeStudio-Windows-x64-setup.exe', 'VibeStudio_1.2.3_x64-setup.exe');
