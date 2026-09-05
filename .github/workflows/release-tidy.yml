@@ -1,65 +1,38 @@
 name: release-tidy
 
-# After a release is published (the manual rollout gate), reshape its assets into a
-# clean, minimal set:
-#   * rename each installer to a stable, version-less name so the README's
-#     /releases/latest/download/<name> links never rot (Tauri names embed the version)
-#     (redundant .sig files are dropped at the source, in build.yml, right after each
-#     leg uploads; the macOS .app.tar.gz is KEPT so mac auto-update works)
-#   * rewrite latest.json so Windows/Linux auto-update reuses the renamed installers —
-#     minisign signs file CONTENT, not the name, so the inline signatures stay valid;
-#     darwin entries are left untouched (they target the retained .app.tar.gz)
-# Net per release: 4 installers + the macOS .app.tar.gz + latest.json + skill-server binaries.
-# Isolated from build.yml so a bug here can never break the build/sign pipeline; if it
-# fails the release just keeps its raw assets. Idempotent — re-running is a no-op.
+# Normally finalized while still draft by release.yml. This entry point repairs
+# existing releases and verifies a manually published release using the same code.
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to tidy (e.g. v0.1.22)
+        description: Release tag to finalize (e.g. v1.1.4)
         required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   tidy:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GH_REPO: ${{ github.repository }}
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - name: Rename installers in place; drop redundant updater files
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.assets[] | "\(.id)\t\(.name)"' > assets.tsv
-          while IFS=$'\t' read -r id name; do
-            case "$name" in
-              *.dmg)              new=VibeStudio-macOS.dmg ;;
-              *_x64-setup.exe)    new=VibeStudio-Windows-x64-setup.exe ;;
-              *_amd64.deb)        new=VibeStudio-Linux-x86_64.deb ;;
-              *)                  continue ;;
-            esac
-            gh api -X PATCH "repos/$GH_REPO/releases/assets/$id" -f name="$new" >/dev/null && echo "renamed $name -> $new"
-          done < assets.tsv
-
-      - name: Rewrite latest.json to reuse the renamed installers
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! gh release download "$TAG" -p latest.json -O latest.json --clobber 2>/dev/null; then
-            echo "no latest.json on this release — nothing to rewrite"; exit 0
-          fi
-          jq '.platforms |= (to_entries
-            | map(
-                if (.key | test("windows")) then .value.url |= sub("/[^/]+$"; "/VibeStudio-Windows-x64-setup.exe")
-                elif (.key | test("linux")) then .value.url |= sub("/[^/]+$"; "/VibeStudio-Linux-x86_64.deb")
-                else . end)
-            | from_entries)' latest.json > latest.tidied.json
-          mv latest.tidied.json latest.json
-          gh release upload "$TAG" latest.json --clobber
-          echo "rewrote latest.json (reuses installers; darwin entries kept)"
+      # Use the maintained finalizer even when repairing a historical tag.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate assets and finalize download links
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: node scripts/finalize-release.mjs

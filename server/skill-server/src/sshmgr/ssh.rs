@@ -273,7 +273,7 @@ fn list_wsl_distros() -> Vec<RemoteHost> {
 /// Run `wsl.exe <args>` and decode its UTF-16LE stdout (wsl emits wide chars).
 fn wsl_output(args: &[&str]) -> Option<String> {
     let o = hidden_command("wsl.exe").args(args).output().ok()?;
-    let wide: Vec<u16> = o.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let wide: Vec<u16> = o.stdout.chunks(2).filter_map(|c| c.try_into().ok().map(u16::from_le_bytes)).collect();
     Some(String::from_utf16_lossy(&wide))
 }
 

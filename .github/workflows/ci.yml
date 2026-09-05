@@ -31,6 +31,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Test release manifest generation
+        run: node --test scripts/finalize-release.test.mjs
       - run: npm run lint
       - run: npm run build
 
