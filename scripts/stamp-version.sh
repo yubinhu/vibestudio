@@ -9,6 +9,10 @@
 set -euo pipefail
 
 version="${1:?usage: stamp-version.sh <version>}"
+if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Expected a stable semantic version, for example 1.1.4" >&2
+  exit 1
+fi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
 for manifest in "$root/Cargo.toml" "$root/client/desktop/Cargo.toml"; do

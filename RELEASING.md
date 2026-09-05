@@ -3,12 +3,18 @@
 How a desktop release is cut, verified, and shipped. Read this end-to-end before
 your first release; after that the **Checklist** is the working copy.
 
+For the repository move, see [the migration guide](docs/releasing.md), including
+signing-secret recovery and the bridge for apps still using the old updater feed.
+
 ## How the pipeline works
 
-A release is driven entirely by **pushing a `vX.Y.Z` git tag**:
+A release is driven by **pushing a `vX.Y.Z` git tag**, or manually dispatching
+`build` with an existing tag as its required `tag` input:
 
 1. The tag push triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) (workflow name: `build`).
-2. It **stamps the version** from the tag (`scripts/stamp-version.sh` rewrites the
+2. A preflight validates the tag and checks the updater signing secret/public key
+   before starting the build matrix. Every build checks out that tag and
+   **stamps the version** (`scripts/stamp-version.sh` rewrites the
    `Cargo.toml` placeholders — the committed value is a `0.0.0` dev placeholder, so
    **there is no version-bump commit**, the tag *is* the version).
 3. It builds, per OS:
@@ -16,14 +22,21 @@ A release is driven entirely by **pushing a `vX.Y.Z` git tag**:
    - **Windows** — NSIS `_x64-setup.exe` (currently **unsigned**).
    - **Linux** — `.deb` only (AppImage is disabled; its bundler is flaky on CI runners).
    - **`skill-server`** standalone binaries for 4 targets (musl x86_64/arm64, macOS x86_64/arm64) — used by Remote-SSH provisioning.
-4. `tauri-action` creates a **DRAFT** GitHub Release named `VibeStudio vX.Y.Z`,
-   uploads all bundles plus `latest.json` (the updater manifest, with inline minisign signatures).
-5. **You publish the draft.** Publishing flips it to "Latest" (which is what the
-   auto-updater reads) and triggers [`release-tidy.yml`](.github/workflows/release-tidy.yml),
-   which renames installers to stable, version-less names
-   (`VibeStudio-macOS.dmg`, `VibeStudio-Windows-x64-setup.exe`,
-   `VibeStudio-Linux-x86_64.deb`), drops redundant `.sig` files, and rewrites
-   `latest.json` to point at the renamed installers.
+4. `tauri-action` creates a **DRAFT** GitHub Release named `VibeStudio vX.Y.Z`
+   and uploads each platform's bundles and updater `.sig` files. After all desktop
+   and server builds succeed, one `finalize` job validates the complete asset set,
+   renames the three installers to stable names (`VibeStudio-macOS.dmg`,
+   `VibeStudio-Windows-x64-setup.exe`, `VibeStudio-Linux-x86_64.deb`), and generates
+   one complete `latest.json` with all eight platform entries. Signatures stay in
+   the release so retries can reconstruct the manifest. The macOS `.app.tar.gz`
+   is retained for auto-update.
+5. The build calls `provision-smoke` with the explicit tag. Each shipped server
+   is checksum-verified, checked for the correct version, and booted on its native
+   architecture. The build is green only after these checks pass.
+6. **You publish the draft.** Publishing flips it to "Latest", which the updater
+   reads. [`release-tidy.yml`](.github/workflows/release-tidy.yml) reuses the same
+   finalizer for validation/repair, and also supports manual dispatch. Download
+   links are ready before publishing; no post-publication rename is required.
 
 Until you publish, **nothing reaches users** — a draft is invisible to the updater.
 
@@ -36,6 +49,7 @@ Until you publish, **nothing reaches users** — a draft is invisible to the upd
 
 0. **Pick the version.** Next semver after the last tag. Reusing the number of an
    *unpublished* draft is fine — no user ever received it (see "Overwrite a draft").
+   Never rebuild or replace the binaries of a published version.
 1. **Local test.** From the repo root:
    ```bash
    npm run build          # tsc --noEmit && vite build
@@ -50,13 +64,19 @@ Until you publish, **nothing reaches users** — a draft is invisible to the upd
    `goto("…/studio/<root>")` lands on Home; you must use `…/#/skills/<root>`.
 3. **Confirm the tag will be on-branch.** The tagged commit **must be an ancestor
    of `master` and pushed** (`git rev-list --left-right --count origin/master...HEAD`
-   → `0  0`). An **off-branch tag makes the Actions token read-only** → the release
-   step 403s and the draft never appears. This is the #1 release failure.
+   → `0  0`). This ensures releases contain reviewed code. Release jobs explicitly
+   request `contents: write`; repository Actions policy must allow that permission.
 4. **Tag and push.**
    ```bash
    git tag -a vX.Y.Z -m "VibeStudio vX.Y.Z" <commit>   # usually HEAD
    git push origin vX.Y.Z
    ```
+   To retry an existing tag using the maintained workflow on `master`:
+   ```bash
+   gh workflow run release.yml --ref master -f tag=vX.Y.Z
+   ```
+   This checks out and stamps the supplied tag, including the standalone servers.
+   Dispatching a branch without a version tag is rejected.
 5. **Watch CI to completion.**
    ```bash
    RUN=$(gh run list --limit 10 --json databaseId,headBranch,name \
@@ -65,7 +85,8 @@ Until you publish, **nothing reaches users** — a draft is invisible to the upd
    ```
    **macOS notarization is usually the long pole** (~5–20 min; Apple's notary service
    occasionally hangs on a transient — re-run that leg if it stalls far past 20 min).
-   After desktop bundles finish, the `skill-server` matrix uploads standalone binaries.
+   After desktop bundles finish, the `skill-server` matrix uploads standalone binaries,
+   then finalization and the four native smoke checks must pass.
 6. **Fix any errors.** If a leg fails: fix on `master`, push, then **delete and
    re-create the tag at the new HEAD** and re-push (`gh release delete vX.Y.Z --yes
    --cleanup-tag` if a draft was made; then re-tag). Re-running a leg is fine for
@@ -83,14 +104,15 @@ Until you publish, **nothing reaches users** — a draft is invisible to the upd
    ```bash
    gh release edit vX.Y.Z --draft=false --latest
    ```
-9. **Verify the published release.** Publishing fires `release-tidy`; give it ~30s,
-   then confirm the final asset set:
+9. **Verify the published release.** Confirm the final asset set and public links:
    ```bash
    gh run watch "$(gh run list -w release-tidy --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
    gh release view vX.Y.Z --json isDraft,assets -q '.isDraft, [.assets[].name]'
    ```
    Expect: the 3 renamed installers + `macos` `.app.tar.gz` + `latest.json` + the 4
-   `skill-server-*` binaries (+ `.sha256`).
+   `skill-server-*` binaries (+ `.sha256`) + updater `.sig` files. Verify the
+   [public feed](https://github.com/yubinhu/vibestudio/releases/latest/download/latest.json)
+   and the README's three download links without authentication.
 
 ## Screenshot harness (headless, never touches the live app)
 
@@ -114,14 +136,15 @@ skill root from `GET /api/skills/discover`, reached via `/#/skills/<encoded-root
 
 - **No version-bump commit** — the tag is the source of truth; `stamp-version.sh`
   injects it in CI. Manifests stay `0.0.0`.
-- **On-branch tags only** (step 3) — off-branch ⇒ read-only token ⇒ 403, no draft.
+- **On-branch tags only** (step 3) — release reviewed code from the default branch.
 - **Drafts are invisible to the updater** — only the published "Latest" release feeds auto-update.
 - **Overwrite an unpublished draft version:** `gh release delete vX.Y.Z --yes
   --cleanup-tag`, then re-tag at the new commit and re-push. Safe because no user got the draft.
 - **Hash router** — screenshots/deep links need `/#/…`.
-- **Updater pubkey guard** — CI fails fast if `tauri.conf.json` still carries the
-  placeholder pubkey; the real key must be committed. The private key
-  (`~/.tauri/vibestudio.key`) is the only readable copy — do not lose it.
+- **Updater signing guard** — CI fails fast if the signing secret is absent or
+  `tauri.conf.json` still carries a placeholder pubkey. Finalization rejects
+  signatures from a different key. Restore the original private key (historically
+  `~/.tauri/vibestudio.key`); GitHub cannot return existing secret values.
 - **macOS** signing/notarization secrets and the **updater signing key** live in
-  repo Actions secrets (see `release.yml` env). Windows Authenticode is wired but
-  currently off (no cert).
+  repo Actions secrets (see `release.yml` env). Windows Authenticode is currently
+  off; unused Azure/Java signing preparation is not part of the build.

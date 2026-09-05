@@ -10,14 +10,17 @@ name: provision-smoke
 # + the auth choke point on the SHIPPED artifact — so a release can't go out with
 # a skill-server that doesn't run.
 on:
-  workflow_run:
-    workflows: ["build"]
-    types: [completed]
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
         description: "Release tag to smoke-test (e.g. v0.1.0)"
         required: true
+        type: string
 
 permissions:
   # Draft releases are invisible to the default read token, and the build workflow
@@ -27,7 +30,6 @@ permissions:
 jobs:
   smoke:
     name: ${{ matrix.target }}
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.workflow_run.head_branch, 'v') }}
     strategy:
       fail-fast: false
       matrix:
@@ -44,22 +46,21 @@ jobs:
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
     steps:
-      # Resolve the tag from either trigger: the published release, or the manual input.
-      - name: Resolve release tag
-        id: tag
+      - name: Validate release tag
         shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Expected a stable version tag, for example v1.1.4."
+            exit 1
           fi
 
       # Pull the asset exactly as a fresh remote would: by tag, by target name.
       - name: Download skill-server asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ inputs.tag }}
           TARGET: ${{ matrix.target }}
         shell: bash
         run: |
@@ -81,6 +82,7 @@ jobs:
       - name: Smoke-test the binary
         env:
           TARGET: ${{ matrix.target }}
+          TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -88,7 +90,11 @@ jobs:
           chmod +x "$bin"
 
           # --version must work and exit 0 (the desktop reads this to verify the install).
-          "$bin" --version
+          version=$("$bin" --version)
+          if [ "$version" != "skill-server ${TAG#v}" ]; then
+            echo "::error::Expected skill-server ${TAG#v}, got $version"
+            exit 1
+          fi
 
           # Boot loopback on an ephemeral port, token-guarded (the SSH case). The binary
           # prints `SKILL_SERVER_READY port=<port>` to stdout once listening.

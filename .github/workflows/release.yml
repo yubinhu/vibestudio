@@ -4,9 +4,69 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build (e.g. v1.1.4)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# A retry must not modify the same draft concurrently with its original run.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Validate release tag
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Select an existing stable version tag, for example v1.1.4 (not a branch)."
+            exit 1
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+      - name: Refuse to rebuild a published version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          published=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == false) | .tag_name")
+          if [ -n "$published" ]; then
+            echo "::error::This version is already public. Choose a new version instead of replacing shipped binaries."
+            exit 1
+          fi
+      - name: Check updater signing configuration before building
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Restore the original TAURI_SIGNING_PRIVATE_KEY repository secret. See docs/releasing.md."
+            exit 1
+          fi
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const key = JSON.parse(fs.readFileSync("client/desktop/tauri.conf.json")).plugins.updater.pubkey;
+            if (!key || key.includes("PLACEHOLDER")) throw new Error("Commit the original updater public key before releasing");
+          '
+
   build:
+    needs: preflight
     # tauri-action creates the GitHub Release and uploads assets — needs write.
     permissions:
       contents: write
@@ -20,6 +80,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.preflight.outputs.tag }}
 
       - name: Install Linux dependencies
         if: startsWith(matrix.platform, 'ubuntu')
@@ -47,38 +109,6 @@ jobs:
 
       - run: npm ci
 
-      - name: Setup Java for Windows signing
-        if: matrix.platform == 'windows-latest'
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Download jsign for Windows signing
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          $version = "7.4"
-          $dest = "$env:RUNNER_TEMP\jsign.jar"
-          Invoke-WebRequest -Uri "https://github.com/ebourg/jsign/releases/download/$version/jsign-$version.jar" -OutFile $dest
-          "JSIGN_JAR=$dest" >> $env:GITHUB_ENV
-
-      - name: Azure login for Windows signing
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID)) {
-            Write-Warning "Azure signing secrets not set; Windows artifacts will be built unsigned."
-            exit 0
-          }
-          az login --service-principal -u $env:AZURE_CLIENT_ID -p $env:AZURE_CLIENT_SECRET --tenant $env:AZURE_TENANT_ID | Out-Null
-          "AZURE_SIGNING_ENDPOINT=${{ secrets.AZURE_SIGNING_ENDPOINT }}" >> $env:GITHUB_ENV
-          "AZURE_SIGNING_ALIAS=${{ secrets.AZURE_SIGNING_ALIAS }}" >> $env:GITHUB_ENV
-
       # NOTE: the on-device llama.cpp engine + CUDA bridge are no longer bundled.
       # Commit-message drafting defaults to shelling out to a logged-in coding-agent
       # CLI (see skill-core/commit_agent.rs); the engine is an opt-in offline
@@ -86,22 +116,12 @@ jobs:
 
       # Stamp the release version (the pushed tag, minus the leading `v`) into the
       # server workspace and desktop package so both binaries build at the tag version.
-      # Skipped on manual runs (workflow_dispatch has no tag), which then build the
-      # committed 0.0.0 dev placeholder as-is.
+      # Manual runs check out the requested tag and use the same version as tag pushes.
       - name: Sync version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
-        run: bash scripts/stamp-version.sh "${GITHUB_REF_NAME#v}"
-
-      # Fail in seconds, not after four full builds: a bundle carrying the
-      # placeholder pubkey could never verify any update signature.
-      - name: Guard updater pubkey
-        shell: bash
-        run: |
-          if grep -q UPDATER_PUBKEY_PLACEHOLDER client/desktop/tauri.conf.json; then
-            echo "plugins.updater.pubkey is still the placeholder — commit the real public key first" >&2
-            exit 1
-          fi
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: bash scripts/stamp-version.sh "${RELEASE_TAG#v}"
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -126,13 +146,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: client/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: "VibeStudio ${{ github.ref_name }}"
+          tagName: ${{ needs.preflight.outputs.tag }}
+          releaseName: "VibeStudio ${{ needs.preflight.outputs.tag }}"
           releaseDraft: true
           prerelease: false
-          # latest.json's platforms map is merged across the 4 parallel matrix legs
-          # (re-download + retry on asset-id conflicts), so retries matter here.
-          includeUpdaterJson: true
+          # Publish one complete manifest in finalize, after every platform uploads.
+          # Parallel tauri-action manifest merges can lose entries or delete signatures.
+          includeUpdaterJson: false
           retryAttempts: 3
           # Per-platform args (&& / || precedence: each `A && B` resolves before the `||`s):
           #  • macOS → `--target universal-apple-darwin`: one universal (arm64+x86_64) .dmg
@@ -149,30 +169,6 @@ jobs:
           #    because it also suppressed the updater .sig files). Re-enable
           #    Authenticode by restoring signCommand + the cert secrets.
           args: ${{ startsWith(matrix.platform, 'macos') && '--target universal-apple-darwin' || startsWith(matrix.platform, 'ubuntu') && '--bundles deb' || '' }}
-
-      # Updater .sig files are redundant as release assets — tauri-action embeds each
-      # signature INLINE in latest.json (the updater never fetches the .sig). Drop them
-      # at the source, right after this leg's upload, so the draft never carries them.
-      # NB: the release is still a DRAFT here, and `releases/tags/<tag>` resolves only
-      # published releases — look the draft up via the list endpoint instead.
-      - name: Drop redundant .sig assets
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          rid=$(gh api "repos/$GH_REPO/releases?per_page=30" \
-            --jq "[.[] | select(.tag_name == \"$GITHUB_REF_NAME\")][0].id // empty")
-          [ -n "$rid" ] || { echo "no release for $GITHUB_REF_NAME yet — nothing to drop"; exit 0; }
-          gh api "repos/$GH_REPO/releases/$rid/assets?per_page=100" \
-            --jq '.[] | select(.name | endswith(".sig")) | .id' |
-          while read -r id; do
-            # Legs run in parallel and each sweeps ALL sigs — a 404 here just
-            # means another leg won the race, which is the desired end state.
-            gh api -X DELETE "repos/$GH_REPO/releases/assets/$id" 2>/dev/null \
-              && echo "deleted sig asset $id" || echo "sig asset $id already gone"
-          done
 
       - name: Upload desktop bundles
         if: ${{ always() && github.event_name == 'workflow_dispatch' }}
@@ -203,8 +199,8 @@ jobs:
     # success: a flaky desktop leg (signing/notarization) must not skip the server
     # binaries, or Remote-SSH can't provision that release. The job ensures the release
     # exists itself before uploading.
-    needs: build
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [preflight, build]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
     permissions:
       contents: write
     strategy:
@@ -224,6 +220,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.preflight.outputs.tag }}
 
       - uses: actions/setup-node@v6
         with:
@@ -245,9 +243,10 @@ jobs:
       # Stamp the server workspace so the standalone binary's `--version` matches the
       # release it ships in (this job checks out fresh, so it must stamp too).
       - name: Sync version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
-        run: bash scripts/stamp-version.sh "${GITHUB_REF_NAME#v}"
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: bash scripts/stamp-version.sh "${RELEASE_TAG#v}"
 
       # The standalone binary is the phone's hub while SSH-connected, so it must
       # carry the SPA: build dist/, then compile it in via embed-ui (include_dir).
@@ -269,17 +268,46 @@ jobs:
           if command -v sha256sum >/dev/null 2>&1; then sha256sum "$out" > "$out.sha256"; else shasum -a 256 "$out" > "$out.sha256"; fi
 
       # The draft is normally created by tauri-action in `build`; create it if a build
-      # failure meant it never got made (|| true tolerates the matrix-leg race).
+      # failure meant it never got made. Re-read after a competing matrix leg creates it.
       - name: Ensure the release exists
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         run: |
-          gh release view "${{ github.ref_name }}" >/dev/null 2>&1 || \
-            gh release create "${{ github.ref_name }}" --draft \
-              --title "VibeStudio ${{ github.ref_name }}" \
-              --notes "Desktop bundles and standalone skill-server binaries." || true
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "VibeStudio $RELEASE_TAG" \
+              --notes "Desktop bundles and standalone skill-server binaries." || \
+            gh release view "$RELEASE_TAG" >/dev/null
 
       - name: Upload to the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" "skill-server-${{ matrix.target }}" "skill-server-${{ matrix.target }}.sha256" --clobber
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: gh release upload "$RELEASE_TAG" "skill-server-$TARGET" "skill-server-$TARGET.sha256" --clobber
+
+  finalize:
+    needs: [preflight, build, server-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate assets, stabilize download names, and generate complete updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: node scripts/finalize-release.mjs
+
+  smoke:
+    needs: [preflight, finalize]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/provision-smoke.yml
+    with:
+      tag: ${{ needs.preflight.outputs.tag }}
