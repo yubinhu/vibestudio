@@ -282,6 +282,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Use the maintained finalizer; it resolves signing configuration from the
+      # requested release tag even when this workflow is dispatched on a branch.
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:

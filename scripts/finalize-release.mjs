@@ -2,7 +2,7 @@
 // One writer for release filenames and latest.json, after every build completes.
 // GH_REPO=owner/repo TAG=v1.2.3 node scripts/finalize-release.mjs [--check]
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -26,6 +26,22 @@ function decode64(value) {
   const bytes = Buffer.from(value, 'base64');
   if (bytes.toString('base64') !== value) throw new Error('Invalid base64 signing data');
   return bytes;
+}
+
+export function loadReleasePublicKey({ repo, tag, readJson }) {
+  validateInputs(repo, tag);
+  // Fetch signing config by immutable commit, independently of the workflow's
+  // checkout. The maintained finalizer need not exist in the tagged tree.
+  const { sha } = readJson(`repos/${repo}/commits/refs/tags/${tag}`);
+  if (!/^[a-f0-9]{40}$/.test(sha ?? '')) throw new Error('Missing valid release commit');
+  const file = readJson(`repos/${repo}/contents/client/desktop/tauri.conf.json?ref=${sha}`);
+  if (file.type !== 'file' || file.encoding !== 'base64' || typeof file.content !== 'string') {
+    throw new Error('Missing signing configuration at the release commit');
+  }
+  const config = JSON.parse(decode64(file.content.replace(/\s/g, '')).toString('utf8'));
+  const pubkey = config.plugins?.updater?.pubkey;
+  if (!pubkey) throw new Error('Missing updater public key at the release commit');
+  return pubkey;
 }
 
 // Reject missing/malformed signatures and signatures from a different key.
@@ -113,8 +129,8 @@ function main() {
   const signatures = Object.fromEntries(release.assets.filter(a => a.name.endsWith('.sig')).map(a => [a.name, readAsset(a)]));
   const previousAsset = release.assets.find(a => a.name === 'latest.json');
   const previous = previousAsset ? JSON.parse(readAsset(previousAsset)) : undefined;
-  const config = JSON.parse(readFileSync(new URL('../client/desktop/tauri.conf.json', import.meta.url), 'utf8'));
-  const plan = planRelease({ repo, tag, release, signatures, previous, pubkey: config.plugins.updater.pubkey });
+  const pubkey = loadReleasePublicKey({ repo, tag, readJson: endpoint => JSON.parse(gh('api', endpoint)) });
+  const plan = planRelease({ repo, tag, release, signatures, previous, pubkey });
   console.log(`Validated ${tag}: 3 installers, universal macOS updater, 4 servers, 8 updater platforms.`);
   if (process.argv.includes('--check')) {
     console.log(JSON.stringify(plan, null, 2));

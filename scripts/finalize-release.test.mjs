@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { planRelease, serverTargets } from './finalize-release.mjs';
+import { loadReleasePublicKey, planRelease, serverTargets } from './finalize-release.mjs';
 
 const encode = value => Buffer.from(value).toString('base64');
 const keyId = Buffer.from('12345678');
@@ -22,6 +22,42 @@ function fixture() {
     signatures: Object.fromEntries(signed.map(name => [name, signature])),
   };
 }
+
+test('finalizes an older tag with its own key after the default branch key changes', () => {
+  const input = fixture();
+  const sha = 'a'.repeat(40);
+  const currentKey = encode(`untrusted comment: current public key\n${encode(Buffer.concat([Buffer.from('Ed'), Buffer.from('87654321'), Buffer.alloc(32)]))}\n`);
+  assert.throws(() => planRelease({ ...input, pubkey: currentKey }), /signing key/);
+  const requests = [];
+  const readJson = endpoint => {
+    requests.push(endpoint);
+    if (endpoint === `repos/${input.repo}/commits/refs/tags/${input.tag}`) return { sha };
+    const key = endpoint.endsWith(`?ref=${sha}`) ? pubkey : currentKey;
+    const content = encode(JSON.stringify({ plugins: { updater: { pubkey: key } } }));
+    return { type: 'file', encoding: 'base64', content: content.match(/.{1,60}/g).join('\n') + '\n' };
+  };
+  input.pubkey = loadReleasePublicKey({ ...input, readJson });
+  assert.equal(planRelease(input).manifest.version, '1.2.3');
+  assert.deepEqual(requests, [
+    `repos/${input.repo}/commits/refs/tags/${input.tag}`,
+    `repos/${input.repo}/contents/client/desktop/tauri.conf.json?ref=${sha}`,
+  ]);
+});
+
+test('does not fall back to the checkout when a release commit or its key is missing', () => {
+  for (const sha of [undefined, 'master', 'v1.2.3', 'a'.repeat(39)]) {
+    assert.throws(() => loadReleasePublicKey({ ...fixture(), readJson: () => ({ sha }) }), /release commit/);
+  }
+  const sha = 'a'.repeat(40);
+  for (const file of [
+    { type: 'dir' },
+    { type: 'file', encoding: 'base64', content: encode('{}') },
+  ]) {
+    assert.throws(() => loadReleasePublicKey({
+      ...fixture(), readJson: endpoint => endpoint.includes('/commits/') ? { sha } : file,
+    }), /release commit/);
+  }
+});
 
 test('assembles all eight updater platforms with stable installer URLs and original signatures', () => {
   const { manifest, renames } = planRelease(fixture());

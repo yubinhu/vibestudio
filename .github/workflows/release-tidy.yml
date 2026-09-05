@@ -23,7 +23,8 @@ jobs:
   tidy:
     runs-on: ubuntu-latest
     steps:
-      # Run the finalizer maintained on the default branch.
+      # Run the finalizer maintained on the default branch. It resolves signing
+      # configuration from the requested release tag.
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.repository.default_branch }}
