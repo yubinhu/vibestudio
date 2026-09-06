@@ -7,7 +7,7 @@ import { agentColor, isEditableBundledSkill, KIND_TAG, type SkillKind } from "@/
 import { useConfirm } from "@/components/useConfirm";
 import * as api from "@/lib/api";
 import type { GitInfo, SyncTarget } from "@/lib/api";
-import { credentialsPath } from "@/lib/routes";
+import { connectorsPath } from "@/lib/routes";
 import { useStudio } from "./StudioContext";
 
 const btnGhost =
@@ -363,7 +363,7 @@ function SecretsSection({ root, declared, onOpen }: { root: string; declared: st
       )}
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={onOpen} className={btnGhost}>
-          Open Credentials →
+          Open Connectors →
         </button>
         {exportable.length > 0 && (
           <button
@@ -379,7 +379,7 @@ function SecretsSection({ root, declared, onOpen }: { root: string; declared: st
       {exportable.length > 0 && (
         <p className="text-[0.7rem] text-faint">
           The .env is plain text — share it over a channel you trust, and never commit it. A teammate imports
-          it on the Credentials page.
+          it on the Connectors page.
         </p>
       )}
     </div>
@@ -432,7 +432,7 @@ export default function ManagePanel({
               declared={declared}
               onOpen={() => {
                 onClose();
-                navigate(credentialsPath());
+                navigate(connectorsPath());
               }}
             />
           </Section>

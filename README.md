@@ -20,7 +20,7 @@ Built with [Tauri](https://tauri.app/), it also drives any remote dev host nativ
 - **Reach them from anywhere** — the backend serves the whole app over HTTP, so a browser or your phone drives the same agents on your machine (setup below).
 - **Skill Management** — find and edit every skill across your agents in a live `SKILL.md` editor, with automatic versioning and git-remote sync as the source of truth.
 - **Skill Mining** — turn past agent conversations into new skills, or fold recent ones back into existing skills.
-- **Credentials & Connections** — hold the API keys your agents need and OAuth an MCP once; every agent reaches it through a local gateway, so no token ever lands in a config, environment, or transcript.
+- **Connectors** — hold the API keys your agents need and OAuth an MCP once; every agent reaches it through a local gateway, so no token ever lands in a config, environment, or transcript.
 
 ## Install
 

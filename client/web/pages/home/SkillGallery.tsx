@@ -3,11 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSkills, refreshSkills } from "@/lib/skills";
 import type { ReactNode } from "react";
-import { Spinner, btnGhost, btnPrimary } from "@/components/ui";
+import { Spinner } from "@/components/ui";
 import NavBar from "@/components/NavBar";
-import { Modal } from "@/components/Modal";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
-import FolderPicker from "@/components/FolderPicker";
+import OpenSkillDialog from "@/components/OpenSkillDialog";
 import NewSkillDialog from "./NewSkillDialog";
 import ImportSkillDialog from "./ImportSkillDialog";
 import MineDialog from "@/components/MineDialog";
@@ -21,9 +20,6 @@ import { useNavigate } from "react-router-dom";
 import { studioPath, markdownPath, miningPath, sessionsPath } from "@/lib/routes";
 
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
-
-/** Markdown-family extension — a pasted path ending this way opens as a loose file. */
-const MARKDOWN_EXT = /\.(md|markdown|mdx)$/i;
 
 function PlusIcon() {
   return (
@@ -512,54 +508,6 @@ function MineTile({
   );
 }
 
-// "Open a skill" demoted to a dialog (reached from the nav): users start from
-// discovered or mined skills below; pasting a path is the fallback for the
-// rare skill discovery misses.
-function OpenSkillDialog({
-  onClose,
-  onOpenPath,
-  onBrowse,
-}: {
-  onClose: () => void;
-  onOpenPath: (p: string) => void;
-  onBrowse: () => void;
-}) {
-  const [path, setPath] = useState("");
-  return (
-    <Modal title="Open a skill" onClose={onClose}>
-      <form
-        className="space-y-4 px-5 py-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (path.trim()) onOpenPath(path.trim());
-        }}
-      >
-        <p className="text-xs leading-relaxed text-muted">
-          A skill is a folder containing a{" "}
-          <code className="rounded bg-panel px-1 py-0.5 font-mono text-[0.85em]">SKILL.md</code>. Paste its path
-          (or a loose markdown file's), or browse for it.
-        </p>
-        <input
-          value={path}
-          onChange={(e) => setPath(e.target.value)}
-          placeholder="/absolute/path/to/skill-folder"
-          spellCheck={false}
-          autoFocus
-          className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-sm text-fg outline-none focus:border-accent"
-        />
-        <div className="flex justify-end gap-2 pt-1">
-          <button type="button" onClick={onBrowse} className={btnGhost}>
-            Browse…
-          </button>
-          <button type="submit" disabled={!path.trim()} className={btnPrimary}>
-            Open
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
 function OpenIcon() {
   return (
     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -572,7 +520,7 @@ function OpenIcon() {
  *  glance headings so every section on the home page reads at one weight. */
 function SectionTitle({ children, trailing }: { children: ReactNode; trailing?: ReactNode }) {
   return (
-    <div className="mb-3 flex items-center gap-2.5">
+    <div className="mb-3 flex flex-wrap items-center gap-2.5">
       <h2 className="text-sm font-semibold tracking-wide text-fg">{children}</h2>
       {trailing}
     </div>
@@ -687,8 +635,6 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
   const onOpen = (p: string) => navigate(studioPath(p));
   // Recents mix skills and loose markdown files; route each to the right place.
   const openRecent = (r: Recent) => navigate(r.kind === "markdown" ? markdownPath(r.root) : studioPath(r.root));
-  // The path field opens either a skill folder or a single .md file (by extension).
-  const openPath = (p: string) => navigate(MARKDOWN_EXT.test(p) ? markdownPath(p) : studioPath(p));
   const [openOpen, setOpenOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -799,28 +745,35 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
     [confirm],
   );
 
-  const [showPicker, setShowPicker] = useState(false);
-  const browse = () => setShowPicker(true);
-
   // Proposed drafts ride inside their agent group, badged and leading the grid.
   const groups = discovered;
   const totalFound = groups.reduce((n, g) => n + g.skills.length, 0);
 
-  // New / Open / Import — page chrome for the standalone nav; on the embedded
-  // home dashboard they move into the "Your skills" header (no nav slot there).
+  // Skill actions live with the gallery on Home; opening arbitrary work belongs
+  // to the dashboard header. The standalone gallery keeps Open in its own nav.
   const actions = (
     <>
-      <button
-        type="button"
-        onClick={() => setOpenOpen(true)}
-        title="Open a skill by path"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
-        </svg>
-        <span className="hidden text-xs sm:inline">Open</span>
-      </button>
+      {embedded ? (
+        <button
+          type="button"
+          onClick={() => setMineOpen(true)}
+          title="Mine your past conversations to create or update skills"
+          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-accent hover:bg-accent-soft"
+        >
+          <PickaxeIcon size={15} />
+          <span className="text-xs font-medium">Mine</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpenOpen(true)}
+          title="Open a skill or Markdown file"
+          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
+        >
+          <OpenIcon />
+          <span className="hidden text-xs sm:inline">Open</span>
+        </button>
+      )}
       <button
         type="button"
         onClick={() => setNewOpen(true)}
@@ -828,7 +781,7 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
         className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
       >
         <PlusIcon />
-        <span className="hidden text-xs sm:inline">New</span>
+        <span className={embedded ? "text-xs" : "hidden text-xs sm:inline"}>New</span>
       </button>
       <button
         type="button"
@@ -837,18 +790,18 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
         className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
       >
         <ImportIcon />
-        <span className="hidden text-xs sm:inline">Import</span>
+        <span className={embedded ? "text-xs" : "hidden text-xs sm:inline"}>Import</span>
       </button>
     </>
   );
 
   const skillsSection = (
-    <section id="skills" className="mt-12">
+    <section id="skills" className="mt-10">
       <SectionTitle
         trailing={
           <>
             {discovering ? <Spinner className="h-3 w-3" /> : <span className="text-xs text-faint">{totalFound}</span>}
-            <div className="ml-auto flex items-center gap-1">
+            <div className={`ml-auto flex items-center gap-1 ${embedded ? "w-full sm:w-auto" : ""}`}>
               {embedded && actions}
               <button
                 type="button"
@@ -898,19 +851,6 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
 
   const dialogs = (
     <>
-      {showPicker && (
-        <FolderPicker
-          onSelect={(p) => {
-            setShowPicker(false);
-            onOpen(p);
-          }}
-          onSelectFile={(p) => {
-            setShowPicker(false);
-            navigate(markdownPath(p));
-          }}
-          onClose={() => setShowPicker(false)}
-        />
-      )}
       {newOpen && (
         <NewSkillDialog
           onClose={() => setNewOpen(false)}
@@ -934,23 +874,12 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
           onClose={() => setMineOpen(false)}
           onStarted={(terminalId) => {
             setMineOpen(false);
+            void refreshMining();
             navigate(sessionsPath(terminalId));
           }}
         />
       )}
-      {openOpen && (
-        <OpenSkillDialog
-          onClose={() => setOpenOpen(false)}
-          onOpenPath={(p) => {
-            setOpenOpen(false);
-            openPath(p);
-          }}
-          onBrowse={() => {
-            setOpenOpen(false);
-            browse();
-          }}
-        />
-      )}
+      {openOpen && <OpenSkillDialog onClose={() => setOpenOpen(false)} />}
     </>
   );
 

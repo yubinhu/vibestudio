@@ -1,7 +1,7 @@
 // URL <-> skill identity helpers for the hash router.
 //
-// The route URLs use the nav vocabulary — /skills, /sessions, /credentials — and so
-// do these helpers (sessionsPath, credentialsPath). The skill editor's helpers are
+// The route URLs use the nav vocabulary — /skills, /sessions, /connectors — and so
+// do these helpers (sessionsPath, connectorsPath). The skill editor's helpers are
 // still named studio* though its route is /skills/:root — that rename is deferred.
 //
 // A skill root is an absolute filesystem path (with slashes), so it rides as a
@@ -11,8 +11,8 @@
 // slashes, so it rides as a `file/*` splat with each segment encoded; the router
 // decodes the splat on read.
 
-/** The dedicated Credentials page (machine-local secrets store + OAuth connections). */
-export const credentialsPath = () => "/credentials";
+/** The dedicated Connectors page (machine-local secrets store + OAuth connectors). */
+export const connectorsPath = () => "/connectors";
 
 /** The mining page: the latest run's record and the files in its run dir. */
 export const miningPath = () => "/mining";

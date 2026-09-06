@@ -13,12 +13,12 @@ import SkillGallery from "@/pages/home/SkillGallery";
 import * as api from "@/lib/api";
 import type { ConnectionInfo, TermSession } from "@/lib/api";
 import { useSessions, isUnread, refresh as refreshSessions, noteCreated, nativeNotifyState } from "@/lib/sessions";
-import { useMining, refreshMining } from "@/lib/mining";
+import { useMining } from "@/lib/mining";
 import { useSkills } from "@/lib/skills";
-import MineDialog from "@/components/MineDialog";
+import OpenSkillDialog from "@/components/OpenSkillDialog";
 import * as push from "@/lib/push";
 import { useRemote } from "@/lib/remote";
-import { sessionsPath, credentialsPath, miningPath } from "@/lib/routes";
+import { sessionsPath, connectorsPath, miningPath } from "@/lib/routes";
 
 // A live session carries only the bare agent family ("claude" | "codex" | …); the
 // rail keys colors off human labels, so map family → label + brand color here.
@@ -271,7 +271,7 @@ export function Component() {
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [mineOpen, setMineOpen] = useState(false);
+  const [openDialogOpen, setOpenDialogOpen] = useState(false);
 
   const [connections, setConnections] = useState<ConnectionInfo[] | null>(null);
   const [secretNames, setSecretNames] = useState<string[] | null>(null);
@@ -296,7 +296,7 @@ export function Component() {
   useEffect(() => {
     let alive = true;
     api.connectionsList().then((c) => alive && setConnections(c)).catch(() => alive && setConnections([]));
-    // secretsList (not just the count) so the Credentials section can show key names.
+    // secretsList (not just the count) so the Connectors section can show key names.
     api.secretsList().then((l) => alive && setSecretNames(l.map((e) => e.key))).catch(() => alive && setSecretNames([]));
     return () => {
       alive = false;
@@ -340,18 +340,12 @@ export function Component() {
               <TerminalIcon />
               New session
             </button>
-            <button type="button" onClick={() => setMineOpen(true)} className={`${actionBase} border border-border text-fg hover:bg-panel`}>
-              <PickaxeIcon />
-              Mine
-            </button>
-            <button type="button" onClick={() => navigate(credentialsPath())} className={`${actionBase} border border-border text-fg hover:bg-panel`}>
-              <LinkIcon />
-              Connect
+            <button type="button" onClick={() => setOpenDialogOpen(true)} className={`${actionBase} border border-border text-fg hover:bg-panel`}>
+              <Icon><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></Icon>
+              Open
             </button>
           </div>
         </section>
-
-        <RecentStrip />
 
         {/* Phone/browser only: the one gesture-gated moment to opt into pushes. */}
         <PushNudge />
@@ -399,15 +393,15 @@ export function Component() {
             />
             <StatCard
               icon={<KeyIcon />}
-              label="Credentials"
+              label="Connectors"
               value={connections && secretNames ? connections.length + secretNames.length : <Spinner className="h-5 w-5" />}
               sub={
                 needsReauth > 0
                   ? `${needsReauth} need sign-in`
-                  : `${connections?.length ?? 0} connection${(connections?.length ?? 0) === 1 ? "" : "s"} · ${secretCount ?? 0} key${(secretCount ?? 0) === 1 ? "" : "s"}`
+                  : `${connections?.length ?? 0} connector${(connections?.length ?? 0) === 1 ? "" : "s"} · ${secretCount ?? 0} key${(secretCount ?? 0) === 1 ? "" : "s"}`
               }
               subTone={needsReauth > 0 ? "warn" : "muted"}
-              onClick={() => document.getElementById("credentials")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              onClick={() => document.getElementById("connectors")?.scrollIntoView({ behavior: "smooth", block: "start" })}
             />
             <StatCard
               icon={<ServerIcon />}
@@ -430,33 +424,27 @@ export function Component() {
           </div>
         </section>
 
+        <RecentStrip />
+
         {/* Sessions — one list; the ones that finished a turn and need you are tinted
             "Your turn" and sorted to the front (a highlight, not "the rest aren't live"). */}
-        <section className="mt-10">
-          <Heading
-            count={
-              <>
-                {sessions.length}
-                {waiting.length > 0 && <span className="text-info"> · {waiting.length} waiting for you</span>}
-              </>
-            }
-            action={
-              <button type="button" onClick={() => navigate(sessionsPath())} className="text-xs font-medium text-accent hover:opacity-80">
-                Open Sessions →
-              </button>
-            }
-          >
-            Sessions
-          </Heading>
-          {sessions.length === 0 ? (
-            <div className="flex flex-col items-start gap-3 rounded-xl border border-dashed border-border bg-surface p-6">
-              <p className="text-sm text-muted">No agents running. Start a session to launch Claude Code, Codex, or a shell.</p>
-              <button type="button" onClick={openNewSession} className={`${actionBase} bg-action text-action-fg hover:bg-action-hover`}>
-                <TerminalIcon />
-                New session
-              </button>
-            </div>
-          ) : (
+        {sessions.length > 0 && (
+          <section className="mt-10">
+            <Heading
+              count={
+                <>
+                  {sessions.length}
+                  {waiting.length > 0 && <span className="text-info"> · {waiting.length} waiting for you</span>}
+                </>
+              }
+              action={
+                <button type="button" onClick={() => navigate(sessionsPath())} className="text-xs font-medium text-accent hover:opacity-80">
+                  Open Sessions →
+                </button>
+              }
+            >
+              Sessions
+            </Heading>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {[...waiting, ...running].map((s) => (
                 <SessionCard key={s.id} s={s} waiting={waitingIds.has(s.id)} onClick={() => openSession(s.id)} />
@@ -470,12 +458,14 @@ export function Component() {
                 <span className="text-sm font-medium">New session</span>
               </button>
             </div>
-          )}
-        </section>
+          </section>
+        )}
 
-        {/* Credentials — the detail view: each connection with its status + which
+        <SkillGallery embedded />
+
+        {/* Connectors — the detail view: each connection with its status + which
             agents it's wired to, plus your API keys by name. */}
-        <section id="credentials" className="mt-10">
+        <section id="connectors" className="mt-10">
           <Heading
             count={
               <>
@@ -485,20 +475,20 @@ export function Component() {
               </>
             }
             action={
-              <button type="button" onClick={() => navigate(credentialsPath())} className="text-xs font-medium text-accent hover:opacity-80">
+              <button type="button" onClick={() => navigate(connectorsPath())} className="text-xs font-medium text-accent hover:opacity-80">
                 Manage →
               </button>
             }
           >
-            Credentials
+            Connectors
           </Heading>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {(connections ?? []).map((c) => (
-              <ConnectionCard key={c.id} c={c} onClick={() => navigate(credentialsPath())} />
+              <ConnectionCard key={c.id} c={c} onClick={() => navigate(connectorsPath())} />
             ))}
             <button
               type="button"
-              onClick={() => navigate(credentialsPath())}
+              onClick={() => navigate(connectorsPath())}
               className="flex items-center gap-2 rounded-xl border border-dashed border-border p-4 text-left text-muted transition-colors hover:border-accent hover:text-accent"
             >
               <LinkIcon />
@@ -513,8 +503,8 @@ export function Component() {
                   <button
                     key={k}
                     type="button"
-                    onClick={() => navigate(credentialsPath())}
-                    title="Manage in Credentials"
+                    onClick={() => navigate(connectorsPath())}
+                    title="Manage in Connectors"
                     className="rounded-md border border-border bg-surface px-2.5 py-1 font-mono text-xs text-fg transition-colors hover:bg-panel"
                   >
                     {k}
@@ -522,7 +512,7 @@ export function Component() {
                 ))}
                 <button
                   type="button"
-                  onClick={() => navigate(credentialsPath())}
+                  onClick={() => navigate(connectorsPath())}
                   className="rounded-md border border-dashed border-border px-2.5 py-1 text-xs text-muted transition-colors hover:border-accent hover:text-accent"
                 >
                   + Add key
@@ -531,9 +521,6 @@ export function Component() {
             </div>
           )}
         </section>
-
-        {/* The skill gallery, folded in below the cockpit — one home page, not two. */}
-        <SkillGallery embedded />
       </main>
 
       {remoteOpen && (
@@ -556,16 +543,7 @@ export function Component() {
           }}
         />
       )}
-      {mineOpen && (
-        <MineDialog
-          onClose={() => setMineOpen(false)}
-          onStarted={(terminalId) => {
-            setMineOpen(false);
-            void refreshMining();
-            navigate(sessionsPath(terminalId)); // land in the run's conversation
-          }}
-        />
-      )}
+      {openDialogOpen && <OpenSkillDialog onClose={() => setOpenDialogOpen(false)} />}
     </div>
   );
 }

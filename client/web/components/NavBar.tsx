@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { VibeStudioMark } from "./VibeStudioMark";
 import { ThemeToggle } from "./ui";
 import RemoteMenu from "./RemoteMenu";
-import { credentialsPath, studioPath } from "@/lib/routes";
+import { connectorsPath, studioPath } from "@/lib/routes";
 import { useRecents } from "@/lib/recents";
 import { useSessions } from "@/lib/sessions";
 import { useUpdate } from "@/lib/updates";
@@ -37,7 +37,7 @@ function StudioIcon() {
   );
 }
 
-/** A persistent app-nav link (Sessions, Credentials) shown on every page; the entry
+/** A persistent app-nav link (Sessions, Connectors) shown on every page; the entry
  *  for the current page reads as active. `dot` is the same blue unread dot as the
  *  session rail's — "an agent finished a turn somewhere you aren't looking". */
 function NavLink({
@@ -84,7 +84,7 @@ function NavLink({
  *   2. Page chrome — the page's own `children` actions (e.g. Studio's Review/Manage/
  *      Export). Owned by the page; they sit in the bar only because there's room, and
  *      may move into the page body later.
- *   3. Destinations (pages) — Sessions, Credentials (Home = the brand). Always navigation;
+ *   3. Destinations (pages) — Sessions, Connectors (Home = the brand). Always navigation;
  *      the current page reads active.
  *   4. Status / controls — Remote (connection status) and the theme toggle. Global.
  *
@@ -200,7 +200,7 @@ export default function NavBar({
           onClick={onSessionsClick}
           dot={sessionsUnread}
         />
-        <NavLink icon={<KeyIcon />} label="Credentials" active={pathname === "/credentials"} onClick={() => navigate(credentialsPath())} />
+        <NavLink icon={<KeyIcon />} label="Connectors" active={pathname === "/connectors"} onClick={() => navigate(connectorsPath())} />
         <span className="mx-0.5 h-5 w-px bg-border sm:mx-1" aria-hidden />
         {/* (4) status + controls — Remote (connection status) + theme toggle, the global utility corner */}
         <RemoteMenu />

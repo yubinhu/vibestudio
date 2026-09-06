@@ -11,7 +11,7 @@ SSH hosts, so browser storage alone cannot safely scope filesystem defaults.
 | --- | --- | --- |
 | Folder browser location | Every mount called `listDir("")`, starting at Home. Session Browse ignored the working-directory field. | `preferences.json` remembers confirmed selections independently for Open, Import, and Session. An explicit form directory takes precedence. Missing/unreadable directories fall back to the remembered directory, then Home. Cancelling does not save a location. |
 | Session launch defaults | Origin-wide `localStorage`, per-agent cwd/flags; the selected agent always reset to the first detected agent. Local paths could follow the client onto an SSH server. | Per-agent settings and last agent are stored on the active server. The current skill's folder still overrides the remembered cwd. A successful launch saves the resolved cwd. |
-| Recently opened work | Already stored in server `recents.json`; successful skill and standalone Markdown opens recorded it. Only eight items were kept. The home page embedded the library with its Recent strip disabled, hiding history entirely. | Home shows the latest six entries in a horizontal Recent section; View all opens up to 30 entries with type, full path, last-opened time, filters/search, and removal. Reopening bumps an item without duplicates. Older entries remain readable without timestamps. |
+| Recently opened work | Already stored in server `recents.json`; successful skill and standalone Markdown opens recorded it. Only eight items were kept. The home page embedded the library with its Recent strip disabled, hiding history entirely. | Home shows the latest four entries as compact Recent shortcuts. The server keeps up to 30 records; reopening bumps an item without duplicates. Older entries remain readable without timestamps. |
 | History writes | Unlocked whole-file rewrites; client writes could race, and a cold-start read could replace a newer optimistic entry. | File locks serialize writes across server processes; temporary files and rename prevent torn JSON. Client requests are serialized, late reads cannot erase pending changes, and failures are visible in Recent. |
 | Theme, studio accordion/widths, session rail width | Browser `localStorage`. | Retained as client presentation preferences. They are still origin-scoped, so a different loopback port/browser has separate visual settings. |
 | Session order and viewed/unread marks | Browser `localStorage`, indexed by tmux session ID. | Retained as viewer state. This does not synchronize read status or ordering between clients. |
@@ -32,13 +32,12 @@ retained if migration cannot finish; an SSH server never inherits local paths.
 
 ## Recent in the existing UI
 
-The dashboard, embedded skill gallery, navigation targets, and editor toolbar
-retain their original layout and behavior. A horizontal **Recent** section
-below Home's greeting shows the latest six entries as compact cards. Cards open
-directly and scroll horizontally on narrower screens. **View all** opens searchable
-history; **Open…** opens the remembered file picker. Opening an entry routes to the existing
-skill or standalone Markdown editor. Removing a recent entry only removes its
-history record; it does not delete the underlying file or skill.
+Home's **Recent** section shows the latest four entries as compact links, with
+each item's name and path. The links wrap into fewer columns on narrow screens.
+Opening an entry routes to the skill or standalone Markdown editor. The page
+header's **Open** action accepts a path or opens the remembered file picker through **Browse…**.
+Removing a recent entry only removes its history record; it does not delete the
+underlying file or skill.
 
 ## Validation
 
@@ -54,8 +53,8 @@ late history reads, ordered mutations, failed writes, and remote migration guard
 The isolated HTTP test covers persisted defaults/history across server instances,
 proxied reads/writes, invalid directories, and corrupt-file preservation. It needs
 permission to bind loopback ports. Headless Chromium screenshots of Home, Studio,
-Sessions, Recent search, the remembered picker, and Home at 390px were inspected.
-Recent skill/Markdown reopening, search, and confirmed-folder restoration passed
+Sessions, the remembered picker, and Home at 390px were inspected.
+Recent skill/Markdown reopening and confirmed-folder restoration passed
 against an isolated server and temporary files. Discovery used a fixture to avoid
 auto-tracking the user's skills. There were no JavaScript exceptions or failed
 requests; the standalone fixture returned its expected 404s for unavailable

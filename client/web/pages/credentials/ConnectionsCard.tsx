@@ -162,7 +162,7 @@ function ConnectDialog({
   }, [attempt, onDone]);
 
   return (
-    <Modal title={reconnect ? `Reconnect ${reconnect.label}` : "Add connection"} onClose={onClose}>
+    <Modal title={reconnect ? `Reconnect ${reconnect.label}` : "Add connector"} onClose={onClose}>
       {attempt ? (
         <div className="space-y-3 px-5 py-4">
           <p className="text-sm text-muted">Approve the sign-in in your browser. If no tab opened, use the button below.</p>
@@ -338,7 +338,7 @@ export default function ConnectionsCard() {
       setErr(null);
     } catch (e) {
       setConnections((c) => c ?? []);
-      setErr(e instanceof Error ? e.message : "Couldn’t load connections");
+      setErr(e instanceof Error ? e.message : "Couldn’t load connectors");
     }
   }, []);
   useEffect(() => {
@@ -379,31 +379,31 @@ export default function ConnectionsCard() {
           <PlugIcon />
         </span>
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-fg">Connections</h2>
+          <h2 className="text-sm font-semibold text-fg">Managed connectors</h2>
           <p className="text-xs text-muted">
             Services your agents can use. Sign in once — VibeStudio holds the keys.
           </p>
         </div>
         {connections !== null && connections.length > 0 && (
           <button type="button" onClick={() => setDialog({})} className={`ml-auto shrink-0 ${btnGhost}`}>
-            Add connection
+            Add connector
           </button>
         )}
       </header>
 
       {connections === null ? (
         <p className="flex items-center gap-2 px-5 py-6 text-sm text-muted">
-          <Spinner className="h-3.5 w-3.5" /> Loading connections…
+          <Spinner className="h-3.5 w-3.5" /> Loading connectors…
         </p>
       ) : (
         <div className="space-y-4 px-5 py-5">
           {connections.length === 0 ? (
             <div className="space-y-3 rounded-lg border border-dashed border-border px-3 py-6 text-center">
               <p className="text-xs text-faint">
-                No connections yet. Connect a service and every agent terminal can use it — no keys to copy.
+                No connectors managed by VibeStudio yet. Connect a service to make it available to your supported agents.
               </p>
               <button type="button" onClick={() => setDialog({})} className={btnPrimary}>
-                Add connection
+                Add connector
               </button>
             </div>
           ) : (

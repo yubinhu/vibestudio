@@ -22,7 +22,7 @@ export const router = createHashRouter([
       // The skill gallery is embedded on the home dashboard now; /skills redirects
       // there (the per-skill editor still lives at /skills/:root below).
       { path: "skills", element: <Navigate to="/" replace /> },
-      { path: "credentials", lazy: () => import("@/pages/credentials/CredentialsRoute") },
+      { path: "connectors", lazy: () => import("@/pages/credentials/CredentialsRoute") },
       { path: "mining", lazy: () => import("@/pages/mining/MiningRoute") },
       // The Sessions UI is the always-mounted host in AppShell; this route only
       // owns the URL/visibility, so its own element renders nothing.
@@ -40,7 +40,8 @@ export const router = createHashRouter([
       // StudioContext/git/skill chrome) — it only shares AppShell + the editor.
       { path: "markdown/:path", lazy: () => import("@/pages/markdown/MarkdownRoute") },
       // Back-compat redirects from the pre-rename URLs (studio → skills, etc.).
-      { path: "secrets", element: <RenamedRoute to="credentials" /> },
+      { path: "credentials", element: <RenamedRoute to="connectors" /> },
+      { path: "secrets", element: <RenamedRoute to="connectors" /> },
       { path: "terminals", element: <RenamedRoute to="sessions" /> },
       { path: "studio/*", element: <RenamedRoute to="skills" /> },
       { path: "*", element: <Navigate to="/" replace /> },
