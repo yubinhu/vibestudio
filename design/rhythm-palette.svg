@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="850" viewBox="0 0 1200 850">
+<title>Rhythm logo and color palette</title>
+<desc>A vector recreation of the lime and dark teal V logo, paired with eight coordinated colors and their hex codes.</desc>
+<rect width="1200" height="850" fill="#FBFBF9"/>
+<rect width="1200" height="254" fill="#152B2F"/>
+<g transform="translate(48 41) scale(0.18454935622317598) translate(-168.0 -120.0)">
+  <title>Rhythm V logo</title>
+  <desc>Lime rounded tile with a dark teal V and a transparent diagonal break in its right arm. Recreated as editable vector paths with solid colors.</desc>
+  <rect id="Lime-background" x="168" y="120" width="919" height="932" rx="210" fill="#D2F16A"/>
+  <g id="Rhythm-mark" fill="#152B2F">
+    <path id="V-main" d="
+      M 339.57 369
+      C 334.40 357.23 330.51 350.33 330.51 336.80
+      C 330.51 297.96 361.26 267.65 400.60 267.65
+      C 435.51 267.65 459.19 290.00 471.79 320
+      L 606.13 640
+      C 609.91 649.01 613.66 659.35 626.20 659.35
+      C 637.98 659.35 642.13 648.73 645.82 640
+      L 706.34 496.91
+      L 885.66 428.63
+      L 688.27 875
+      C 676.69 901.19 654.90 919.30 624.60 919.30
+      C 593.64 919.30 573.36 901.48 561.73 875
+      Z"/>
+    <path id="V-detached-tip" d="
+      M 720.80 461.84
+      L 781.17 320
+      C 793.94 289.82 816.57 267.60 852.10 267.60
+      C 891.78 267.60 920.51 298.42 920.51 336.80
+      C 920.51 349.63 915.87 357.66 910.99 369
+      L 900.45 393.49
+      Z"/>
+  </g>
+</g>
+<g font-family="Arial, Helvetica, sans-serif">
+<text x="252" y="81" fill="#D2F16A" font-size="14" letter-spacing="2">V / RHYTHM</text>
+<text x="252" y="139" fill="#FBFBF9" font-size="44" font-weight="700">Lime &amp; teal palette</text>
+<text x="252" y="179" fill="#FBFBF9" font-size="21">Bright lime, deep teal and soft neutrals.</text>
+<text x="48" y="306" fill="#152B2F" font-size="14" letter-spacing="1.8">PRIMARY + SUPPORTING COLORS</text>
+<g id="lime">
+<rect x="48" y="332" width="258" height="108" rx="8" fill="#D2F16A" stroke="none"/>
+<text x="48" y="471" fill="#152B2F" font-size="19" font-weight="700">Lime</text>
+<text x="306" y="471" text-anchor="end" fill="#152B2F" font-family="Courier New, monospace" font-size="17">#D2F16A</text>
+<text x="48" y="500" fill="#152B2F" font-size="16">Primary brand</text>
+</g>
+<g id="ink">
+<rect x="330" y="332" width="258" height="108" rx="8" fill="#152B2F" stroke="none"/>
+<text x="330" y="471" fill="#152B2F" font-size="19" font-weight="700">Ink</text>
+<text x="588" y="471" text-anchor="end" fill="#152B2F" font-family="Courier New, monospace" font-size="17">#152B2F</text>
+<text x="330" y="500" fill="#152B2F" font-size="16">Logo &amp; primary text</text>
+</g>
+<g id="teal">
+<rect x="612" y="332" width="258" height="108" rx="8" fill="#2D646A" stroke="none"/>
+<text x="612" y="471" fill="#152B2F" font-size="19" font-weight="700">Deep Teal</text>
+<text x="870" y="471" text-anchor="end" fill="#152B2F" font-family="Courier New, monospace" font-size="17">#2D646A</text>
+<text x="612" y="500" fill="#152B2F" font-size="16">Secondary actions</text>
+</g>
+<g id="moss">
+<rect x="894" y="332" width="258" height="108" rx="8" fill="#617A32" stroke="none"/>
+<text x="894" y="471" fill="#152B2F" font-size="19" font-weight="700">Moss</text>
+<text x="1152" y="471" text-anchor="end" fill="#152B2F" font-family="Courier New, monospace" font-size="17">#617A32</text>
+<text x="894" y="500" fill="#152B2F" font-size="16">Supporting accent</text>
+</g>
+<g id="sage">
+<rect x="48" y="536" width="258" height="108" rx="8" fill="#A7BCAB" stroke="none"/>
+<text x="48" y="675" fill="#152B2F" font-size="19" font-weight="700">Soft Sage</text>
+<text x="306" y="675" text-anchor="end" fill="#152B2F" font-family="Courier New, monospace" font-size="17">#A7BCAB</text>
+<text x="48" y="704" fill="#152B2F" font-size="16">Quiet fills</text>
+</g>
+<g id="lime-mist">
+<rect x="330" y="536" width="258" height="108" rx="8" fill="#EFF7D3" stroke="#CDD6D3"/>
+<text x="330" y="675" fill="#152B2F" font-size="19" font-weight="700">Lime Mist</text>
+<text x="588" y="675" text-anchor="end" fill="#152B2F" font-family="Courier New, monospace" font-size="17">#EFF7D3</text>
+<text x="330" y="704" fill="#152B2F" font-size="16">Highlight backgrounds</text>
+</g>
+<g id="stone">
+<rect x="612" y="536" width="258" height="108" rx="8" fill="#DCE3DC" stroke="#CDD6D3"/>
+<text x="612" y="675" fill="#152B2F" font-size="19" font-weight="700">Stone</text>
+<text x="870" y="675" text-anchor="end" fill="#152B2F" font-family="Courier New, monospace" font-size="17">#DCE3DC</text>
+<text x="612" y="704" fill="#152B2F" font-size="16">Dividers &amp; neutral fills</text>
+</g>
+<g id="paper">
+<rect x="894" y="536" width="258" height="108" rx="8" fill="#FBFBF9" stroke="#CDD6D3"/>
+<text x="894" y="675" fill="#152B2F" font-size="19" font-weight="700">Paper</text>
+<text x="1152" y="675" text-anchor="end" fill="#152B2F" font-family="Courier New, monospace" font-size="17">#FBFBF9</text>
+<text x="894" y="704" fill="#152B2F" font-size="16">Page background</text>
+</g>
+<text x="48" y="800" fill="#152B2F" font-size="17">Use Lime for emphasis, Ink for text, and Paper for space. Pair Lime with Ink for strong contrast.</text>
+</g>
+</svg>

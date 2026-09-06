@@ -4,35 +4,40 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
+  color-scheme: light;
+  accent-color: var(--accent);
   /* Font stacks: Inter (self-hosted via @fontsource) leads, system fonts fall back. */
   --font-geist-sans: "Inter", "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-geist-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
-  /* Brand vs accent: --brand is the deep navy-teal of the hexagon mark (identity:
-     the nav lockup), while --accent is a mid-depth teal in the same hue family for
-     everything interactive. Keeping them apart is deliberate — at #00364a the
-     accent read as black, so links, focus rings and primary buttons lost their
-     color; interaction needs chroma, identity needs depth. */
-  --brand: #00364a;
-  --bg: #ffffff;
+  /* Identity colors stay faithful to design/vibestudio-logo.svg. Lime fills
+     use ink text; links and focus rings use a darker moss on light surfaces.
+     See design/visual-system.md for roles, contrast and asset generation. */
+  --brand-lime: #d2f16a;
+  --brand-ink: #152b2f;
+  --brand: var(--brand-ink);
+  --bg: #fbfbf9;
   --surface: #ffffff;
-  --panel: #f4f5f6;
-  --border: #e6e8ea;
-  --border-strong: #d4d7da;
-  --fg: #1d2b30;
-  --muted: #6b747a;
-  --faint: #9aa1a6;
-  --accent: #0d6e8c;
-  --accent-strong: #09556e;
-  --accent-soft: #e1eff4;
-  --accent-fg: #ffffff; /* readable text/icon on an accent-filled surface */
-  --code-bg: #f1f3f3;
-  --sel: rgba(13, 110, 140, 0.16);
-  --mark: #9aa1a6;
-  --error: #d4380d;
-  --warning: #a16207;
-  --info: #0d6e8c;
-  --ok: #1f9d6b;
+  --panel: #f1f4ed;
+  --border: #dce3dc;
+  --border-strong: #b9c5ba;
+  --fg: #152b2f;
+  --muted: #5e706b;
+  --faint: #63736b;
+  --accent: #526719;
+  --accent-strong: #405214;
+  --accent-soft: #eff7d3;
+  --action: var(--brand-lime);
+  --action-hover: #c4e453;
+  --action-fg: var(--brand-ink);
+  --code-bg: #f0f3ed;
+  --sel: rgba(97, 122, 50, 0.20);
+  --mark: #718079;
+  --error: #bb3c27;
+  --danger-fg: #ffffff;
+  --warning: #91610b;
+  --info: #2d646a;
+  --ok: #26734d;
 
   /* Syntax palette (GitHub Light) */
   --sx-comment: #6e7781;
@@ -48,30 +53,28 @@
 }
 
 .dark {
-  /* Teal-tinted dark to echo the brand navy-teal; pale logo flips in. */
-  --brand: #d2ecf2;
-  --bg: #0f1518;
-  --surface: #141c1f;
-  --panel: #1a2226;
-  --border: #283034;
-  --border-strong: #384248;
-  --fg: #e6edf0;
-  --muted: #8b969c;
-  --faint: #5d676d;
-  /* A clear sky-teal: bright enough to be link text on --bg, colored enough that
-     accent fills read as teal buttons rather than glowing white (the old #d2ecf2
-     was within a hair of --fg). Fills keep dark navy text via --accent-fg. */
-  --accent: #4cc2e0;
-  --accent-strong: #6fd2ec;
-  --accent-soft: #0d2e3a;
-  --accent-fg: #04293a;
-  --code-bg: #1c2529;
-  --sel: rgba(76, 194, 224, 0.2);
-  --mark: #5d676d;
-  --error: #ff7875;
-  --warning: #fab005;
-  --info: #4cc2e0;
-  --ok: #46c08c;
+  color-scheme: dark;
+  --brand: #eff4eb;
+  --bg: #101c1e;
+  --surface: #152426;
+  --panel: #203235;
+  --border: #304448;
+  --border-strong: #4b6264;
+  --fg: #eff4eb;
+  --muted: #a9b6b0;
+  --faint: #8da097;
+  --accent: var(--brand-lime);
+  --accent-strong: #e0fa91;
+  --accent-soft: #2c3b25;
+  --action-hover: #e0fa91;
+  --code-bg: #203235;
+  --sel: rgba(210, 241, 106, 0.20);
+  --mark: #81958e;
+  --error: #ff9380;
+  --danger-fg: var(--brand-ink);
+  --warning: #eac16c;
+  --info: #8dcbd0;
+  --ok: #85c99d;
 
   /* Syntax palette (GitHub Dark) */
   --sx-comment: #8b949e;
@@ -99,7 +102,10 @@
   --color-accent: var(--accent);
   --color-accent-strong: var(--accent-strong);
   --color-accent-soft: var(--accent-soft);
-  --color-accent-fg: var(--accent-fg);
+  --color-action: var(--action);
+  --color-action-hover: var(--action-hover);
+  --color-action-fg: var(--action-fg);
+  --color-danger-fg: var(--danger-fg);
   --color-danger: var(--error);
   --color-warn: var(--warning);
   --color-info: var(--info);
@@ -117,6 +123,12 @@ body {
   font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* A visible, theme-aware keyboard focus ring across shared controls. */
+:where(button, a, input, select, textarea, [role="tab"]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 ::selection {
@@ -410,8 +422,8 @@ body {
   margin: 0;
   padding: 0;
   border-radius: 50%;
-  background: var(--accent);
-  color: var(--accent-fg);
+  background: var(--action);
+  color: var(--action-fg);
   font-size: 13px;
   font-weight: 600;
   line-height: 15px;

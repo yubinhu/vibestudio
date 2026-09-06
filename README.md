@@ -1,3 +1,5 @@
+<img src="./design/vibestudio-logo.svg" alt="VibeStudio logo" width="72" height="73">
+
 # VibeStudio
 
 Manage the coding agents running on your machine — from anywhere. Available on macOS, Linux, Windows, iPhone, and Android.

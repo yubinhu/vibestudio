@@ -661,7 +661,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
           }
           className={`rounded-md px-2 py-0.5 text-xs font-medium shadow-sm transition ${
             selectMode
-              ? "pointer-events-auto bg-accent text-accent-fg"
+              ? "pointer-events-auto bg-action text-action-fg"
               : "pointer-events-none border border-border bg-surface/85 text-muted opacity-0 backdrop-blur hover:bg-panel hover:text-fg focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100"
           }`}
         >

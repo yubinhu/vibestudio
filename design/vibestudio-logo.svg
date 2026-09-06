@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="932" viewBox="168 120 920 932" fill="none">
+  <title>Rhythm V logo</title>
+  <desc>Lime rounded tile with a dark teal V and a transparent diagonal break in its right arm. Recreated as editable vector paths with solid colors.</desc>
+  <rect id="Lime-background" x="168" y="120" width="919" height="932" rx="210" fill="#D2F16A"/>
+  <g id="Rhythm-mark" fill="#152B2F">
+    <path id="V-main" d="
+      M 339.57 369
+      C 334.40 357.23 330.51 350.33 330.51 336.80
+      C 330.51 297.96 361.26 267.65 400.60 267.65
+      C 435.51 267.65 459.19 290.00 471.79 320
+      L 606.13 640
+      C 609.91 649.01 613.66 659.35 626.20 659.35
+      C 637.98 659.35 642.13 648.73 645.82 640
+      L 706.34 496.91
+      L 885.66 428.63
+      L 688.27 875
+      C 676.69 901.19 654.90 919.30 624.60 919.30
+      C 593.64 919.30 573.36 901.48 561.73 875
+      Z"/>
+    <path id="V-detached-tip" d="
+      M 720.80 461.84
+      L 781.17 320
+      C 793.94 289.82 816.57 267.60 852.10 267.60
+      C 891.78 267.60 920.51 298.42 920.51 336.80
+      C 920.51 349.63 915.87 357.66 910.99 369
+      L 900.45 393.49
+      Z"/>
+  </g>
+</svg>

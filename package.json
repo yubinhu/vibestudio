@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "cd client/desktop && tauri",
     "dev": "cd client/desktop && tauri dev",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "icons:generate": "node scripts/generate-brand-assets.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",

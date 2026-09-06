@@ -198,7 +198,7 @@ export default function FolderPicker({
             type="button"
             onClick={() => listing && void select(listing.path)}
             disabled={!listing || loading || saving || !!error}
-            className="ml-auto shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-40"
+            className="ml-auto shrink-0 rounded-md bg-action px-3 py-1.5 text-sm font-medium text-action-fg disabled:opacity-40"
           >
             {saving ? "Selecting…" : selectLabel ?? "Open this folder"}
           </button>

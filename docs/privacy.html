@@ -5,93 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Privacy Policy — VibeStudio</title>
 <meta name="description" content="Privacy policy for the VibeStudio desktop and iOS apps. No accounts, no analytics, no tracking, no data collected.">
-<style>
-  :root {
-    --bg: #fbfaf7;
-    --fg: #22211e;
-    --muted: #6e6d67;
-    --accent: #2f5fd0;
-    --rule: #e7e5de;
-    --card: #f1efe9;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #141413;
-      --fg: #e8e6e1;
-      --muted: #9b9992;
-      --accent: #8fb0ff;
-      --rule: #2b2a28;
-      --card: #1e1d1b;
-    }
-  }
-  * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 17px;
-    line-height: 1.65;
-  }
-  .wrap {
-    max-width: 680px;
-    margin: 0 auto;
-    padding: 3rem 1.5rem;
-  }
-  .home {
-    display: inline-block;
-    margin-bottom: 2rem;
-    color: var(--muted);
-    text-decoration: none;
-    font-size: 0.9rem;
-  }
-  .home:hover { color: var(--fg); }
-  h1 {
-    font-size: 1.7rem;
-    line-height: 1.25;
-    letter-spacing: -0.02em;
-    margin: 0 0 0.25rem;
-  }
-  .meta { color: var(--muted); margin: 0 0 2rem; }
-  h2 {
-    font-size: 1.15rem;
-    letter-spacing: -0.01em;
-    margin: 2.25rem 0 0.5rem;
-  }
-  p { margin: 0.75rem 0; }
-  a { color: var(--accent); }
-  a:hover { text-decoration: none; }
-  ul { padding-left: 1.25rem; margin: 0.75rem 0; }
-  li { margin: 0.4rem 0; }
-  code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.88em;
-    background: var(--card);
-    padding: 0.1em 0.35em;
-    border-radius: 5px;
-  }
-  .summary {
-    background: var(--card);
-    border-radius: 10px;
-    padding: 1rem 1.25rem;
-    margin: 1.5rem 0;
-  }
-  .summary p { margin: 0; }
-  footer {
-    margin-top: 4rem;
-    padding-top: 1.25rem;
-    border-top: 1px solid var(--rule);
-    color: var(--muted);
-    font-size: 0.9rem;
-  }
-  footer a { color: var(--muted); }
-  footer .links { display: flex; gap: 1.25rem; flex-wrap: wrap; }
-</style>
+<meta name="theme-color" content="#FBFBF9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101C1E" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/vibestudio-logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="brand.css">
 </head>
 <body>
 <div class="wrap">
-  <a class="home" href="index.html">&larr; VibeStudio</a>
+  <header>
+    <a class="brand" href="index.html" aria-label="VibeStudio home">
+      <img src="assets/vibestudio-logo.svg" alt="" width="40" height="41">
+      <span>VibeStudio</span>
+    </a>
+  </header>
 
   <main>
     <h1>Privacy Policy</h1>

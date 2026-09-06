@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { VibeStudioMark } from "./FileIcon";
+import { VibeStudioMark } from "./VibeStudioMark";
 import { ThemeToggle } from "./ui";
 import RemoteMenu from "./RemoteMenu";
 import { credentialsPath, studioPath } from "@/lib/routes";
@@ -138,8 +138,8 @@ export default function NavBar({
   const onSessionsClick = onSessions && !sessionsOpen ? onSessions : () => navigate("/sessions");
 
   const brand = (
-    <span className="flex items-center gap-1.5 text-brand">
-      <VibeStudioMark className="h-5 w-auto shrink-0" />
+    <span className="flex items-center gap-2 text-brand">
+      <VibeStudioMark className="h-7 w-7 shrink-0" />
       {/* Phones show just the mark (it's the home button and carries the brand);
           the wordmark + version appear at ≥sm, where there's room. Keeps the bar
           from crowding the destinations/status cluster off a narrow screen. */}
@@ -153,34 +153,36 @@ export default function NavBar({
   );
 
   return (
-    <header className="z-20 flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 overflow-hidden border-b border-border px-3 pt-[env(safe-area-inset-top)] text-sm">
+    <header className="z-20 flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 overflow-hidden border-b border-border px-2 sm:gap-2 sm:px-3 pt-[env(safe-area-inset-top)] text-sm">
       {/* (1) identity + location. This left side is the flex-shrink sink: on a
           narrow (phone) screen the brand holds and the breadcrumb truncates, so the
           destinations/status cluster on the right is never pushed past the viewport
           edge — the old bug, where the whole non-shrinking row overflowed the screen.
           overflow-hidden on the header is the hard backstop against any protrusion. */}
       {atHome ? (
-        <span className="shrink-0 px-1.5">{brand}</span>
+        <span className="shrink-0 px-1 sm:px-1.5">{brand}</span>
       ) : (
         <button
           type="button"
           onClick={() => navigate("/")}
           title="Back to home"
-          className="flex shrink-0 items-center rounded-md px-1.5 py-1 hover:bg-panel"
+          className="flex shrink-0 items-center rounded-md px-1 py-1 hover:bg-panel sm:px-1.5"
         >
           {brand}
         </button>
       )}
+      {/* Action-heavy pages already name the document in their content. On phones,
+          give those controls the breadcrumb's space so every action stays visible. */}
       {breadcrumb && (
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap [&>span]:min-w-0">{breadcrumb}</div>
+        <div className={`${children ? "hidden sm:flex" : "flex"} min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap [&>span]:min-w-0`}>{breadcrumb}</div>
       )}
       {/* (2-4) destinations + status — pinned (shrink-0), always fully visible */}
-      <div className="ml-auto flex shrink-0 items-center gap-1">
+      <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
         {/* Three visible buckets, divided to match the IA categories (see header):
             (2) page chrome | (3) destinations | (4) status + controls. */}
         {/* (2) page chrome — owned by the page, here only for space */}
         {children}
-        {children && <span className="mx-1 h-5 w-px bg-border" aria-hidden />}
+        {children && <span className="mx-0.5 h-5 w-px bg-border sm:mx-1" aria-hidden />}
         {/* (3) destinations — the persistent "pages" cluster, identical on every page.
             Studio has no singleton route (per-skill), so it points at the current/last skill
             (else Home); in Studio the Sessions link opens its projection, then navigates to
@@ -199,7 +201,7 @@ export default function NavBar({
           dot={sessionsUnread}
         />
         <NavLink icon={<KeyIcon />} label="Credentials" active={pathname === "/credentials"} onClick={() => navigate(credentialsPath())} />
-        <span className="mx-1 h-5 w-px bg-border" aria-hidden />
+        <span className="mx-0.5 h-5 w-px bg-border sm:mx-1" aria-hidden />
         {/* (4) status + controls — Remote (connection status) + theme toggle, the global utility corner */}
         <RemoteMenu />
         <ThemeToggle onClick={toggleTheme} />

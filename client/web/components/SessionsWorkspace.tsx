@@ -321,7 +321,7 @@ export default function SessionsWorkspace({
         <button
           type="button"
           onClick={() => setNewOpen(true)}
-          className="mt-3 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:opacity-90"
+          className="mt-3 rounded-md bg-action px-3 py-1.5 text-sm font-medium text-action-fg hover:opacity-90"
         >
           ＋ New session
         </button>

@@ -7,6 +7,7 @@
 // by AppShell whenever `mobile && status !== connected`; once connected, the normal
 // (remote-backed) workspace takes over, and disconnecting returns here.
 import { useEffect, useState } from "react";
+import { VibeStudioMark } from "@/components/VibeStudioMark";
 import { Spinner } from "@/components/ui";
 import { AddConnection, SavedConnections } from "@/components/connections";
 import { useRemote } from "@/lib/remote";
@@ -18,11 +19,7 @@ const CONNECTING = new Set<RemoteState>(["detecting", "installing", "launching",
 function Wordmark() {
   return (
     <div className="flex items-center gap-2">
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="text-brand">
-        <rect x="3" y="4" width="18" height="7" rx="1.5" />
-        <rect x="3" y="13" width="18" height="7" rx="1.5" />
-        <path d="M7 7.5h.01M7 16.5h.01" />
-      </svg>
+      <VibeStudioMark className="h-9 w-9 shrink-0" />
       <span className="text-lg font-semibold tracking-tight text-fg">VibeStudio</span>
     </div>
   );

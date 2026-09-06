@@ -73,12 +73,14 @@ Hash router (`createHashRouter`, Tauri webview) with one persistent shell + lazy
   **Versions** = history, click checks a version into the worktree · **Remote/GitHub**,
   collapsed). Center = `SkillDocument`/`FilePane`/diff. Layout prefs are **global**
   (`studioLayout.ts`), not per-skill. (The "Versions panel" below = `SourceControl.tsx`.)
-- **Design system** (`globals.css`): Tailwind v4, **no config** — CSS vars + `@theme inline`,
-  class-based dark (`.dark`, set pre-paint). **Two-axis palette: `--brand` (navy) = identity
-  only; `--accent` (teal) = all interaction.** Primitives: one `Modal`,
-  `btn{Primary,Ghost,Danger}` (one filled primary per row), `Badge` via `color-mix`,
-  `useConfirm` (`window.confirm` is a no-op in the `wry` webview). **Never render legacy company
-  branding in UI**; app name is "VibeStudio" (camelCase, one word).
+- **Design system** ([visual guide](design/visual-system.md), `globals.css`): Tailwind v4,
+  CSS variables + `@theme inline`, class-based dark (`.dark`, set pre-paint).
+  **Lime + ink identity:** `--action` / `--action-fg` pair for filled primary controls;
+  `--accent` for readable links, selected states and focus rings; semantic colors
+  for status. The full-color mark comes from `design/vibestudio-logo.svg` through
+  `VibeStudioMark`. Primitives: one `Modal`, `btn{Primary,Ghost,Danger}` (one filled
+  primary per row), `Badge` via `color-mix`, `useConfirm` (`window.confirm` is a no-op
+  in the `wry` webview). The app name is "VibeStudio" (one word).
 
 ## Workspace defaults and history
 

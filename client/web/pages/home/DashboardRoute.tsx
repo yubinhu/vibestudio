@@ -253,7 +253,7 @@ function PushNudge() {
         <p className="text-sm font-semibold text-fg">Turn notifications</p>
         <p className="text-xs text-muted">Get a push the moment an agent finishes — even with VibeStudio closed.</p>
       </div>
-      <button type="button" onClick={enable} className={`${actionBase} shrink-0 bg-accent text-accent-fg hover:bg-accent-strong`}>
+      <button type="button" onClick={enable} className={`${actionBase} shrink-0 bg-action text-action-fg hover:bg-action-hover`}>
         Enable
       </button>
       <button type="button" onClick={dismiss} aria-label="Not now" className="shrink-0 rounded-md p-1 text-muted transition-colors hover:bg-panel hover:text-fg">
@@ -336,7 +336,7 @@ export function Component() {
             <p className="mt-1.5 text-sm text-muted">Run, teach, and connect all your coding agents — from any device, anywhere.</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={openNewSession} className={`${actionBase} bg-accent text-accent-fg hover:bg-accent-strong`}>
+            <button type="button" onClick={openNewSession} className={`${actionBase} bg-action text-action-fg hover:bg-action-hover`}>
               <TerminalIcon />
               New session
             </button>
@@ -451,7 +451,7 @@ export function Component() {
           {sessions.length === 0 ? (
             <div className="flex flex-col items-start gap-3 rounded-xl border border-dashed border-border bg-surface p-6">
               <p className="text-sm text-muted">No agents running. Start a session to launch Claude Code, Codex, or a shell.</p>
-              <button type="button" onClick={openNewSession} className={`${actionBase} bg-accent text-accent-fg hover:bg-accent-strong`}>
+              <button type="button" onClick={openNewSession} className={`${actionBase} bg-action text-action-fg hover:bg-action-hover`}>
                 <TerminalIcon />
                 New session
               </button>

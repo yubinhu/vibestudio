@@ -1,0 +1,15 @@
+{
+  "name": "Rhythm — lime and teal",
+  "colorSpace": "sRGB",
+  "description": "The primary lime, dark teal and paper colors are representative median samples from the supplied textured logo image. Supporting tones are derived for a coordinated palette.",
+  "colors": [
+    {"id": "lime", "name": "Lime", "hex": "#D2F16A", "role": "Primary brand", "source": "Representative sample from the lime tile"},
+    {"id": "ink", "name": "Ink", "hex": "#152B2F", "role": "Logo & primary text", "source": "Representative sample from the dark teal mark"},
+    {"id": "teal", "name": "Deep Teal", "hex": "#2D646A", "role": "Secondary actions", "source": "Derived supporting teal"},
+    {"id": "moss", "name": "Moss", "hex": "#617A32", "role": "Supporting accent", "source": "Derived supporting green"},
+    {"id": "sage", "name": "Soft Sage", "hex": "#A7BCAB", "role": "Quiet fills", "source": "Derived muted green"},
+    {"id": "lime-mist", "name": "Lime Mist", "hex": "#EFF7D3", "role": "Highlight backgrounds", "source": "Derived pale lime tint"},
+    {"id": "stone", "name": "Stone", "hex": "#DCE3DC", "role": "Dividers & neutral fills", "source": "Derived pale neutral"},
+    {"id": "paper", "name": "Paper", "hex": "#FBFBF9", "role": "Page background", "source": "Representative sample from the reference background"}
+  ]
+}

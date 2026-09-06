@@ -8,7 +8,7 @@ import * as api from "@/lib/api";
 import type { ImportedSecret, SecretEntry, SecretsStatus } from "@/lib/api";
 
 const btnPrimary =
-  "rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40";
+  "rounded-md bg-action px-3 py-1.5 text-sm font-medium text-action-fg transition-opacity hover:opacity-90 disabled:opacity-40";
 const btnGhost =
   "rounded-md border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-panel disabled:opacity-40";
 

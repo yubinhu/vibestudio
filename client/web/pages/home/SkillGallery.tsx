@@ -397,7 +397,7 @@ function ProposedCard({
           disabled={busy}
           onClick={() => onAccept(skill.root)}
           title="Move this skill out of generated-skills/ into your skills home"
-          className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-accent-fg transition-colors hover:bg-accent-strong disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded-md bg-action px-2.5 py-1 text-xs font-medium text-action-fg transition-colors hover:bg-action-hover disabled:opacity-40"
         >
           {busy ? <Spinner className="h-3 w-3" /> : <CheckIcon />}
           Accept
@@ -452,10 +452,10 @@ function MineTile({
   const hasRun = mining != null && mining.status !== "idle";
   const [continuing, setContinuing] = useState(false);
   const shell = highlight
-    ? "border-transparent bg-accent text-accent-fg hover:bg-accent-strong"
+    ? "border-transparent bg-action text-action-fg hover:bg-action-hover"
     : "border-border bg-surface hover:border-border-strong hover:bg-panel";
   const linkCls = highlight
-    ? "text-accent-fg/85 hover:text-accent-fg disabled:opacity-60"
+    ? "text-action-fg/85 hover:text-action-fg disabled:opacity-60"
     : "text-accent hover:opacity-80 disabled:opacity-50";
   return (
     <div
@@ -475,7 +475,7 @@ function MineTile({
         <PickaxeIcon size={15} />
         Mine your conversations
       </span>
-      <span className={`text-xs ${highlight ? "text-accent-fg/80" : "text-muted"}`}>
+      <span className={`text-xs ${highlight ? "text-action-fg/80" : "text-muted"}`}>
         Create &amp; update skills from your past sessions
       </span>
       {/* Once a run exists, quiet shortcuts back to it — inner buttons stop the

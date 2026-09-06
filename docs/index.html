@@ -5,100 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VibeStudio — run coding agents on your own machines</title>
 <meta name="description" content="VibeStudio is a desktop and iOS app for running coding agents like Claude Code on your own computers, and for viewing, editing, versioning, and running Agent Skills. The iOS app connects to your machines directly over SSH.">
-<style>
-  :root {
-    --bg: #fbfaf7;
-    --fg: #22211e;
-    --muted: #6e6d67;
-    --accent: #2f5fd0;
-    --rule: #e7e5de;
-    --card: #f1efe9;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #141413;
-      --fg: #e8e6e1;
-      --muted: #9b9992;
-      --accent: #8fb0ff;
-      --rule: #2b2a28;
-      --card: #1e1d1b;
-    }
-  }
-  * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 17px;
-    line-height: 1.65;
-  }
-  .wrap {
-    max-width: 680px;
-    margin: 0 auto;
-    padding: 4.5rem 1.5rem 3rem;
-  }
-  h1 {
-    font-size: 2rem;
-    line-height: 1.2;
-    letter-spacing: -0.02em;
-    margin: 0 0 0.5rem;
-  }
-  .tagline {
-    font-size: 1.2rem;
-    color: var(--muted);
-    margin: 0 0 2.5rem;
-  }
-  h2 {
-    font-size: 1.15rem;
-    letter-spacing: -0.01em;
-    margin: 2.5rem 0 0.5rem;
-  }
-  p { margin: 0.75rem 0; }
-  a { color: var(--accent); }
-  a:hover { text-decoration: none; }
-  ul { padding-left: 1.25rem; margin: 0.75rem 0; }
-  li { margin: 0.4rem 0; }
-  .buttons {
-    display: flex;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-    margin: 1.5rem 0 0.5rem;
-  }
-  .btn {
-    display: inline-block;
-    padding: 0.6rem 1.1rem;
-    border-radius: 9px;
-    border: 1px solid var(--rule);
-    color: var(--fg);
-    text-decoration: none;
-    font-weight: 500;
-  }
-  .btn:hover { border-color: var(--muted); }
-  .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--bg);
-  }
-  .btn.primary:hover { opacity: 0.9; }
-  .note { color: var(--muted); font-size: 0.9rem; }
-  footer {
-    margin-top: 4rem;
-    padding-top: 1.25rem;
-    border-top: 1px solid var(--rule);
-    color: var(--muted);
-    font-size: 0.9rem;
-  }
-  footer a { color: var(--muted); }
-  footer .links { display: flex; gap: 1.25rem; flex-wrap: wrap; }
-</style>
+<meta name="theme-color" content="#FBFBF9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101C1E" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/vibestudio-logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="brand.css">
 </head>
-<body>
+<body class="landing">
 <div class="wrap">
   <header>
-    <h1>VibeStudio</h1>
-    <p class="tagline">Run coding agents on your own machines. From anywhere.</p>
+    <a class="brand" href="index.html" aria-label="VibeStudio home">
+      <img src="assets/vibestudio-logo.svg" alt="" width="40" height="41">
+      <span>VibeStudio</span>
+    </a>
+    <h1>Run coding agents on your own machines. From anywhere.</h1>
   </header>
 
   <main>

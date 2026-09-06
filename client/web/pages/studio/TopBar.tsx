@@ -88,7 +88,7 @@ export default function TopBar({
           aria-pressed={sidebarOpen}
           title="Files & versions"
           className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${
-            sidebarOpen ? "bg-accent text-accent-fg hover:opacity-90" : "text-muted hover:bg-panel hover:text-fg"
+            sidebarOpen ? "bg-action text-action-fg hover:opacity-90" : "text-muted hover:bg-panel hover:text-fg"
           }`}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -109,7 +109,7 @@ export default function TopBar({
               : "Review change mode — show changes since the last saved version"
           }
           className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${
-            reviewMode ? "bg-accent text-accent-fg hover:opacity-90" : "text-muted hover:bg-panel hover:text-fg"
+            reviewMode ? "bg-action text-action-fg hover:opacity-90" : "text-muted hover:bg-panel hover:text-fg"
           }`}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
