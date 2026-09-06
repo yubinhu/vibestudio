@@ -36,6 +36,7 @@ table, and the on-device commit-message reference example).
 - `npm run build` — `tsc --noEmit && vite build` (the SPA lives in `client/web`,
   built to `./dist` at the repo root).
 - `npm run lint` — ESLint.
+- `npm test` — release manifest and frontend workspace state tests.
 - **Mobile UX in a browser (no Mac/simulator):** `cargo run -p skill-server
   --features russh-transport -- --mobile-dev` + `npm run dev:vite`, then a phone
   viewport in the browser device toolbar. Mobile mode is server-detected (the

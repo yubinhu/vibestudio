@@ -477,12 +477,6 @@ pub fn git_log(root: &str, limit: usize) -> Result<Vec<Commit>, String> {
     Ok(commits)
 }
 
-/// The newest version's (number, subject), when the skill has any commits —
-/// used to label a GitHub sync with the local version it captures.
-pub fn latest_version(root: &str) -> Option<(usize, String)> {
-    git_log(root, 1).ok()?.into_iter().next().map(|c| (c.number, c.message))
-}
-
 /// Largest diff we ship to the UI. Skill repos are small; this only guards
 /// against a stray huge/binary blob blowing up the payload.
 const MAX_DIFF_BYTES: usize = 2_000_000;

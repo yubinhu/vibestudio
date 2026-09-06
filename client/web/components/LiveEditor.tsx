@@ -997,12 +997,12 @@ const imageCtx = Facet.define<ImageCtx, ImageCtx>({
 });
 
 type ImageEntry = { url: string } | { failed: true };
-// Keyed by `${root} ${rel}`. Module-scoped so it survives editor remounts
+// Keyed by `${root}\0${rel}`. Module-scoped so it survives editor remounts
 // (switching files, entering review) without refetching; never evicted — skills
 // hold a handful of small images, so a session won't accumulate many.
 const imageCache = new Map<string, ImageEntry>();
 const imageInFlight = new Set<string>();
-const imageKey = (root: string, rel: string) => `${root} ${rel}`;
+const imageKey = (root: string, rel: string) => `${root}\0${rel}`;
 
 // Recompute decorations when an image finishes loading (the cache changed).
 const bumpImages = StateEffect.define<null>();

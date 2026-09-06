@@ -73,15 +73,15 @@ Until you publish, **nothing reaches users** — a draft is invisible to the upd
    ```bash
    npm run build          # tsc --noEmit && vite build
    npm run lint           # eslint
-   node --test scripts/finalize-release.test.mjs
+   npm test               # release manifest and workspace state tests
    cargo test --workspace
    ```
    Also review the full diff since the last **published** release
    (`git diff vPREV..HEAD`) for potential bugs before proceeding.
 2. **Visual check — the 3 key pages.** Render and *look* (tsc won't catch layout
-   bugs). Screenshot **Home**, **Studio**, **Terminals** and confirm no console
+   bugs). Screenshot **Home**, **Studio**, **Sessions** and confirm no console
    errors. See "Screenshot harness" below. **Gotcha: the SPA is a hash router** —
-   `goto("…/studio/<root>")` lands on Home; you must use `…/#/studio/<root>`.
+   `goto("…/skills/<root>")` lands on Home; you must use `…/#/skills/<root>`.
 3. **Confirm the tag will be on-branch.** The tagged commit **must be an ancestor
    of `master` and pushed** (`git rev-list --left-right --count origin/master...HEAD`
    → `0  0`). This ensures releases contain reviewed code. Release jobs explicitly
@@ -150,7 +150,7 @@ VITE_API_TARGET=http://127.0.0.1:8799 npx vite --port 1421 --strictPort &
 Then drive `http://localhost:1421` with `playwright-core` if installed, or any
 headless Chromium/CDP harness against cached Chromium
 (`~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`). Studio needs a real
-skill root from `GET /api/skills/discover`, reached via `/#/studio/<encoded-root>`.
+skill root from `GET /api/skills/discover`, reached via `/#/skills/<encoded-root>`.
 
 ## Key facts & gotchas
 

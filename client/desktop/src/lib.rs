@@ -333,7 +333,7 @@ fn setup_desktop(
     engine::prefetch_model(); // start the one-time model download now, not on first Generate
 
     // SSH connection manager: provisions the release-matching `skill-server`
-    // onto remotes, so it needs the app version (from tauri.conf.json).
+    // onto remotes, using the app's Cargo package version stamped from the release tag.
     let remote = std::sync::Arc::new(SshRemoteControl::new(
         app.package_info().version.to_string(),
     ));

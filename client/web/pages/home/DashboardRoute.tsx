@@ -461,7 +461,7 @@ export function Component() {
           </section>
         )}
 
-        <SkillGallery embedded />
+        <SkillGallery />
 
         {/* Connectors — the detail view: each connection with its status + which
             agents it's wired to, plus your API keys by name. */}

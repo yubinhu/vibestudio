@@ -44,7 +44,7 @@ underlying file or skill.
 ```sh
 npm run build
 npm run lint
-node --test scripts/finalize-release.test.mjs scripts/workspace-state.test.mjs
+npm test
 cargo test --workspace
 ```
 

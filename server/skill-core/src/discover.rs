@@ -384,22 +384,6 @@ pub fn discover_and_autotrack() -> Result<Vec<AgentSkills>, String> {
     Ok(groups)
 }
 
-/// Roots of the user's own installed skills (personal kind, not staged
-/// proposals) — the set a mining run may edit in place, snapshotted at run
-/// start for provenance.
-pub fn personal_roots() -> Vec<String> {
-    discover_all()
-        .map(|groups| {
-            groups
-                .into_iter()
-                .flat_map(|g| g.skills)
-                .filter(|s| s.kind == "personal" && !s.proposed)
-                .map(|s| s.root)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

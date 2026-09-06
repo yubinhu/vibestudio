@@ -30,8 +30,9 @@
     <h2>What we collect</h2>
     <p>Nothing. The apps have no accounts to sign up for, contain no analytics or tracking code, and do not collect or transmit any personal data, usage data, or content to us or to anyone on our behalf.</p>
 
-    <h2>SSH keys</h2>
-    <p>The iOS app generates SSH key pairs on your device. The private key is stored in the iOS Keychain and never leaves your device — it is not backed up to us, synced through us, or visible to us in any way. The desktop app likewise keeps any secrets it manages in the macOS Keychain. Only the <em>public</em> key is ever shown to you, so you can install it on your own computers.</p>
+    <h2>SSH keys and managed secrets</h2>
+    <p>The iOS app generates SSH key pairs on your device. The private key is stored in the iOS Keychain, with an app-private file fallback if the native store cannot initialize. It never leaves your device — it is not backed up to us, synced through us, or visible to us in any way. Only the <em>public</em> key is shown so you can install it on your own computers.</p>
+    <p>Secrets you manage for coding agents are stored on the active computer in local JSON and shell environment files. On macOS and Linux, these files are restricted to your user account. Agents load these values into their environment when needed; VibeStudio does not store them in the macOS Keychain or send them to us.</p>
 
     <h2>Where your data goes</h2>
     <p>When you use VibeStudio, connections go directly from your device to computers <em>you</em> own and control, over SSH. Your code, terminal sessions, skills, and agent conversations travel only between your own devices. We have no server in the middle and no access to any of it.</p>

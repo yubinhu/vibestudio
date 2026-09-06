@@ -15,10 +15,6 @@
 //! [`exec_with_stdin`]: RusshSession::exec_with_stdin
 //! [`open_forward`]: RusshSession::open_forward
 //! [`open_lifeline`]: RusshSession::open_lifeline
-//!
-//! Status: the transport is built and proven end-to-end against real OpenSSH (see the
-//! integration test). Wiring it into `session.rs`/`provision.rs` behind the `Transport`
-//! seam is the next slice — until then these items are unused off the test path.
 #![allow(dead_code)]
 
 use std::path::PathBuf;

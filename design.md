@@ -60,11 +60,11 @@ Hash router (`createHashRouter`, Tauri webview) with one persistent shell + lazy
 **The shell never unmounts; each page mounts its own `NavBar`** (the shell does not).
 
 - **Shell** (`app/AppShell.tsx`) globally mounts only: the `<Outlet>` (hidden via
-  `display:none` on `/terminals`, not unmounted), an always-mounted `TerminalsHost` (live ptys
+  `display:none` on `/sessions`, not unmounted), an always-mounted `SessionsHost` (live ptys
   survive nav), and `UpdateBanner`. No `StrictMode` (would double-attach pty/xterm). Only guard:
   `useDiscardBlocker`, fires *only* after an autosave failure — no auth gate.
-- **Routes:** `/` Home · `/secrets` · `/mining` · `/terminals` (element `null`; UI is
-  `TerminalsHost`) · `/studio/:root` (children: index = SKILL.md form, `file/*` = file pane,
+- **Routes:** `/` Home · `/connectors` · `/mining` · `/sessions` (element `null`; UI is
+  `SessionsHost`) · `/skills/:root` (children: index = SKILL.md form, `file/*` = file pane,
   `commit/:sha` = worktree diff only) · `/markdown/:path` (standalone editor) · `*` → `/`.
 - **Studio** = full-height column: `TopBar` (**no Save button — autosave is wordless**; a
   *version* is a git commit) → `PreviewBanner` (past-version only) → **Sidebar | center Outlet |

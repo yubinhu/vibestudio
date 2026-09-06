@@ -1,6 +1,6 @@
 "use client";
 
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 /* Shared button classes — a lime primary with ink text and a bordered
    secondary/ghost. Exported as strings so the dialogs that
@@ -13,15 +13,6 @@ export const btnGhost =
 /** Destructive confirm action — semantic red with a theme-aware foreground. */
 export const btnDanger =
   "rounded-md bg-danger px-3 py-1.5 text-sm font-medium text-danger-fg transition-opacity hover:opacity-90 disabled:opacity-40";
-
-/** Primary/secondary button primitive for the common case (no custom sizing). */
-export function Button({
-  variant = "primary",
-  className = "",
-  ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" }) {
-  return <button {...props} className={`${variant === "primary" ? btnPrimary : btnGhost} ${className}`} />;
-}
 
 export type Tone = "default" | "accent" | "ok" | "warn" | "danger" | "info" | "muted";
 
@@ -65,14 +56,6 @@ export function Spinner({ className = "" }: { className?: string }) {
       className={`inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent ${className}`}
       aria-label="Loading"
     />
-  );
-}
-
-export function SectionLabel({ children }: { children: ReactNode }) {
-  return (
-    <div className="px-3 pb-1.5 pt-3 text-[0.68rem] font-semibold uppercase tracking-wider text-muted">
-      {children}
-    </div>
   );
 }
 

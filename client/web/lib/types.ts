@@ -53,7 +53,3 @@ export interface FileData {
   tooLarge?: boolean;
   isBinary?: boolean;
 }
-
-export interface ApiError {
-  error: string;
-}

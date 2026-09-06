@@ -152,12 +152,6 @@ export function normalizeMetadata(value: unknown): Record<string, string> | null
   return out;
 }
 
-/** Parse the space-separated `allowed-tools` string into individual tokens. */
-export function parseAllowedTools(value: unknown): string[] {
-  if (typeof value !== "string") return [];
-  return value.trim().split(/\s+/).filter(Boolean);
-}
-
 /**
  * `metadata` key skills use to declare the env vars their scripts read —
  * VibeStudio's own portable contract, auto-detected on save (see

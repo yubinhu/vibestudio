@@ -4,20 +4,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSkills, refreshSkills } from "@/lib/skills";
 import type { ReactNode } from "react";
 import { Spinner } from "@/components/ui";
-import NavBar from "@/components/NavBar";
-import { FileIcon, FolderIcon } from "@/components/FileIcon";
-import OpenSkillDialog from "@/components/OpenSkillDialog";
+import { FolderIcon } from "@/components/FileIcon";
 import NewSkillDialog from "./NewSkillDialog";
 import ImportSkillDialog from "./ImportSkillDialog";
 import MineDialog from "@/components/MineDialog";
 import { useConfirm } from "@/components/useConfirm";
-import { useRecents, removeRecent, type Recent } from "@/lib/recents";
+import { removeRecent } from "@/lib/recents";
 import { agentColor, kindMeta, KIND_TAG, AGENT_GROUP_INFO, type AgentGroupInfo } from "@/lib/agents";
 import * as api from "@/lib/api";
-import type { AgentSkills, DiscoveredSkill, MineState } from "@/lib/api";
+import type { AgentSkills, DiscoveredSkill } from "@/lib/api";
 import { useMining, refreshMining } from "@/lib/mining";
 import { useNavigate } from "react-router-dom";
-import { studioPath, markdownPath, miningPath, sessionsPath } from "@/lib/routes";
+import { studioPath, sessionsPath } from "@/lib/routes";
 
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 
@@ -423,99 +421,6 @@ function PickaxeIcon({ className = "", size = 13 }: { className?: string; size?:
   );
 }
 
-// Mining's tile — a peer of New/Open/Import wearing the filled-accent highlight
-// as the row's primary, since mining (not hand-authoring) is how skills get
-// made. Click = open the launch sheet. No progress/status: a run is an
-// interactive session that stays open after the work lands, so once one exists
-// the tile just offers a quiet shortcut back to it. New skills land in the grid below.
-function MineTile({
-  mining,
-  onMine,
-  onContinue,
-  onDetails,
-  highlight = true,
-  className = "",
-}: {
-  mining: MineState | null;
-  onMine: () => void;
-  onContinue: () => Promise<void>;
-  onDetails: () => void;
-  /** Filled-accent only as a new user's primary on-ramp; with recent work to
-   *  resume it fades to the same outline style as the cards around it. */
-  highlight?: boolean;
-  className?: string;
-}) {
-  const hasRun = mining != null && mining.status !== "idle";
-  const [continuing, setContinuing] = useState(false);
-  const shell = highlight
-    ? "border-transparent bg-action text-action-fg hover:bg-action-hover"
-    : "border-border bg-surface hover:border-border-strong hover:bg-panel";
-  const linkCls = highlight
-    ? "text-action-fg/85 hover:text-action-fg disabled:opacity-60"
-    : "text-accent hover:opacity-80 disabled:opacity-50";
-  return (
-    <div
-      onClick={onMine}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onMine();
-        }
-      }}
-      title="Mine your past conversations to create or update skills"
-      className={`group flex cursor-pointer flex-col gap-1.5 rounded-xl border p-4 text-left transition-colors ${shell} ${className}`}
-    >
-      <span className={`flex items-center gap-2 font-semibold ${highlight ? "" : "text-fg"}`}>
-        <PickaxeIcon size={15} />
-        Mine your conversations
-      </span>
-      <span className={`text-xs ${highlight ? "text-action-fg/80" : "text-muted"}`}>
-        Create &amp; update skills from your past sessions
-      </span>
-      {/* Once a run exists, quiet shortcuts back to it — inner buttons stop the
-          bubble so they don't also fire the tile's "start a run" click. */}
-      {hasRun && (
-        <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1 pt-1.5 text-xs font-medium">
-          <button
-            type="button"
-            disabled={continuing}
-            onClick={(e) => {
-              e.stopPropagation();
-              setContinuing(true);
-              void onContinue().finally(() => setContinuing(false));
-            }}
-            title="Reopens your last mining session — revived in a fresh terminal if it was closed"
-            className={linkCls}
-          >
-            {continuing ? "Opening…" : "Open last session"}
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDetails();
-            }}
-            title="Mining details — the latest run and its files"
-            className={linkCls}
-          >
-            Details
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function OpenIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
-    </svg>
-  );
-}
-
 /** A top-level section header — same tier as the dashboard's Sessions / At a
  *  glance headings so every section on the home page reads at one weight. */
 function SectionTitle({ children, trailing }: { children: ReactNode; trailing?: ReactNode }) {
@@ -527,115 +432,10 @@ function SectionTitle({ children, trailing }: { children: ReactNode; trailing?: 
   );
 }
 
-/** Quiet small-caps label for secondary regions (the mining aside, Examples). */
-function AsideLabel({ children }: { children: ReactNode }) {
-  return <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-faint">{children}</h2>;
-}
-
-// A recent item — a compact card in a single slim row up top. It's a quick
-// shortcut back into work, not the page's focus (that's "Your skills" below), so
-// it stays small.
-function RecentCard({ r, onOpen, onRemove }: { r: Recent; onOpen: () => void; onRemove: () => void }) {
-  return (
-    <div className="group relative h-full">
-      <button
-        type="button"
-        onClick={onOpen}
-        className="flex h-full w-full flex-col gap-1 rounded-xl border border-border bg-surface p-3 pr-8 text-left transition-all hover:-translate-y-0.5 hover:border-border-strong hover:bg-panel hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]"
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          {/* Folder vs file icon, as in the gallery — a loose markdown file reads
-              differently from a skill folder at a glance. */}
-          {r.kind === "markdown" ? <FileIcon name={r.name} /> : <FolderIcon open={false} name={r.name} />}
-          <span className="truncate text-sm font-semibold text-fg">{r.name}</span>
-        </span>
-        <span className="truncate font-mono text-[0.7rem] text-faint" title={r.root}>
-          {r.root}
-        </span>
-      </button>
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label={`Remove ${r.name} from recents`}
-        className="absolute right-2 top-2 rounded p-1 text-faint opacity-0 hover:text-danger group-hover:opacity-100"
-      >
-        ✕
-      </button>
-    </div>
-  );
-}
-
-// First-run / no-recents on-ramps, unified into one tile family: Mine leads as
-// the filled-accent primary, since mining (not hand-authoring) is how skills get
-// made, with New / Open / Import beside it as plain tiles (also in the toolbar).
-// The pointer below covers the "I already have skills" case.
-function StartPanel({
-  mining,
-  onMine,
-  onContinue,
-  onDetails,
-  onNew,
-  onOpen,
-  onImport,
-  count,
-}: {
-  mining: MineState | null;
-  onMine: () => void;
-  onContinue: () => Promise<void>;
-  onDetails: () => void;
-  onNew: () => void;
-  onOpen: () => void;
-  onImport: () => void;
-  count: number;
-}) {
-  const tileCls =
-    "flex flex-col gap-1.5 rounded-xl border border-border bg-surface p-4 text-left transition-colors hover:border-border-strong hover:bg-panel";
-  return (
-    <div>
-      <AsideLabel>Get started</AsideLabel>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <MineTile mining={mining} onMine={onMine} onContinue={onContinue} onDetails={onDetails} />
-        <button type="button" onClick={onNew} className={tileCls}>
-          <span className="flex items-center gap-2 font-semibold text-fg">
-            <PlusIcon />
-            New skill
-          </span>
-          <span className="text-xs text-muted">Start from a template</span>
-        </button>
-        <button type="button" onClick={onOpen} className={tileCls}>
-          <span className="flex items-center gap-2 font-semibold text-fg">
-            <OpenIcon />
-            Open a skill
-          </span>
-          <span className="text-xs text-muted">From a folder or path</span>
-        </button>
-        <button type="button" onClick={onImport} className={tileCls}>
-          <span className="flex items-center gap-2 font-semibold text-fg">
-            <ImportIcon />
-            Import
-          </span>
-          <span className="text-xs text-muted">From a folder, .skill or .zip</span>
-        </button>
-      </div>
-      {count > 0 && (
-        <p className="mt-3 text-xs text-muted">
-          …or pick from your <span className="font-medium text-fg">{count}</span> skills below.
-        </p>
-      )}
-    </div>
-  );
-}
-
-/** The skill gallery. `embedded` renders just the gallery (skills + examples +
- *  dialogs) for the home dashboard to drop below its cockpit; standalone renders
- *  the full page (nav + Recent/Mining strip). */
-export default function SkillGallery({ embedded = false }: { embedded?: boolean }) {
-  const recents = useRecents();
+/** The home dashboard's discovered skills and skill actions. */
+export default function SkillGallery() {
   const navigate = useNavigate();
   const onOpen = (p: string) => navigate(studioPath(p));
-  // Recents mix skills and loose markdown files; route each to the right place.
-  const openRecent = (r: Recent) => navigate(r.kind === "markdown" ? markdownPath(r.root) : studioPath(r.root));
-  const [openOpen, setOpenOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [mineOpen, setMineOpen] = useState(false);
@@ -668,18 +468,6 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
     }, 15000);
     return () => clearInterval(t);
   }, [mining?.status]);
-
-  // Reopen the run's conversation: the server returns its live terminal, or
-  // revives the recorded agent session in a fresh one if the pane was closed.
-  const continueMining = useCallback(async () => {
-    try {
-      const { terminalId } = await api.mineContinue();
-      void refreshMining(); // the record may now point at a new terminal
-      navigate(sessionsPath(terminalId));
-    } catch {
-      navigate(sessionsPath(mining?.terminalId));
-    }
-  }, [navigate, mining?.terminalId]);
 
   const acceptProposed = useCallback(
     async (root: string) => {
@@ -749,31 +537,18 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
   const groups = discovered;
   const totalFound = groups.reduce((n, g) => n + g.skills.length, 0);
 
-  // Skill actions live with the gallery on Home; opening arbitrary work belongs
-  // to the dashboard header. The standalone gallery keeps Open in its own nav.
+  // Skill actions live with the gallery; opening work belongs to the dashboard header.
   const actions = (
     <>
-      {embedded ? (
-        <button
-          type="button"
-          onClick={() => setMineOpen(true)}
-          title="Mine your past conversations to create or update skills"
-          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-accent hover:bg-accent-soft"
-        >
-          <PickaxeIcon size={15} />
-          <span className="text-xs font-medium">Mine</span>
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setOpenOpen(true)}
-          title="Open a skill or Markdown file"
-          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
-        >
-          <OpenIcon />
-          <span className="hidden text-xs sm:inline">Open</span>
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={() => setMineOpen(true)}
+        title="Mine your past conversations to create or update skills"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-accent hover:bg-accent-soft"
+      >
+        <PickaxeIcon size={15} />
+        <span className="text-xs font-medium">Mine</span>
+      </button>
       <button
         type="button"
         onClick={() => setNewOpen(true)}
@@ -781,7 +556,7 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
         className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
       >
         <PlusIcon />
-        <span className={embedded ? "text-xs" : "hidden text-xs sm:inline"}>New</span>
+        <span className="text-xs">New</span>
       </button>
       <button
         type="button"
@@ -790,7 +565,7 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
         className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
       >
         <ImportIcon />
-        <span className={embedded ? "text-xs" : "hidden text-xs sm:inline"}>Import</span>
+        <span className="text-xs">Import</span>
       </button>
     </>
   );
@@ -801,8 +576,8 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
         trailing={
           <>
             {discovering ? <Spinner className="h-3 w-3" /> : <span className="text-xs text-faint">{totalFound}</span>}
-            <div className={`ml-auto flex items-center gap-1 ${embedded ? "w-full sm:w-auto" : ""}`}>
-              {embedded && actions}
+            <div className="ml-auto flex w-full items-center gap-1 sm:w-auto">
+              {actions}
               <button
                 type="button"
                 onClick={() => void refreshSkills()}
@@ -879,69 +654,13 @@ export default function SkillGallery({ embedded = false }: { embedded?: boolean 
           }}
         />
       )}
-      {openOpen && <OpenSkillDialog onClose={() => setOpenOpen(false)} />}
     </>
   );
 
-  // Embedded on the home dashboard: just the gallery + dialogs (the page shell,
-  // nav, and the Recent/Mining strip belong to the dashboard).
-  if (embedded) {
-    return (
-      <>
-        {skillsSection}
-        {dialogs}
-      </>
-    );
-  }
-
   return (
-    <div className="flex min-h-dvh flex-col">
-      <NavBar>{actions}</NavBar>
-      <main className="mx-auto w-full max-w-7xl flex-1 px-6 pb-24 pt-10">
-        {/* Utility strip above the main gallery. With recent work to resume, that
-            leads (left) and mining rides alongside (right); on a fresh start there's
-            nothing to resume, so the row becomes the get-started on-ramps. */}
-        <section>
-          {recents.length > 0 ? (
-            <div className="grid gap-3 lg:grid-cols-3">
-              <div className="flex flex-col lg:col-span-2">
-                <AsideLabel>Recent</AsideLabel>
-                <div className="grid flex-1 auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {recents.slice(0, 3).map((r) => (
-                    <RecentCard key={r.root} r={r} onOpen={() => openRecent(r)} onRemove={() => removeRecent(r.root)} />
-                  ))}
-                </div>
-              </div>
-              <div className="flex flex-col lg:col-span-1">
-                <AsideLabel>Skill Mining</AsideLabel>
-                <MineTile
-                  mining={mining}
-                  onMine={() => setMineOpen(true)}
-                  onContinue={continueMining}
-                  onDetails={() => navigate(miningPath())}
-                  highlight={false}
-                  className="flex-1"
-                />
-              </div>
-            </div>
-          ) : (
-            <StartPanel
-              mining={mining}
-              onMine={() => setMineOpen(true)}
-              onContinue={continueMining}
-              onDetails={() => navigate(miningPath())}
-              onNew={() => setNewOpen(true)}
-              onOpen={() => setOpenOpen(true)}
-              onImport={() => setImportOpen(true)}
-              count={totalFound}
-            />
-          )}
-        </section>
-
-        {skillsSection}
-      </main>
-
+    <>
+      {skillsSection}
       {dialogs}
-    </div>
+    </>
   );
 }

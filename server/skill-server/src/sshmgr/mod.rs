@@ -2,7 +2,7 @@
 //! exposes over `/api/remote/*`. It shells out to the system `ssh` (inheriting the
 //! user's keys/config/ProxyJump) or, for a local WSL/WSL2 distro on Windows, to
 //! `wsl.exe`; it provisions a version-pinned `skill-server` on the target, launches it
-//! on a loopback port with a bearer token, and reaches it (`ssh -L` tunnel, or WSL's
+//! on a loopback port, and reaches it (`ssh -L` tunnel, or WSL's
 //! shared loopback); the local server then proxies `/api/*` to it (see `proxy.rs`).
 //!
 //! Lives server-side so BOTH entry points get it identically: the desktop's
@@ -58,8 +58,8 @@ fn set_stage(state: &Mutex<State>, generation: u64, stage: &str, host: &str, msg
 pub struct SshRemoteControl {
     state: Arc<Mutex<State>>,
     /// The version whose `skill-server-*` release asset we provision onto remotes —
-    /// the desktop passes its app version (from `tauri.conf.json`, stamped from the
-    /// tag); the standalone bin passes its own crate version.
+    /// both desktop and standalone pass their Cargo package version, stamped from
+    /// the release tag.
     app_version: String,
     /// Saved-connection credentials for the russh transport (the mobile
     /// switchboard). `None` on desktop/standalone — connects go through the

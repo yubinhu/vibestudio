@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Vendor the prebuilt llama.cpp `llama-server` engine (MIT-licensed) for the local
-# platform into client/desktop/binaries/<target-triple>/, so the app can bundle it and
-# spawn it on-device. CI runs this for every shipped target before `tauri build`.
+# platform into client/desktop/binaries/<target-triple>/ for optional on-device use.
+# Releases use coding-agent CLIs by default and do not bundle this engine.
 #
 #   scripts/fetch-engine.sh                 # latest llama.cpp release, host platform
 #   LLAMA_BUILD=b9484 scripts/fetch-engine.sh   # pin a specific release tag

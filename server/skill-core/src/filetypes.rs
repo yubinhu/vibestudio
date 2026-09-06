@@ -1,4 +1,4 @@
-// File extension -> (category, language, label), ported from lib/fileTypes.ts.
+// File extension -> (category, language, label), shared through the file APIs.
 // Categories: markdown | code | data | image | text | binary.
 
 fn ext_of(name: &str) -> String {

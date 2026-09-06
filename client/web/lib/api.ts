@@ -712,9 +712,6 @@ export const gitCommitDiff = (root: string, sha: string) =>
  *  in-editor diff overlay compares against. Empty string when absent at that rev. */
 export const gitFileAt = (root: string, rev: string, path: string) =>
   http<string>("POST", "git/file-at", { root, rev, path });
-/** The tracked file paths at a revision (a SHA or "HEAD") — for browsing a past
- *  version's files. */
-export const gitFilesAt = (root: string, rev: string) => http<string[]>("POST", "git/files-at", { root, rev });
 /** Discard one path's working-tree changes back to HEAD (tracked → restore,
  *  untracked → delete). Destructive — confirm before calling. */
 export const gitDiscard = (root: string, path: string) =>
@@ -1140,8 +1137,6 @@ export const editorOpen = (path: string) =>
 export const pushKey = () => http<{ key: string }>("GET", "push/key");
 export const pushSubscribe = (endpoint: string, keys: { p256dh: string; auth: string }) =>
   http<{ ok: boolean }>("POST", "push/subscribe", { endpoint, keys }).then(() => {});
-export const pushUnsubscribe = (endpoint: string) =>
-  http<{ ok: boolean }>("POST", "push/unsubscribe", { endpoint }).then(() => {});
 /** Focus beacon: a recently-focused client suppresses pushes server-side. */
 export const pushAttention = (client: string, focused: boolean) =>
   http<{ ok: boolean }>("POST", "push/attention", { client, focused }).then(() => {});

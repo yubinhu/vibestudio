@@ -47,7 +47,7 @@ struct ModelSpec {
 /// defaults thinking ON under `--jinja` and, for this model, buries the answer in
 /// `reasoning_content` leaving `content` empty, so we DISABLE it via
 /// `chat_template_kwargs {enable_thinking:false}`. Message quality relies on the
-/// structured-output `analysis` field (see `commitmsg::commit_schema`) as the
+/// structured-output `analysis` field (see `commit_agent::commit_schema`) as the
 /// model's reasoning channel.
 const MODEL: ModelSpec = ModelSpec {
     id: "qwen3.5-2b",
