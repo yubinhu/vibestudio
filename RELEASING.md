@@ -44,11 +44,11 @@ A release is driven by **pushing a `vX.Y.Z` git tag**, or manually dispatching
 4. `tauri-action` creates a **DRAFT** GitHub Release named `VibeStudio vX.Y.Z`
    and uploads each platform's bundles and updater `.sig` files. After all desktop
    and server builds succeed, one `finalize` job validates the complete asset set,
-   renames the three installers to stable names (`VibeStudio-macOS.dmg`,
-   `VibeStudio-Windows-x64-setup.exe`, `VibeStudio-Linux-x86_64.deb`), and generates
+   renames the installers and Mac update archive using the release commit's
+   [asset naming policy](release-assets.json), and generates
    one complete `latest.json` with all eight platform entries. Signatures stay in
    the release so retries can reconstruct the manifest. The macOS `.app.tar.gz`
-   is retained for auto-update.
+   is retained for auto-update. Windows and Linux updates reuse their installers.
 5. The build calls `provision-smoke` with the explicit tag. Each shipped server
    is checksum-verified, checked for the correct version, and booted on its native
    architecture. The build is green only after these checks pass.
@@ -58,6 +58,40 @@ A release is driven by **pushing a `vX.Y.Z` git tag**, or manually dispatching
    links are ready before publishing; no post-publication rename is required.
 
 Until you publish, **nothing reaches users** — a draft is invisible to the updater.
+
+## Asset names
+
+The release commit's `release-assets.json` is the source of truth for filenames.
+The packaging workflow, finalizer, smoke checks, and server provisioner share it.
+
+| Purpose | Filename |
+| --- | --- |
+| Human download: Mac installer | `VibeStudio-macos.dmg` (Apple silicon + Intel) |
+| Human download: Windows installer | `VibeStudio-windows.exe` (x64) |
+| Human download: Linux installer | `VibeStudio-linux.deb` (x64 Debian/Ubuntu) |
+| Automatic Mac update | `autoupdate-macos-universal.app.tar.gz` |
+| Update manifest | `latest.json` |
+| Apple silicon / Intel Mac servers | `server-macos-arm64` / `server-macos-x64` |
+| ARM64 / x64 Linux servers | `server-linux-arm64-musl` / `server-linux-x64-musl` |
+
+Signatures append `.sig` to the complete payload filename; server checksums append
+`.sha256`. Generate each checksum **after** naming its binary so the checksum file
+also contains the correct basename. Renaming desktop assets does not change their
+bytes or signatures. Keep the updater manifest's schema, platform keys, and signing
+key stable; only its payload URLs change.
+
+Historical tags without a naming policy retain their original filenames. The
+maintained finalizer reads both policy and signing key from the immutable release
+commit and refuses to rename published assets. Old released apps still provision
+their version-pinned server; the new provisioner tries both naming schemes at that
+version before trying latest. Update older unstamped development builds before
+using a latest release with the new server names, or pin them to an older release
+with `VIBESTUDIO_SERVER_VERSION=1.2.0`. New clients accept either naming scheme on
+custom download mirrors; mirrors serving older clients must retain legacy names.
+
+README downloads link to the latest release page so they work throughout the
+transition. Keep human installer links prominent in release notes; server,
+auto-update, and verification files are supporting assets.
 
 ## The process
 
@@ -129,10 +163,11 @@ Until you publish, **nothing reaches users** — a draft is invisible to the upd
    gh run watch "$(gh run list -w release-tidy --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
    gh release view vX.Y.Z --json isDraft,assets -q '.isDraft, [.assets[].name]'
    ```
-   Expect: the 3 renamed installers + `macos` `.app.tar.gz` + `latest.json` + the 4
-   `skill-server-*` binaries (+ `.sha256`) + updater `.sig` files. Verify the
+   Expect: the 3 renamed installers + `autoupdate-macos-universal.app.tar.gz` +
+   `latest.json` + the 4 `server-*` binaries (+ `.sha256`) + updater `.sig` files.
+   Historical releases keep the filenames defined by their original policy. Verify the
    [public feed](https://github.com/yubinhu/vibestudio/releases/latest/download/latest.json)
-   and the README's three download links without authentication.
+   and the three installer links from that release without authentication.
 
 ## Screenshot harness (headless, never touches the live app)
 

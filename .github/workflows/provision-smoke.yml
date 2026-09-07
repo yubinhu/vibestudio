@@ -56,27 +56,44 @@ jobs:
             exit 1
           fi
 
-      # Pull the asset exactly as a fresh remote would: by tag, by target name.
+      # Resolve names from the requested release, including historical tags that
+      # predate the naming policy. Do not infer names from the default branch.
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Resolve server asset name
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ -f release-assets.json ]; then
+            asset=$(node scripts/release-assets.mjs "$TARGET")
+          else
+            asset="skill-server-$TARGET"
+          fi
+          printf 'SERVER_ASSET=%s\n' "$asset" >> "$GITHUB_ENV"
+
+      # Pull the asset exactly as a fresh remote would: by tag and resolved name.
       - name: Download skill-server asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
-          TARGET: ${{ matrix.target }}
         shell: bash
         run: |
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "skill-server-$TARGET" \
-            --pattern "skill-server-$TARGET.sha256"
+            --pattern "$SERVER_ASSET" \
+            --pattern "$SERVER_ASSET.sha256"
 
       - name: Verify checksum
-        env:
-          TARGET: ${{ matrix.target }}
         shell: bash
         run: |
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum -c "skill-server-$TARGET.sha256"
+            sha256sum -c "$SERVER_ASSET.sha256"
           else
-            shasum -a 256 -c "skill-server-$TARGET.sha256"
+            shasum -a 256 -c "$SERVER_ASSET.sha256"
           fi
 
       - name: Smoke-test the binary
@@ -86,7 +103,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bin="./skill-server-$TARGET"
+          bin="./$SERVER_ASSET"
           chmod +x "$bin"
 
           # --version must work and exit 0 (the desktop reads this to verify the install).

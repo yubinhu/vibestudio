@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "installers": {
+    "macos": "VibeStudio-macos.dmg",
+    "windows": "VibeStudio-windows.exe",
+    "linux": "VibeStudio-linux.deb"
+  },
+  "macosUpdater": "autoupdate-macos-universal.app.tar.gz",
+  "servers": {
+    "aarch64-apple-darwin": "server-macos-arm64",
+    "x86_64-apple-darwin": "server-macos-x64",
+    "aarch64-unknown-linux-musl": "server-linux-arm64-musl",
+    "x86_64-unknown-linux-musl": "server-linux-x64-musl"
+  }
+}

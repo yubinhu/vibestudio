@@ -6,7 +6,7 @@ Manage the coding agents running on your machine — from anywhere. Available on
 
 ![VibeStudio home — an at-a-glance overview, recent work, and agent skills](./dashboard.png)
 
-**Download →** [macOS](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-macOS.dmg) · [Windows](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Windows-x64-setup.exe) · [Linux](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Linux-x86_64.deb) — free, runs locally, no account. ([install notes](#install))
+**Download →** [Latest release](https://github.com/yubinhu/vibestudio/releases/latest) — macOS · Windows · Linux — free, runs locally, no account. ([install notes](#install))
 
 Your coding agents work best where your code, keys, and tools already live: your own machine. But you're not always sitting at it. VibeStudio is one dashboard for every agent running there — Claude Code, Codex, Cursor, Gemini CLI, opencode — driven from your desktop, a browser, or your phone.
 
@@ -24,20 +24,20 @@ Built with [Tauri](https://tauri.app/), it also drives any remote dev host nativ
 
 ## Install
 
-Grab the latest build for your platform:
+Grab the installer for your platform from the [latest release](https://github.com/yubinhu/vibestudio/releases/latest):
 
-| Platform | |
+| Platform | Installer |
 |----------|--|
-| **macOS** — Apple silicon & Intel | [Download](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-macOS.dmg) |
-| **Windows** | [Download](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Windows-x64-setup.exe) |
-| **Linux** — Debian/Ubuntu | [Download](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Linux-x86_64.deb) |
+| **macOS** — Apple silicon & Intel | Universal `.dmg` |
+| **Windows** — Intel/AMD 64-bit | `.exe` |
+| **Linux** — Debian/Ubuntu, Intel/AMD 64-bit | `.deb` |
 
 ### First launch
 
 Windows builds aren't code-signed yet, so each shows a one-time prompt:
 
 - **Windows** — SmartScreen shows "Windows protected your PC". Click **More info → Run anyway**.
-- **Linux** — install the package with `sudo apt install ./VibeStudio-Linux-x86_64.deb`.
+- **Linux** — open the downloaded `.deb` in your package manager to install it.
 
 ## Use from anywhere
 

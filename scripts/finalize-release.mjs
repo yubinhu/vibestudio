@@ -6,11 +6,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { legacyReleaseAssets, parseReleaseAssets, serverTargets } from './release-assets.mjs';
 
-export const serverTargets = [
-  'aarch64-apple-darwin', 'x86_64-apple-darwin',
-  'aarch64-unknown-linux-musl', 'x86_64-unknown-linux-musl',
-];
+export { serverTargets } from './release-assets.mjs';
 
 function validateInputs(repo, tag) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo ?? '')) throw new Error('Expected GH_REPO=owner/repo');
@@ -28,20 +26,64 @@ function decode64(value) {
   return bytes;
 }
 
-export function loadReleasePublicKey({ repo, tag, readJson }) {
+function releaseCommit({ repo, tag, readJson }) {
   validateInputs(repo, tag);
-  // Fetch signing config by immutable commit, independently of the workflow's
-  // checkout. The maintained finalizer need not exist in the tagged tree.
   const { sha } = readJson(`repos/${repo}/commits/refs/tags/${tag}`);
   if (!/^[a-f0-9]{40}$/.test(sha ?? '')) throw new Error('Missing valid release commit');
-  const file = readJson(`repos/${repo}/contents/client/desktop/tauri.conf.json?ref=${sha}`);
-  if (file.type !== 'file' || file.encoding !== 'base64' || typeof file.content !== 'string') {
-    throw new Error('Missing signing configuration at the release commit');
+  return sha;
+}
+
+function decodeReleaseFile(file, label) {
+  if (file?.type !== 'file' || file.encoding !== 'base64' || typeof file.content !== 'string') {
+    throw new Error(`Missing ${label} at the release commit`);
   }
-  const config = JSON.parse(decode64(file.content.replace(/\s/g, '')).toString('utf8'));
+  return JSON.parse(decode64(file.content.replace(/\s/g, '')).toString('utf8'));
+}
+
+function publicKeyAtCommit({ repo, sha, readJson }) {
+  const file = readJson(`repos/${repo}/contents/client/desktop/tauri.conf.json?ref=${sha}`);
+  const config = decodeReleaseFile(file, 'signing configuration');
   const pubkey = config.plugins?.updater?.pubkey;
   if (!pubkey) throw new Error('Missing updater public key at the release commit');
   return pubkey;
+}
+
+export function loadReleasePublicKey(input) {
+  return publicKeyAtCommit({ ...input, sha: releaseCommit(input) });
+}
+
+export function loadReleaseConfiguration(input) {
+  // Both policies belong to the immutable release commit, not this maintained
+  // finalizer's checkout. Old releases keep their original URLs and signing key.
+  const sha = releaseCommit(input);
+  const pubkey = publicKeyAtCommit({ ...input, sha });
+  let file;
+  try {
+    file = input.readJson(`repos/${input.repo}/contents/release-assets.json?ref=${sha}`);
+  } catch (error) {
+    // Only a genuine missing file identifies releases predating this policy.
+    // Authentication, network, rate-limit, and malformed-response errors fail.
+    if (error.status !== 404) throw error;
+    return { pubkey, assetNames: legacyReleaseAssets };
+  }
+  return { pubkey, assetNames: parseReleaseAssets(decodeReleaseFile(file, 'release asset policy')) };
+}
+
+export function readGitHubJson(gh, endpoint) {
+  let response;
+  try {
+    response = gh('api', '--include', endpoint);
+  } catch (error) {
+    // gh --include preserves the actual HTTP status even for failed requests.
+    // Never infer a 404 from a message, stderr, or a process exit status.
+    const status = /^HTTP\/[\d.]+ (\d{3})\b/.exec(String(error.stdout ?? ''));
+    if (status) error.status = Number(status[1]);
+    throw error;
+  }
+  const boundary = /\r?\n\r?\n/.exec(response);
+  const status = /^HTTP\/[\d.]+ (\d{3})\b/.exec(response);
+  if (!boundary || !status || Number(status[1]) !== 200) throw new Error('Invalid GitHub API response');
+  return JSON.parse(response.slice(boundary.index + boundary[0].length));
 }
 
 // Reject missing/malformed signatures and signatures from a different key.
@@ -60,8 +102,9 @@ function validateSignature(signature, pubkey) {
   return signature;
 }
 
-export function planRelease({ repo, tag, release, signatures, previous, pubkey }) {
+export function planRelease({ repo, tag, release, signatures, previous, pubkey, assetNames = legacyReleaseAssets }) {
   validateInputs(repo, tag);
+  assetNames = parseReleaseAssets(assetNames);
   if (release.tag_name !== tag) throw new Error('Release tag mismatch');
   const assets = release.assets;
   const one = (predicate, label) => {
@@ -73,16 +116,16 @@ export function planRelease({ repo, tag, release, signatures, previous, pubkey }
   };
   for (const target of serverTargets) {
     for (const suffix of ['', '.sha256']) {
-      const name = `skill-server-${target}${suffix}`;
+      const name = `${assetNames.servers[target]}${suffix}`;
       one(a => a.name === name, name);
     }
   }
   const version = tag.slice(1);
   const bundles = [
-    { names: [`VibeStudio_${version}_universal.dmg`, 'VibeStudio-macOS.dmg'], stable: 'VibeStudio-macOS.dmg', platforms: [] },
-    { names: [`VibeStudio_${version}_amd64.deb`, 'VibeStudio-Linux-x86_64.deb'], stable: 'VibeStudio-Linux-x86_64.deb', platforms: ['linux-x86_64', 'linux-x86_64-deb'] },
-    { names: [`VibeStudio_${version}_x64-setup.exe`, 'VibeStudio-Windows-x64-setup.exe'], stable: 'VibeStudio-Windows-x64-setup.exe', platforms: ['windows-x86_64', 'windows-x86_64-nsis'] },
-    { names: ['VibeStudio_universal.app.tar.gz'], stable: 'VibeStudio_universal.app.tar.gz', platforms: ['darwin-aarch64', 'darwin-x86_64', 'darwin-aarch64-app', 'darwin-x86_64-app'] },
+    { names: [`VibeStudio_${version}_universal.dmg`, legacyReleaseAssets.installers.macos, assetNames.installers.macos], stable: assetNames.installers.macos, platforms: [] },
+    { names: [`VibeStudio_${version}_amd64.deb`, legacyReleaseAssets.installers.linux, assetNames.installers.linux], stable: assetNames.installers.linux, platforms: ['linux-x86_64', 'linux-x86_64-deb'] },
+    { names: [`VibeStudio_${version}_x64-setup.exe`, legacyReleaseAssets.installers.windows, assetNames.installers.windows], stable: assetNames.installers.windows, platforms: ['windows-x86_64', 'windows-x86_64-nsis'] },
+    { names: [legacyReleaseAssets.macosUpdater, assetNames.macosUpdater], stable: assetNames.macosUpdater, platforms: ['darwin-aarch64', 'darwin-x86_64', 'darwin-aarch64-app', 'darwin-x86_64-app'] },
   ];
   const base = `https://github.com/${repo}/releases/download/${tag}/`;
   const renames = [];
@@ -99,11 +142,13 @@ export function planRelease({ repo, tag, release, signatures, previous, pubkey }
       if (sidecar.name !== `${bundle.stable}.sig`) renames.push({ id: sidecar.id, name: `${bundle.stable}.sig` });
     } else {
       // Without sidecars, require a complete manifest whose signatures reference
-      // this exact repository, tag, and payload.
+      // this exact repository, tag, and known payload filename. A previous alias
+      // remains valid after a rename succeeded but the manifest upload failed.
       if (previous?.version !== version) throw new Error(`Missing signature for ${asset.name}`);
       const entries = bundle.platforms.map(platform => previous.platforms?.[platform]);
       signature = entries[0]?.signature;
-      if (!entries.every(entry => entry?.signature === signature && entry?.url === base + asset.name)) {
+      if (!entries.every(entry => entry?.signature === signature && entry?.url === entries[0]?.url)
+        || !bundle.names.some(name => entries[0]?.url === base + name)) {
         throw new Error(`Missing or inconsistent prior manifest entries for ${asset.name}`);
       }
     }
@@ -112,6 +157,9 @@ export function planRelease({ repo, tag, release, signatures, previous, pubkey }
   }
   const pubDate = previous?.version === version ? previous.pub_date : release.created_at;
   if (!pubDate || !Number.isFinite(Date.parse(pubDate))) throw new Error('Missing valid release date');
+  if (renames.length && !release.draft) {
+    throw new Error('Refusing to rename assets on a published release');
+  }
   return { renames, manifest: { version, notes: release.body ?? '', pub_date: pubDate, platforms } };
 }
 
@@ -129,8 +177,8 @@ function main() {
   const signatures = Object.fromEntries(release.assets.filter(a => a.name.endsWith('.sig')).map(a => [a.name, readAsset(a)]));
   const previousAsset = release.assets.find(a => a.name === 'latest.json');
   const previous = previousAsset ? JSON.parse(readAsset(previousAsset)) : undefined;
-  const pubkey = loadReleasePublicKey({ repo, tag, readJson: endpoint => JSON.parse(gh('api', endpoint)) });
-  const plan = planRelease({ repo, tag, release, signatures, previous, pubkey });
+  const configuration = loadReleaseConfiguration({ repo, tag, readJson: endpoint => readGitHubJson(gh, endpoint) });
+  const plan = planRelease({ repo, tag, release, signatures, previous, ...configuration });
   console.log(`Validated ${tag}: 3 installers, universal macOS updater, 4 servers, 8 updater platforms.`);
   if (process.argv.includes('--check')) {
     console.log(JSON.stringify(plan, null, 2));

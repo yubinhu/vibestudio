@@ -251,10 +251,19 @@ jobs:
 
       - name: Package + checksum
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          out="skill-server-${{ matrix.target }}"
-          cp "target/${{ matrix.target }}/release/skill-server" "$out"
+          # The checked-out release owns its naming scheme. Historical tags lack
+          # the policy/helper and must keep their original server filenames.
+          if [ -f release-assets.json ]; then
+            out=$(node scripts/release-assets.mjs "$TARGET")
+          else
+            out="skill-server-$TARGET"
+          fi
+          cp "target/$TARGET/release/skill-server" "$out"
           if command -v sha256sum >/dev/null 2>&1; then sha256sum "$out" > "$out.sha256"; else shasum -a 256 "$out" > "$out.sha256"; fi
+          printf 'SERVER_ASSET=%s\n' "$out" >> "$GITHUB_ENV"
 
       # The draft is normally created by tauri-action in `build`; create it if a build
       # failure meant it never got made. Re-read after a competing matrix leg creates it.
@@ -273,8 +282,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
-          TARGET: ${{ matrix.target }}
-        run: gh release upload "$RELEASE_TAG" "skill-server-$TARGET" "skill-server-$TARGET.sha256" --clobber
+        run: gh release upload "$RELEASE_TAG" "$SERVER_ASSET" "$SERVER_ASSET.sha256" --clobber
 
   finalize:
     needs: [preflight, build, server-binaries]
