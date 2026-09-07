@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to build (e.g. v1.1.4)"
+        description: "Existing release tag to build (e.g. v1.2.3)"
         required: true
         type: string
 
@@ -31,7 +31,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::Select an existing stable version tag, for example v1.1.4 (not a branch)."
+            echo "::error::Select an existing stable version tag, for example v1.2.3 (not a branch)."
             exit 1
           fi
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
@@ -254,13 +254,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          # The checked-out release owns its naming scheme. Historical tags lack
-          # the policy/helper and must keep their original server filenames.
-          if [ -f release-assets.json ]; then
-            out=$(node scripts/release-assets.mjs "$TARGET")
-          else
-            out="skill-server-$TARGET"
-          fi
+          out=$(node scripts/release-assets.mjs "$TARGET")
           cp "target/$TARGET/release/skill-server" "$out"
           if command -v sha256sum >/dev/null 2>&1; then sha256sum "$out" > "$out.sha256"; else shasum -a 256 "$out" > "$out.sha256"; fi
           printf 'SERVER_ASSET=%s\n' "$out" >> "$GITHUB_ENV"
@@ -290,8 +284,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Use the maintained finalizer; it resolves signing configuration from the
-      # requested release tag even when this workflow is dispatched on a branch.
+      # Resolve the signing configuration and naming policy from the requested
+      # release tag even when this workflow is dispatched on a branch.
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:

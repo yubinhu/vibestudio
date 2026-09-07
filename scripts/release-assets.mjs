@@ -1,5 +1,4 @@
-// The release commit owns its filenames. Older tags without a policy use the
-// original names; the maintained finalizer must never migrate published assets.
+// The release commit owns its filenames; every release must include this policy.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -8,17 +7,6 @@ export const serverTargets = [
   'aarch64-apple-darwin', 'x86_64-apple-darwin',
   'aarch64-unknown-linux-musl', 'x86_64-unknown-linux-musl',
 ];
-
-export const legacyReleaseAssets = {
-  schemaVersion: 1,
-  installers: {
-    macos: 'VibeStudio-macOS.dmg',
-    windows: 'VibeStudio-Windows-x64-setup.exe',
-    linux: 'VibeStudio-Linux-x86_64.deb',
-  },
-  macosUpdater: 'VibeStudio_universal.app.tar.gz',
-  servers: Object.fromEntries(serverTargets.map(target => [target, `skill-server-${target}`])),
-};
 
 export function parseReleaseAssets(value) {
   const record = input => input && typeof input === 'object' && !Array.isArray(input);

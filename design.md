@@ -368,8 +368,9 @@ A **local proxy switchboard**; the webview never changes origin.
   (`/api/recents/list`) are a *normal proxied* route, so they follow the active server.
 - **Same code everywhere;** two gates keep it from brokering where it shouldn't: a provisioned
   remote (`--lifeline-stdin`) and a non-loopback bind both leave `ServerConfig::remote = None`.
-  Provisioning pulls `skill-server-<target>` from the GitHub release matching the app version
-  (override via `VIBESTUDIO_SERVER_BASE_URL` / `_VERSION`).
+  Provisioning resolves `server-*` filenames from `release-assets.json` and downloads
+  them with their required `.sha256` files from the GitHub release matching the app
+  version (override via `VIBESTUDIO_SERVER_BASE_URL` / `_VERSION`).
 
 ## Roadmap
 

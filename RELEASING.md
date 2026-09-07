@@ -80,18 +80,17 @@ also contains the correct basename. Renaming desktop assets does not change thei
 bytes or signatures. Keep the updater manifest's schema, platform keys, and signing
 key stable; only its payload URLs change.
 
-Historical tags without a naming policy retain their original filenames. The
-maintained finalizer reads both policy and signing key from the immutable release
-commit and refuses to rename published assets. Old released apps still provision
-their version-pinned server; the new provisioner tries both naming schemes at that
-version before trying latest. Update older unstamped development builds before
-using a latest release with the new server names, or pin them to an older release
-with `VIBESTUDIO_SERVER_VERSION=1.2.0`. New clients accept either naming scheme on
-custom download mirrors; mirrors serving older clients must retain legacy names.
+Release tooling requires the naming policy and updater signature sidecars. The
+finalizer reads the policy and signing key from the immutable release commit and
+refuses to rename published assets. It accepts Tauri's raw bundle filenames and
+the policy's finalized names so interrupted draft finalization can be retried.
 
-README downloads link to the latest release page so they work throughout the
-transition. Keep human installer links prominent in release notes; server,
-auto-update, and verification files are supporting assets.
+Server provisioning uses the policy's filenames at the app's version tag, then
+the latest release. Custom download mirrors must provide the same filenames and
+matching `.sha256` files. Every new server download must pass checksum verification.
+
+Keep human installer links prominent in release notes; server, auto-update, and
+verification files are supporting assets.
 
 ## The process
 
@@ -165,7 +164,7 @@ auto-update, and verification files are supporting assets.
    ```
    Expect: the 3 renamed installers + `autoupdate-macos-universal.app.tar.gz` +
    `latest.json` + the 4 `server-*` binaries (+ `.sha256`) + updater `.sig` files.
-   Historical releases keep the filenames defined by their original policy. Verify the
+   Verify the
    [public feed](https://github.com/yubinhu/vibestudio/releases/latest/download/latest.json)
    and the three installer links from that release without authentication.
 

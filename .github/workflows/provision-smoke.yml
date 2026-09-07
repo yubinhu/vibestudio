@@ -52,12 +52,11 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::Expected a stable version tag, for example v1.1.4."
+            echo "::error::Expected a stable version tag, for example v1.2.3."
             exit 1
           fi
 
-      # Resolve names from the requested release, including historical tags that
-      # predate the naming policy. Do not infer names from the default branch.
+      # Resolve names from the requested release's naming policy.
       - uses: actions/checkout@v6
         with:
           ref: refs/tags/${{ inputs.tag }}
@@ -69,11 +68,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         shell: bash
         run: |
-          if [ -f release-assets.json ]; then
-            asset=$(node scripts/release-assets.mjs "$TARGET")
-          else
-            asset="skill-server-$TARGET"
-          fi
+          asset=$(node scripts/release-assets.mjs "$TARGET")
           printf 'SERVER_ASSET=%s\n' "$asset" >> "$GITHUB_ENV"
 
       # Pull the asset exactly as a fresh remote would: by tag and resolved name.

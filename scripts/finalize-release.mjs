@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { legacyReleaseAssets, parseReleaseAssets, serverTargets } from './release-assets.mjs';
+import { parseReleaseAssets, serverTargets } from './release-assets.mjs';
 
 export { serverTargets } from './release-assets.mjs';
 
@@ -48,42 +48,13 @@ function publicKeyAtCommit({ repo, sha, readJson }) {
   return pubkey;
 }
 
-export function loadReleasePublicKey(input) {
-  return publicKeyAtCommit({ ...input, sha: releaseCommit(input) });
-}
-
 export function loadReleaseConfiguration(input) {
-  // Both policies belong to the immutable release commit, not this maintained
-  // finalizer's checkout. Old releases keep their original URLs and signing key.
+  // Filenames and signing key belong to the immutable release commit, not this
+  // maintained finalizer's checkout.
   const sha = releaseCommit(input);
   const pubkey = publicKeyAtCommit({ ...input, sha });
-  let file;
-  try {
-    file = input.readJson(`repos/${input.repo}/contents/release-assets.json?ref=${sha}`);
-  } catch (error) {
-    // Only a genuine missing file identifies releases predating this policy.
-    // Authentication, network, rate-limit, and malformed-response errors fail.
-    if (error.status !== 404) throw error;
-    return { pubkey, assetNames: legacyReleaseAssets };
-  }
+  const file = input.readJson(`repos/${input.repo}/contents/release-assets.json?ref=${sha}`);
   return { pubkey, assetNames: parseReleaseAssets(decodeReleaseFile(file, 'release asset policy')) };
-}
-
-export function readGitHubJson(gh, endpoint) {
-  let response;
-  try {
-    response = gh('api', '--include', endpoint);
-  } catch (error) {
-    // gh --include preserves the actual HTTP status even for failed requests.
-    // Never infer a 404 from a message, stderr, or a process exit status.
-    const status = /^HTTP\/[\d.]+ (\d{3})\b/.exec(String(error.stdout ?? ''));
-    if (status) error.status = Number(status[1]);
-    throw error;
-  }
-  const boundary = /\r?\n\r?\n/.exec(response);
-  const status = /^HTTP\/[\d.]+ (\d{3})\b/.exec(response);
-  if (!boundary || !status || Number(status[1]) !== 200) throw new Error('Invalid GitHub API response');
-  return JSON.parse(response.slice(boundary.index + boundary[0].length));
 }
 
 // Reject missing/malformed signatures and signatures from a different key.
@@ -102,7 +73,7 @@ function validateSignature(signature, pubkey) {
   return signature;
 }
 
-export function planRelease({ repo, tag, release, signatures, previous, pubkey, assetNames = legacyReleaseAssets }) {
+export function planRelease({ repo, tag, release, signatures, previous, pubkey, assetNames }) {
   validateInputs(repo, tag);
   assetNames = parseReleaseAssets(assetNames);
   if (release.tag_name !== tag) throw new Error('Release tag mismatch');
@@ -122,10 +93,10 @@ export function planRelease({ repo, tag, release, signatures, previous, pubkey, 
   }
   const version = tag.slice(1);
   const bundles = [
-    { names: [`VibeStudio_${version}_universal.dmg`, legacyReleaseAssets.installers.macos, assetNames.installers.macos], stable: assetNames.installers.macos, platforms: [] },
-    { names: [`VibeStudio_${version}_amd64.deb`, legacyReleaseAssets.installers.linux, assetNames.installers.linux], stable: assetNames.installers.linux, platforms: ['linux-x86_64', 'linux-x86_64-deb'] },
-    { names: [`VibeStudio_${version}_x64-setup.exe`, legacyReleaseAssets.installers.windows, assetNames.installers.windows], stable: assetNames.installers.windows, platforms: ['windows-x86_64', 'windows-x86_64-nsis'] },
-    { names: [legacyReleaseAssets.macosUpdater, assetNames.macosUpdater], stable: assetNames.macosUpdater, platforms: ['darwin-aarch64', 'darwin-x86_64', 'darwin-aarch64-app', 'darwin-x86_64-app'] },
+    { names: [`VibeStudio_${version}_universal.dmg`, assetNames.installers.macos], stable: assetNames.installers.macos, platforms: [] },
+    { names: [`VibeStudio_${version}_amd64.deb`, assetNames.installers.linux], stable: assetNames.installers.linux, platforms: ['linux-x86_64', 'linux-x86_64-deb'] },
+    { names: [`VibeStudio_${version}_x64-setup.exe`, assetNames.installers.windows], stable: assetNames.installers.windows, platforms: ['windows-x86_64', 'windows-x86_64-nsis'] },
+    { names: ['VibeStudio_universal.app.tar.gz', assetNames.macosUpdater], stable: assetNames.macosUpdater, platforms: ['darwin-aarch64', 'darwin-x86_64', 'darwin-aarch64-app', 'darwin-x86_64-app'] },
   ];
   const base = `https://github.com/${repo}/releases/download/${tag}/`;
   const renames = [];
@@ -134,24 +105,9 @@ export function planRelease({ repo, tag, release, signatures, previous, pubkey, 
     const asset = one(a => bundle.names.includes(a.name), bundle.stable);
     if (asset.name !== bundle.stable) renames.push({ id: asset.id, name: bundle.stable });
     if (!bundle.platforms.length) continue;
-    const sidecars = assets.filter(a => bundle.names.some(name => a.name === `${name}.sig`));
-    let signature;
-    if (sidecars.length) {
-      const sidecar = one(a => sidecars.includes(a), `${bundle.stable}.sig`);
-      signature = signatures[sidecar.name]?.trim();
-      if (sidecar.name !== `${bundle.stable}.sig`) renames.push({ id: sidecar.id, name: `${bundle.stable}.sig` });
-    } else {
-      // Without sidecars, require a complete manifest whose signatures reference
-      // this exact repository, tag, and known payload filename. A previous alias
-      // remains valid after a rename succeeded but the manifest upload failed.
-      if (previous?.version !== version) throw new Error(`Missing signature for ${asset.name}`);
-      const entries = bundle.platforms.map(platform => previous.platforms?.[platform]);
-      signature = entries[0]?.signature;
-      if (!entries.every(entry => entry?.signature === signature && entry?.url === entries[0]?.url)
-        || !bundle.names.some(name => entries[0]?.url === base + name)) {
-        throw new Error(`Missing or inconsistent prior manifest entries for ${asset.name}`);
-      }
-    }
+    const sidecar = one(a => bundle.names.some(name => a.name === `${name}.sig`), `${bundle.stable}.sig`);
+    const signature = signatures[sidecar.name]?.trim();
+    if (sidecar.name !== `${bundle.stable}.sig`) renames.push({ id: sidecar.id, name: `${bundle.stable}.sig` });
     validateSignature(signature, pubkey);
     for (const platform of bundle.platforms) platforms[platform] = { signature, url: base + bundle.stable };
   }
@@ -177,7 +133,7 @@ function main() {
   const signatures = Object.fromEntries(release.assets.filter(a => a.name.endsWith('.sig')).map(a => [a.name, readAsset(a)]));
   const previousAsset = release.assets.find(a => a.name === 'latest.json');
   const previous = previousAsset ? JSON.parse(readAsset(previousAsset)) : undefined;
-  const configuration = loadReleaseConfiguration({ repo, tag, readJson: endpoint => readGitHubJson(gh, endpoint) });
+  const configuration = loadReleaseConfiguration({ repo, tag, readJson: endpoint => JSON.parse(gh('api', endpoint)) });
   const plan = planRelease({ repo, tag, release, signatures, previous, ...configuration });
   console.log(`Validated ${tag}: 3 installers, universal macOS updater, 4 servers, 8 updater platforms.`);
   if (process.argv.includes('--check')) {

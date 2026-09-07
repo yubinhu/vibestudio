@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { parse } from 'yaml';
-import { legacyReleaseAssets, parseReleaseAssets, serverAssetName, serverTargets } from './release-assets.mjs';
+import { parseReleaseAssets, serverAssetName, serverTargets } from './release-assets.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const policy = JSON.parse(readFileSync(join(root, 'release-assets.json'), 'utf8'));
@@ -45,38 +45,42 @@ test('invalid policies cannot supply filenames to release tooling', () => {
   assert.throws(() => serverAssetName('unsupported-target', policy), /Unsupported server target/);
 });
 
-test('actual packaging and smoke scripts agree on new and historical filenames and checksums', () => {
+test('actual packaging and smoke scripts use the required policy and matching checksums', () => {
   const packageScript = release.jobs['server-binaries'].steps.find(step => step.name === 'Package + checksum').run;
   const resolveScript = smoke.jobs.smoke.steps.find(step => step.name === 'Resolve server asset name').run;
   const verifyScript = smoke.jobs.smoke.steps.find(step => step.name === 'Verify checksum').run;
   const temp = mkdtempSync(join(tmpdir(), 'vibestudio-asset-names-'));
   try {
-    for (const historical of [false, true]) {
-      for (const target of serverTargets) {
-        const cwd = join(temp, `${historical ? 'legacy' : 'current'}-${target}`);
-        const source = join(cwd, 'target', target, 'release', 'skill-server');
-        mkdirSync(dirname(source), { recursive: true });
-        writeFileSync(source, `test server payload: ${target}\n`);
-        if (!historical) {
-          mkdirSync(join(cwd, 'scripts'));
-          copyFileSync(join(root, 'release-assets.json'), join(cwd, 'release-assets.json'));
-          copyFileSync(join(root, 'scripts/release-assets.mjs'), join(cwd, 'scripts/release-assets.mjs'));
-        }
-        const outputEnv = join(cwd, 'release.env');
-        const env = { ...process.env, TARGET: target, GITHUB_ENV: outputEnv };
-        execFileSync('bash', ['-e', '-o', 'pipefail', '-c', packageScript], { cwd, env });
-        const expected = historical ? legacyReleaseAssets.servers[target] : policy.servers[target];
-        const packaged = readFileSync(outputEnv, 'utf8');
-        assert.equal(packaged, `SERVER_ASSET=${expected}\n`);
-        assert.ok(existsSync(join(cwd, expected)));
-        assert.match(readFileSync(join(cwd, `${expected}.sha256`), 'utf8'), new RegExp(` ${expected}\\n$`));
+    for (const target of serverTargets) {
+      const cwd = join(temp, target);
+      const source = join(cwd, 'target', target, 'release', 'skill-server');
+      mkdirSync(dirname(source), { recursive: true });
+      writeFileSync(source, `test server payload: ${target}\n`);
+      mkdirSync(join(cwd, 'scripts'));
+      copyFileSync(join(root, 'release-assets.json'), join(cwd, 'release-assets.json'));
+      copyFileSync(join(root, 'scripts/release-assets.mjs'), join(cwd, 'scripts/release-assets.mjs'));
+      const outputEnv = join(cwd, 'release.env');
+      const env = { ...process.env, TARGET: target, GITHUB_ENV: outputEnv };
+      const run = script => execFileSync('bash', ['-e', '-o', 'pipefail', '-c', script], { cwd, env, stdio: 'pipe' });
+      run(packageScript);
+      const expected = policy.servers[target];
+      const packaged = readFileSync(outputEnv, 'utf8');
+      assert.equal(packaged, `SERVER_ASSET=${expected}\n`);
+      assert.ok(existsSync(join(cwd, expected)));
+      assert.match(readFileSync(join(cwd, `${expected}.sha256`), 'utf8'), new RegExp(` ${expected}\\n$`));
 
-        writeFileSync(outputEnv, '');
-        execFileSync('bash', ['-e', '-o', 'pipefail', '-c', resolveScript], { cwd, env });
-        assert.equal(readFileSync(outputEnv, 'utf8'), packaged);
-        execFileSync('bash', ['-e', '-o', 'pipefail', '-c', verifyScript], {
-          cwd, env: { ...env, SERVER_ASSET: expected },
-        });
+      writeFileSync(outputEnv, '');
+      run(resolveScript);
+      assert.equal(readFileSync(outputEnv, 'utf8'), packaged);
+      execFileSync('bash', ['-e', '-o', 'pipefail', '-c', verifyScript], {
+        cwd, env: { ...env, SERVER_ASSET: expected },
+      });
+
+      rmSync(join(cwd, 'release-assets.json'));
+      writeFileSync(outputEnv, '');
+      for (const script of [packageScript, resolveScript]) {
+        assert.throws(() => run(script), error => error.status !== 0);
+        assert.equal(readFileSync(outputEnv, 'utf8'), '', 'Missing policy must stop asset packaging/resolution');
       }
     }
   } finally {
