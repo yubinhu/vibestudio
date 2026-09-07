@@ -953,6 +953,15 @@ export interface AgentOption {
 }
 
 /** One live tmux-backed terminal session. */
+export interface SessionAttention {
+  state: "unknown" | "idle" | "working" | "blocked";
+  /** `<boot>:<counter>`; counters order transitions within one server lifetime. */
+  sequence: string;
+  changedAt: number;
+  kind: "request" | "done" | null;
+  matchedRule?: string | null;
+}
+
 export interface TermSession {
   id: string;
   label: string;
@@ -975,6 +984,8 @@ export interface TermSession {
    *  server-side to map the terminal to its own transcript. Empty/absent for
    *  shells, resumed, and pre-existing sessions. */
   sessionId?: string;
+  /** Absent on older servers; those retain the terminal-bell fallback. */
+  attention?: SessionAttention;
 }
 
 export interface CreateTermArgs {
@@ -1116,6 +1127,9 @@ export const notifyPrime = () => http<{ ok: boolean }>("POST", "notify/prime").t
 /** Dock/taskbar unread-count badge; 0 clears. */
 export const notifyBadge = (count: number) =>
   http<{ ok: boolean }>("POST", "notify/badge", { count }).then(() => {});
+/** Play an attention sound on the client machine, including while SSH-connected. */
+export const notifySound = (kind: "request" | "done") =>
+  http<{ ok: boolean }>("POST", "notify/sound", { kind }).then(() => {});
 
 // --- open a folder in the local VS Code ---
 // Pinned LOCAL like the notify routes: opening an editor belongs to the machine
@@ -1152,11 +1166,12 @@ export interface TermEvent {
   /** Bell frames only: a captured preview of the agent's last output line, for
    *  the notification body. Absent on opened/closed and on the poll backstop. */
   last?: string;
+  attention?: SessionAttention;
 }
 
 /**
- * Subscribe to the server's terminal lifecycle events (SSE): `bell` (an agent
- * finished a turn), `opened`, `closed`. Events are edge HINTS — callers should
+ * Subscribe to terminal lifecycle/attention events. `bell` is the legacy turn
+ * signal; newer servers emit detector `attention` transitions. Events are hints — callers should
  * re-fetch `terminalList` on each one rather than trusting the payload as state.
  * EventSource retries transient drops itself; those silent reconnects fire
  * `onOpen` (as does the first connect) so the caller can refetch what the gap
@@ -1165,14 +1180,14 @@ export interface TermEvent {
  * resubscribe.
  */
 export function terminalEvents(
-  onEvent: (kind: "bell" | "opened" | "closed", e: TermEvent) => void,
+  onEvent: (kind: "bell" | "opened" | "closed" | "attention", e: TermEvent) => void,
   onDown: () => void,
   onOpen?: () => void,
 ): { close(): void } {
   const es = new EventSource(`${API_BASE}/api/events`);
   es.onopen = () => onOpen?.();
   let done = false;
-  const forward = (kind: "bell" | "opened" | "closed") => (m: MessageEvent) => {
+  const forward = (kind: "bell" | "opened" | "closed" | "attention") => (m: MessageEvent) => {
     try {
       onEvent(kind, JSON.parse(m.data as string) as TermEvent);
     } catch {
@@ -1182,6 +1197,7 @@ export function terminalEvents(
   es.addEventListener("bell", forward("bell"));
   es.addEventListener("opened", forward("opened"));
   es.addEventListener("closed", forward("closed"));
+  es.addEventListener("attention", forward("attention"));
   es.onerror = () => {
     log.debug("sse", `events readyState=${es.readyState}`);
     if (es.readyState === EventSource.CLOSED && !done) {

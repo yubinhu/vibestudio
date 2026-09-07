@@ -236,6 +236,38 @@ Multiple backends per machine are supported (shared namespace); the inference-en
 kills only *orphaned* engines (reparented to init) — never a sibling's live child **on Unix**
 (the Windows fallback kills by image name and can hit a sibling, accepted for that rare case).
 
+## Session attention
+
+`skill-core/src/agent_detection` vendors Herdr's terminal detection rules and
+stabilization at commit `4b5e9bda239a0b6903889062d756424578e94691`; attribution and
+license are in `server/skill-core/src/agent_detection/NOTICE.txt`. All 21 bundled manifests are unchanged. The
+registry's `attention_detector` capability enables the corresponding detector for
+Claude, Codex, Cursor, Gemini and opencode.
+
+The owning server's `events` watcher samples the visible tmux screen and pane title
+without attaching a client. Ordinary samples run every second; ambiguous Working
+→ Idle transitions use Herdr's 100 ms rechecks, three confirmations and 700 ms cap.
+Failed captures retain the last state. tmux does not retain OSC 9;4 progress, so
+that detector input is empty; screen/title rules and all matcher semantics remain
+unchanged. The port uses bundled rules only, with no automatic manifest downloads.
+Herdr's process matcher verifies the actual agent and its process generation.
+Exit/replacement releases its old state and ignores retained title/screen evidence,
+so a later shell command cannot resurrect the old agent's input prompt.
+
+`/api/terminal/list` carries `attention` (state, boot/counter sequence, timestamp,
+request/done kind and matched rule), and `/api/events` publishes confirmed state
+changes. Initial inventory and reconnects seed silently. New agents can announce
+their first input request; repeat evidence never produces repeat alerts. Legacy
+bells remain only for agents without a detector. The same events feed Web Push
+when no client is focused.
+
+The client brings blocked sessions to the top while retaining manual order within
+each group and keeping the selected session. It labels states and offers a
+persistent sound toggle. Herdr's request sound also plays for a watched session;
+the done sound is suppressed while that session is being watched. Native audio
+uses pinned-local `/api/notify/sound`, with the same MP3s as a gesture-unlocked Web
+Audio fallback. Startup/reconnect, duplicate and superseded events stay silent.
+
 ## Agent registry (`skill-core/src/agents.rs`)
 
 Agent-agnostic: nothing outside the registry matches a family name. One `AgentDef` per CLI:

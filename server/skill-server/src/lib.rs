@@ -178,7 +178,14 @@ pub trait RemoteControl: Send + Sync {
     }
 }
 
-/// The desktop shell's native-notification surface (OS toasts + dock/taskbar
+/// Built-in attention audio. Callers choose an event, never a file or command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationSound {
+    Request,
+    Done,
+}
+
+/// The desktop shell's native-notification surface (OS toasts, audio + dock/taskbar
 /// badge), driven by the SPA over the pinned-local `/api/notify*` routes.
 /// Implemented in `client/desktop` (same one-way dependency rule as
 /// [`RemoteControl`]); a server without one (standalone binary, browser mode)
@@ -192,6 +199,11 @@ pub trait NotifyControl: Send + Sync {
     fn prime(&self) {}
     /// Unread-count badge on the dock/taskbar icon; 0 clears. Best-effort.
     fn set_badge(&self, _count: u32) {}
+    /// Start built-in audio without blocking. False means unsupported, allowing
+    /// the browser to play the same asset after its audio has been unlocked.
+    fn sound(&self, _sound: NotificationSound) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 /// Opening a session's folder in the user's local editor (VS Code) — the "Open in
@@ -852,6 +864,7 @@ fn web_mime(path: &str) -> &'static str {
         "ico" => "image/x-icon",
         "woff2" => "font/woff2",
         "woff" => "font/woff",
+        "mp3" => "audio/mpeg",
         "wasm" => "application/wasm",
         "map" => "application/json",
         "txt" => "text/plain; charset=utf-8",
@@ -1149,6 +1162,9 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
             list.into_iter()
                 .map(|s| {
                     let mut v = serde_json::to_value(&s).unwrap_or_default();
+                    if let Some(attention) = events::attention_for(&s.id, &s.agent) {
+                        v["attention"] = json!(attention);
+                    }
                     let sid = s.session_id.trim();
                     let title = skill_core::agents::session_title_for(
                         &s.agent,
@@ -1591,6 +1607,21 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
             Some(n) => {
                 n.set_badge(v.get("count").and_then(|x| x.as_u64()).unwrap_or(0).min(9999) as u32);
                 json_reply(Ok(json!({ "ok": true })))
+            }
+            None => notify_unavailable(),
+        },
+        (Method::Post, "/api/notify/sound") => match &ctx.notifier {
+            Some(n) => {
+                let sound = match s("kind").as_str() {
+                    "request" => NotificationSound::Request,
+                    "done" => NotificationSound::Done,
+                    _ => return json_reply::<()>(Err("kind must be request or done".into())),
+                };
+                match n.sound(sound) {
+                    Ok(true) => json_reply(Ok(json!({ "ok": true }))),
+                    Ok(false) => notify_unavailable(),
+                    Err(e) => json_reply::<()>(Err(e)),
+                }
             }
             None => notify_unavailable(),
         },

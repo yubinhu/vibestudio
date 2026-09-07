@@ -39,6 +39,9 @@ use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 
+/// Bounded, attachment-independent tmux observations for agent state detection.
+pub mod detection_snapshot;
+
 /// Prefix that marks every tmux session this app owns (so we never touch the
 /// user's own tmux sessions).
 const PREFIX: &str = "ass-";
@@ -457,7 +460,7 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>, String> {
 /// Like [`list_sessions`], but distinguishes "tmux answered" from "couldn't
 /// even run tmux" (`None`) — [`sweep_stale`] must not treat a transient spawn
 /// failure as "every session is gone" and reap the whole registry.
-fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
+pub fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
     // The wire carries ONLY safe alphabets — a minted [a-z0-9-] name and two
     // numeric fields, space-separated — so no locale, sanitizer, tmux version,
     // or user session name can corrupt the parse. Free text used to ride this

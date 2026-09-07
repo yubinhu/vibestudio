@@ -81,6 +81,9 @@ pub struct AgentDef {
     /// TUI screen-scrape). `None` = no reader yet; the notifier falls back to its
     /// fixed summons. See [`crate::session_title::claude_last_message`].
     pub last_message: Option<LastMessageFn>,
+    /// Bundled Herdr detector label for this agent's interactive TUI. None
+    /// retains legacy terminal-bell notifications for unsupported agents.
+    pub attention_detector: Option<&'static str>,
 }
 
 /// The two shapes of "add/remove a remote streamable-HTTP MCP server named
@@ -121,6 +124,7 @@ pub const AGENTS: &[AgentDef] = &[
         mcp: Some(McpWiring::Cli { bin: "claude", add: claude_mcp_add, remove: claude_mcp_remove }),
         session_title: Some(crate::session_title::claude_title),
         last_message: Some(crate::session_title::claude_last_message),
+        attention_detector: Some("claude"),
     },
     AgentDef {
         family: "codex",
@@ -132,6 +136,7 @@ pub const AGENTS: &[AgentDef] = &[
         mcp: Some(McpWiring::Cli { bin: "codex", add: codex_mcp_add, remove: codex_mcp_remove }),
         session_title: Some(crate::session_title::codex_title),
         last_message: None,
+        attention_detector: Some("codex"),
     },
     AgentDef {
         family: "cursor",
@@ -151,6 +156,7 @@ pub const AGENTS: &[AgentDef] = &[
         }),
         session_title: Some(crate::session_title::cursor_title),
         last_message: None,
+        attention_detector: Some("cursor"),
     },
     AgentDef {
         family: "gemini",
@@ -162,6 +168,7 @@ pub const AGENTS: &[AgentDef] = &[
         mcp: Some(McpWiring::Cli { bin: "gemini", add: gemini_mcp_add, remove: gemini_mcp_remove }),
         session_title: Some(crate::session_title::gemini_title),
         last_message: None,
+        attention_detector: Some("gemini"),
     },
     AgentDef {
         family: "openclaw",
@@ -175,6 +182,7 @@ pub const AGENTS: &[AgentDef] = &[
         // install to test against) — wire this once there's a real store to read.
         session_title: None,
         last_message: None,
+        attention_detector: None,
     },
     AgentDef {
         // opencode keeps its own global skills under ~/.config/opencode/skills and
@@ -196,6 +204,7 @@ pub const AGENTS: &[AgentDef] = &[
         }),
         session_title: Some(crate::session_title::opencode_title),
         last_message: None,
+        attention_detector: Some("opencode"),
     },
 ];
 

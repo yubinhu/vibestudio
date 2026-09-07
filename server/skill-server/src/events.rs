@@ -1,8 +1,7 @@
 //! Terminal lifecycle events over SSE (`GET /api/events`) — the push channel the
-//! turn-finish notifier rides. tmux stays the source of truth (bells land in
-//! `@ass_bell_at` via a tmux hook; this process never observes them directly),
-//! so a watcher thread diffs `skill_term::list_sessions()` once a second and
-//! fans edge events out to every subscriber. Events are HINTS, not state: the
+//! agent-attention notifier rides. An owning-host watcher samples visible tmux
+//! screens through the bundled Herdr detector, independently of attachments.
+//! Terminal bells remain a fallback for agents without a detector. Events are HINTS, not state: the
 //! client re-fetches `/api/terminal/list` on (re)connect and on every event, so
 //! there is no replay buffer and a missed frame costs nothing.
 //!
@@ -14,17 +13,27 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard, Once, OnceLock};
 use std::time::Duration;
+use std::time::Instant;
 
 use serde_json::json;
 use skill_term::SessionInfo;
 
+mod detection;
+pub(crate) use detection::attention_for;
+use detection::{detector_for, DetectorFleet, SessionAttention};
+
 /// Watcher cadence: one `tmux list-sessions` per tick, which also bounds the
 /// bell → SSE-push latency.
 const TICK: Duration = Duration::from_secs(1);
+// Only pending ambiguous Idle confirmations sample this frequently. Normal
+// sessions remain on a one-second schedule with unchanged-screen caching.
+const RECHECK_TICK: Duration = Duration::from_millis(100);
 
 fn subscribers() -> MutexGuard<'static, Vec<Sender<String>>> {
     static SUBS: OnceLock<Mutex<Vec<Sender<String>>>> = OnceLock::new();
-    SUBS.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner())
+    SUBS.get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
 }
 
 /// Start the watcher (idempotent). Called at server boot so bell edges reach
@@ -58,12 +67,24 @@ fn frame(event: &str, data: &serde_json::Value) -> String {
 }
 
 fn payload(s: &SessionInfo, last: Option<&str>) -> serde_json::Value {
-    let mut v = json!({ "id": s.id, "label": s.label, "agent": s.agent, "cwd": s.cwd, "at": s.bell_at });
+    let mut v =
+        json!({ "id": s.id, "label": s.label, "agent": s.agent, "cwd": s.cwd, "at": s.bell_at });
     // Only bells carry a preview of the agent's last line (opened/closed pass None).
     if let Some(last) = last {
         v["last"] = json!(last);
     }
     v
+}
+
+fn attention_payload(
+    s: &SessionInfo,
+    attention: &SessionAttention,
+    last: Option<&str>,
+) -> serde_json::Value {
+    let mut value = payload(s, last);
+    value["at"] = json!((attention.changed_at / 1000).to_string());
+    value["attention"] = json!(attention);
+    value
 }
 
 fn bell_secs(s: &SessionInfo) -> u64 {
@@ -80,6 +101,31 @@ pub(crate) fn bell_edges<'a>(
     now.iter()
         .filter(|s| prev.get(&s.id).is_some_and(|p| bell_secs(s) > bell_secs(p)))
         .collect()
+}
+
+fn fallback_bell_edges<'a>(
+    prev: &HashMap<String, SessionInfo>,
+    now: &'a [SessionInfo],
+) -> Vec<&'a SessionInfo> {
+    bell_edges(prev, now)
+        .into_iter()
+        .filter(|session| detector_for(&session.agent).is_none())
+        .collect()
+}
+
+fn notification(
+    session: &SessionInfo,
+    kind: Option<skill_core::agent_detection::AttentionKind>,
+) -> crate::push::Bell {
+    let created = session.created.trim().parse().unwrap_or(0);
+    let sid = Some(session.session_id.as_str()).filter(|value| !value.is_empty());
+    let last = skill_core::agents::last_message_for(&session.agent, &session.cwd, created, sid);
+    crate::push::Bell {
+        id: session.id.clone(),
+        label: session.label.clone(),
+        last,
+        kind,
+    }
 }
 
 /// Opened/closed frames between two snapshots. Bell frames are built in the
@@ -105,39 +151,60 @@ pub(crate) fn diff(prev: &HashMap<String, SessionInfo>, now: &[SessionInfo]) -> 
 /// matters, and a paused-then-resumed snapshot would burst-replay stale edges.
 fn watcher_loop() {
     let mut prev: Option<HashMap<String, SessionInfo>> = None;
-    let mut tick: u32 = 0;
+    let mut detectors = DetectorFleet::new();
+    let mut next_list = Instant::now();
+    let mut next_prune = Instant::now() + Duration::from_secs(30);
     loop {
         // A dead stream's Sender lingers until a send fails, which a quiet server
         // may never do — periodically push a comment frame purely to prune.
-        tick = tick.wrapping_add(1);
-        if tick.is_multiple_of(30) {
+        let now = Instant::now();
+        if now >= next_prune {
             emit(": prune\n\n".to_string());
+            next_prune = now + Duration::from_secs(30);
         }
-        let now = skill_term::list_sessions().unwrap_or_default();
-        if let Some(p) = &prev {
-            for f in diff(p, &now) {
-                emit(f);
+        let mut notifications = Vec::new();
+        if now >= next_list {
+            next_list = now + TICK;
+            // Preserve the previous baseline if tmux cannot even be queried.
+            if let Some(sessions) = skill_term::list_sessions_checked() {
+                detectors.sync_sessions(&sessions, now);
+                if let Some(previous) = &prev {
+                    for event in diff(previous, &sessions) {
+                        emit(event);
+                    }
+                    for session in fallback_bell_edges(previous, &sessions) {
+                        let notice = notification(session, None);
+                        emit(frame("bell", &payload(session, notice.last.as_deref())));
+                        notifications.push(notice);
+                    }
+                }
+                prev = Some(
+                    sessions
+                        .into_iter()
+                        .map(|session| (session.id.clone(), session))
+                        .collect(),
+                );
             }
-            // Each bell edge: read the agent's last assistant message ONCE from its
-            // own transcript and feed it to both channels — the SSE frame (the
-            // desktop toast body) and Web Push (the phone body). Reading is bell-only,
-            // so it costs nothing on a quiet tick.
-            let mut bells = Vec::new();
-            for s in bell_edges(p, &now) {
-                let created = s.created.trim().parse().unwrap_or(0);
-                let sid = Some(s.session_id.as_str()).filter(|x| !x.is_empty());
-                let last = skill_core::agents::last_message_for(&s.agent, &s.cwd, created, sid);
-                emit(frame("bell", &payload(s, last.as_deref())));
-                bells.push(crate::push::Bell {
-                    id: s.id.clone(),
-                    label: s.label.clone(),
-                    last,
-                });
-            }
-            crate::push::notify_bells(bells);
         }
-        prev = Some(now.into_iter().map(|s| (s.id.clone(), s)).collect());
-        std::thread::sleep(TICK);
+        for (id, attention) in detectors.poll(now) {
+            let Some(session) = prev.as_ref().and_then(|sessions| sessions.get(&id)) else {
+                continue;
+            };
+            let notice = attention.kind.map(|kind| notification(session, Some(kind)));
+            emit(frame(
+                "attention",
+                &attention_payload(
+                    session,
+                    &attention,
+                    notice.as_ref().and_then(|n| n.last.as_deref()),
+                ),
+            ));
+            if let Some(notice) = notice {
+                notifications.push(notice);
+            }
+        }
+        crate::push::notify_bells(notifications);
+        std::thread::sleep(RECHECK_TICK);
     }
 }
 
@@ -175,7 +242,11 @@ mod tests {
         // Bells are edges the watcher turns into frames (with a captured preview);
         // `diff` no longer emits them, so assert on `bell_edges` directly.
         let prev = snap(&[sess("ass-1", "500"), sess("ass-2", "0"), sess("ass-3", "")]);
-        let now = [sess("ass-1", "500"), sess("ass-2", "600"), sess("ass-3", "")];
+        let now = [
+            sess("ass-1", "500"),
+            sess("ass-2", "600"),
+            sess("ass-3", ""),
+        ];
         let edges = bell_edges(&prev, &now);
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].id, "ass-2");
@@ -208,5 +279,20 @@ mod tests {
             serde_json::from_str(data_line.strip_prefix("data: ").unwrap()).unwrap();
         assert_eq!(v["label"], "Claude Code · ass-1");
         assert_eq!(v["agent"], "claude");
+    }
+
+    #[test]
+    fn detector_sessions_do_not_double_notify_their_terminal_bell() {
+        let mut fallback = sess("ass-2", "500");
+        fallback.agent = "shell".into();
+        let previous = snap(&[sess("ass-1", "0"), {
+            let mut s = fallback.clone();
+            s.bell_at = "0".into();
+            s
+        }]);
+        let sessions = [sess("ass-1", "500"), fallback];
+        let bells = fallback_bell_edges(&previous, &sessions);
+        assert_eq!(bells.len(), 1);
+        assert_eq!(bells[0].id, "ass-2");
     }
 }

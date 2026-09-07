@@ -32,6 +32,8 @@ use skill_server::{init_logging, init_logging_to_file, ServerConfig, SshRemoteCo
 
 #[cfg(desktop)]
 mod editor; // ShellEditor: the "Open in VS Code" control (client-side, pinned-local route)
+#[cfg(desktop)]
+mod sound;
 // KeychainStore: the mobile switchboard's SSH credential store. Compiled on
 // macOS too (same Security.framework path) so its tests run on a Mac; only the
 // iOS setup path actually wires it in, hence the desktop dead_code allowance.
@@ -101,9 +103,9 @@ impl skill_core::update::UpdateControl for ShellUpdater {
 }
 
 /// The shell's half of `skill_server::NotifyControl`: the SPA decides WHEN a
-/// turn-finish deserves a toast (it owns focus + seen state) and posts to the
+/// agent transition deserves a toast or sound (it owns focus + seen state) and posts to the
 /// pinned-local `/api/notify*` routes; only this process can talk to the OS
-/// notification center, so display runs here via `tauri-plugin-notification`.
+/// notification center/audio, so native delivery runs here.
 #[cfg(any(desktop, target_os = "ios"))]
 struct ShellNotifier {
     app: tauri::AppHandle,
@@ -129,6 +131,12 @@ impl skill_server::NotifyControl for ShellNotifier {
                 log::warn!("notification permission request failed: {e}");
             }
         });
+    }
+
+    #[cfg(desktop)]
+    fn sound(&self, sound: skill_server::NotificationSound) -> Result<bool, String> {
+        sound::play(sound);
+        Ok(true)
     }
 
     fn set_badge(&self, count: u32) {

@@ -34,8 +34,7 @@ const TTL_SECS: u32 = 3600;
 
 /// VAPID `sub` contact (spec-required; a bare localhost URL gets BadJwtToken).
 fn contact() -> String {
-    std::env::var("VIBESTUDIO_PUSH_CONTACT")
-        .unwrap_or_else(|_| "mailto:push@agentskills.io".into())
+    std::env::var("VIBESTUDIO_PUSH_CONTACT").unwrap_or_else(|_| "mailto:push@agentskills.io".into())
 }
 
 // ───────────────────────────── persisted state ─────────────────────────────
@@ -64,11 +63,15 @@ fn store_path() -> Result<std::path::PathBuf, String> {
 
 fn store_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner())
+    LOCK.get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
 }
 
 fn load() -> Store {
-    let Ok(path) = store_path() else { return Store::default() };
+    let Ok(path) = store_path() else {
+        return Store::default();
+    };
     match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
         Err(_) => Store::default(),
@@ -126,8 +129,12 @@ pub(crate) fn add_subscription(sub: Subscription) -> Result<usize, String> {
     }
     // Reject malformed keys at the door, not at send time (65-byte P-256 point,
     // 16-byte auth secret — RFC 8291).
-    let p256dh = URL_SAFE_NO_PAD.decode(&sub.p256dh).map_err(|e| format!("bad p256dh: {e}"))?;
-    let auth = URL_SAFE_NO_PAD.decode(&sub.auth).map_err(|e| format!("bad auth: {e}"))?;
+    let p256dh = URL_SAFE_NO_PAD
+        .decode(&sub.p256dh)
+        .map_err(|e| format!("bad p256dh: {e}"))?;
+    let auth = URL_SAFE_NO_PAD
+        .decode(&sub.auth)
+        .map_err(|e| format!("bad auth: {e}"))?;
     if p256dh.len() != 65 || auth.len() != 16 {
         return Err("malformed subscription keys".into());
     }
@@ -151,7 +158,9 @@ pub(crate) fn remove_subscription(endpoint: &str) -> Result<usize, String> {
 
 fn attention() -> MutexGuard<'static, HashMap<String, Instant>> {
     static ATT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-    ATT.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner())
+    ATT.get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
 }
 
 /// A UI reported a focus edge. `client` is a per-tab id; any client focused
@@ -170,7 +179,9 @@ pub(crate) fn set_attention(client: &str, focused: bool) {
 }
 
 fn someone_watching() -> bool {
-    attention().values().any(|at| at.elapsed() < ATTENTION_FRESH)
+    attention()
+        .values()
+        .any(|at| at.elapsed() < ATTENTION_FRESH)
 }
 
 // ───────────────────────────── sending ─────────────────────────────
@@ -182,16 +193,30 @@ pub(crate) struct Bell {
     /// The agent's last output line (a captured preview), or `None` when the pane
     /// held nothing substantive — then the body falls back to the fixed phrase.
     pub last: Option<String>,
+    /// Typed detector edge. None preserves the legacy terminal-bell fallback.
+    pub kind: Option<skill_core::agent_detection::AttentionKind>,
 }
 
 /// Declarative Web Push payload (Safari 18.4+ renders it OS-side; sw.js renders
 /// the same JSON as a classic push elsewhere).
 fn payload(bell: &Bell) -> Vec<u8> {
-    let body = bell.last.as_deref().unwrap_or("Your turn — the agent finished.");
+    use skill_core::agent_detection::AttentionKind;
+    let (title, fallback) = match bell.kind {
+        Some(AttentionKind::Request) => (
+            format!("{} needs attention", bell.label),
+            "Your turn — the agent needs input.",
+        ),
+        Some(AttentionKind::Done) => (
+            format!("{} finished", bell.label),
+            "Your turn — the agent finished.",
+        ),
+        None => (bell.label.clone(), "Your turn — the agent finished."),
+    };
+    let body = bell.last.as_deref().unwrap_or(fallback);
     json!({
         "web_push": 8030,
         "notification": {
-            "title": bell.label,
+            "title": title,
             "body": body,
             "navigate": format!("/#/terminals?id={}", urlencoding::encode(&bell.id)),
             // Not part of the declarative schema (iOS ignores it); sw.js uses it
@@ -276,14 +301,20 @@ fn vapid_jwt(endpoint: &str) -> Result<String, String> {
         .as_secs()
         + 12 * 3600;
     let header = URL_SAFE_NO_PAD.encode(br#"{"typ":"JWT","alg":"ES256"}"#);
-    let claims = URL_SAFE_NO_PAD
-        .encode(json!({ "aud": aud, "exp": exp, "sub": contact() }).to_string().as_bytes());
+    let claims = URL_SAFE_NO_PAD.encode(
+        json!({ "aud": aud, "exp": exp, "sub": contact() })
+            .to_string()
+            .as_bytes(),
+    );
     let signing_input = format!("{header}.{claims}");
     let rng = ring::rand::SystemRandom::new();
     let sig = vapid_key()?
         .sign(&rng, signing_input.as_bytes())
         .map_err(|_| "VAPID signing failed".to_string())?;
-    Ok(format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(sig.as_ref())))
+    Ok(format!(
+        "{signing_input}.{}",
+        URL_SAFE_NO_PAD.encode(sig.as_ref())
+    ))
 }
 
 /// `https://host[:port]` of a push endpoint URL — the JWT `aud` claim.
@@ -317,8 +348,12 @@ fn hkdf(salt: &[u8], ikm: &[u8], info: &[u8], out: &mut [u8]) -> Result<(), Stri
 
 /// RFC 8291 aes128gcm: single record, sender ("as") ephemeral key in the header.
 fn encrypt(sub: &Subscription, plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    let ua_pub = URL_SAFE_NO_PAD.decode(&sub.p256dh).map_err(|e| format!("bad p256dh: {e}"))?;
-    let auth = URL_SAFE_NO_PAD.decode(&sub.auth).map_err(|e| format!("bad auth: {e}"))?;
+    let ua_pub = URL_SAFE_NO_PAD
+        .decode(&sub.p256dh)
+        .map_err(|e| format!("bad p256dh: {e}"))?;
+    let auth = URL_SAFE_NO_PAD
+        .decode(&sub.auth)
+        .map_err(|e| format!("bad auth: {e}"))?;
     if ua_pub.len() != 65 || auth.len() != 16 {
         return Err("malformed subscription keys".into());
     }
@@ -326,7 +361,9 @@ fn encrypt(sub: &Subscription, plaintext: &[u8]) -> Result<Vec<u8>, String> {
 
     let eph = ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::ECDH_P256, &rng)
         .map_err(|_| "ECDH keygen failed".to_string())?;
-    let as_pub = eph.compute_public_key().map_err(|_| "ECDH pubkey failed".to_string())?;
+    let as_pub = eph
+        .compute_public_key()
+        .map_err(|_| "ECDH pubkey failed".to_string())?;
     let as_pub = as_pub.as_ref().to_vec();
     let peer = ring::agreement::UnparsedPublicKey::new(&ring::agreement::ECDH_P256, ua_pub.clone());
     let shared = ring::agreement::agree_ephemeral(eph, &peer, |secret| secret.to_vec())
@@ -341,7 +378,8 @@ fn encrypt(sub: &Subscription, plaintext: &[u8]) -> Result<Vec<u8>, String> {
     hkdf(&auth, &shared, &info, &mut ikm)?;
 
     let mut salt = [0u8; 16];
-    rng.fill(&mut salt).map_err(|_| "salt generation failed".to_string())?;
+    rng.fill(&mut salt)
+        .map_err(|_| "salt generation failed".to_string())?;
     let mut cek = [0u8; 16];
     hkdf(&salt, &ikm, b"Content-Encoding: aes128gcm\0", &mut cek)?;
     let mut nonce = [0u8; 12];
@@ -376,6 +414,31 @@ fn encrypt(sub: &Subscription, plaintext: &[u8]) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn attention_payload_distinguishes_request_from_completion() {
+        use skill_core::agent_detection::AttentionKind;
+        let notice = |kind| Bell {
+            id: "ass-1".into(),
+            label: "Codex".into(),
+            last: None,
+            kind,
+        };
+        let request: serde_json::Value =
+            serde_json::from_slice(&payload(&notice(Some(AttentionKind::Request)))).unwrap();
+        let done: serde_json::Value =
+            serde_json::from_slice(&payload(&notice(Some(AttentionKind::Done)))).unwrap();
+        assert_eq!(request["notification"]["title"], "Codex needs attention");
+        assert_eq!(
+            request["notification"]["body"],
+            "Your turn — the agent needs input."
+        );
+        assert_eq!(done["notification"]["title"], "Codex finished");
+        assert_eq!(
+            done["notification"]["body"],
+            "Your turn — the agent finished."
+        );
+    }
+
     /// Receiver ("ua") side of RFC 8291, so the roundtrip proves our sender against
     /// an independent implementation of the spec's key schedule.
     fn decrypt(
@@ -390,7 +453,8 @@ mod tests {
         let as_pub = &msg[21..21 + 65];
         let ciphertext = &msg[21 + 65..];
 
-        let peer = ring::agreement::UnparsedPublicKey::new(&ring::agreement::ECDH_P256, as_pub.to_vec());
+        let peer =
+            ring::agreement::UnparsedPublicKey::new(&ring::agreement::ECDH_P256, as_pub.to_vec());
         let shared =
             ring::agreement::agree_ephemeral(ua_priv, &peer, |s| s.to_vec()).expect("ua ECDH");
 
@@ -510,13 +574,20 @@ mod tests {
     impl TempConfig {
         fn new() -> Self {
             static SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
-            let guard = SERIAL.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner());
+            let guard = SERIAL
+                .get_or_init(Mutex::default)
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let dir = std::env::temp_dir().join(format!("ss-push-test-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let prev = std::env::var("XDG_CONFIG_HOME").ok();
             std::env::set_var("XDG_CONFIG_HOME", &dir);
-            TempConfig { dir, prev, _guard: guard }
+            TempConfig {
+                dir,
+                prev,
+                _guard: guard,
+            }
         }
     }
     impl Drop for TempConfig {

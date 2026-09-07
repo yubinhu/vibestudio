@@ -1,28 +1,33 @@
-// Shared session store + the agent turn-finish notifier. A module-level
-// store (same external-store idiom as lib/remote.ts / lib/updates.ts) because
-// notifications must outlive any mounted workspace: SessionsHost only mounts on
-// the first Sessions visit, but an agent finishing while the window sits in the
-// tray — or before any visit — must still toast. This module owns:
-//   * the session list, and the per-session "last viewed" marks (localStorage)
-//     the unread dot compares `bellAt` against — moved out of SessionsWorkspace
-//     so the NavBar dot and the notifier share them;
-//   * the `/api/events` subscription (instant bell/opened/closed refresh; the
-//     workspace's 5s poll stays as the backstop for servers without it);
-//   * the notifier: when a session's unread state transitions false→true while
-//     the window is unfocused or hidden, toast — natively via POST /api/notify
-//     (the desktop shell), else the Web Notification API (browser mode). Title =
-//     the session label; the body is a fixed phrase. A notification summons, it
-//     doesn't summarize — the terminal itself is one tap away.
+// Shared sessions, unread state, and attention notifications outlive mounted
+// workspaces. Server detector transitions drive status, request priority, and
+// request/done sounds. SSE and polling share a sequence ledger so they cannot
+// announce the same transition twice; startup/reconnect baselines stay silent.
+// Older servers keep their terminal-bell notifications and seen timestamps.
 import { useSyncExternalStore } from "react";
 import * as api from "@/lib/api";
 import type { TermEvent, TermSession } from "@/lib/api";
 import { log } from "@/lib/log";
 import { canPush, enablePushInGesture } from "@/lib/push";
 import { sessionsPath } from "@/lib/routes";
+import { attentionBoot, attentionIsUnread, newerAttention, orderSessions, shouldSound } from "./sessionAttention";
+import { playAttentionSound, unlockAttentionSound } from "./attentionSound";
 
 /** Per-session "last viewed" marks (id → unix secs) for the unread dot.
  *  Legacy key string — keep the old "terminals" word so existing marks survive the rename. */
 const SEEN_KEY = "skillviewer-terminals-seen";
+const ATTENTION_SEEN_KEY = "vibestudio-session-attention-seen";
+
+function readAttentionSeen(): Record<string, string> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(ATTENTION_SEEN_KEY) ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([, v]) => typeof v === "string"));
+  } catch { return {}; }
+}
+
+function persistAttentionSeen(): void {
+  try { localStorage.setItem(ATTENTION_SEEN_KEY, JSON.stringify(attentionSeen)); } catch { /* best effort */ }
+}
 
 /** Wall-clock seconds, to compare against tmux bell timestamps. */
 const nowSecs = () => Math.floor(Date.now() / 1000);
@@ -70,34 +75,22 @@ function persistOrder() {
 }
 
 /**
- * The user's manual order first (see `reorder`), then chronological (oldest
- * first, id tiebreak) for any session they haven't placed — new ones, and the
- * whole list before any drag. Chronological is the stable fallback the rail
- * always needs: tmux lists by pid-led name, so without a fixed key a backend
- * restart (relaunch, upgrade, remote reconnect) would reshuffle every row.
+ * Requests first, then the user's order within each priority group. The stable
+ * chronological fallback keeps tmux's pid-led list from shuffling the rail.
  */
 function sortSessions(list: TermSession[]): TermSession[] {
-  const rank = new Map(order.map((id, i) => [id, i] as const));
-  const rk = (s: TermSession) => rank.get(s.id) ?? Number.MAX_SAFE_INTEGER;
-  return [...list].sort(
-    (a, b) =>
-      rk(a) - rk(b) ||
-      (Number(a.created) || 0) - (Number(b.created) || 0) ||
-      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-  );
+  return orderSessions(list, order);
 }
 
-/** The rail's unread predicate: a bell rang after this session was last viewed.
- *  Keyed off the turn-completion BELL, NOT raw output — an idle agent TUI keeps
- *  repainting its pane, so `activity` would leave a phantom dot with nothing new
- *  to see. Sessions never listed before start "seen" at their own bell time, so
- *  a reconnect doesn't light up every session that belled while you were away. */
+/** Attention uses exact transition IDs; legacy servers use bell timestamps.
+ *  Raw terminal activity never counts as unread. */
 export function isUnread(
   s: TermSession,
   seenMap: Record<string, number>,
   activeId: string | null,
 ): boolean {
   if (s.id === activeId) return false; // the one you're watching is never "new"
+  if (s.attention) return attentionIsUnread(s.attention, attentionSeen[s.id]);
   return bellOf(s) > (seenMap[s.id] ?? bellOf(s));
 }
 
@@ -107,6 +100,12 @@ let sessions: TermSession[] = [];
 let loading = true;
 let seen: Record<string, number> = readSeen();
 let order: string[] = readOrder();
+let attentionSeen: Record<string, string> = readAttentionSeen();
+const latestAttention = new Map<string, api.SessionAttention>();
+const createdHere = new Set<string>();
+let attentionReady = false;
+let attentionEpoch = 0;
+const pendingAttention = new Map<string, ReturnType<typeof setTimeout>>();
 /** The session a VISIBLE workspace is currently showing (null = none visible). */
 let watchedId: string | null = null;
 const listeners = new Set<() => void>();
@@ -144,6 +143,11 @@ export function useSessions(): SessionsSnap {
 export function markSeen(id: string | null): void {
   if (!id) return;
   seen = { ...seen, [id]: nowSecs() };
+  const attention = latestAttention.get(id);
+  if (attention) {
+    attentionSeen = { ...attentionSeen, [id]: attention.sequence };
+    persistAttentionSeen();
+  }
   persistSeen();
   rebuild();
 }
@@ -176,6 +180,8 @@ export function releaseWatched(id: string | null): void {
  *  the next refresh reconciles). */
 export function noteCreated(s: TermSession): void {
   if (sessions.some((p) => p.id === s.id)) return;
+  createdHere.add(s.id);
+  observeAttention(s, attentionReady);
   sessions = sortSessions([...sessions, s]);
   if (seen[s.id] == null) {
     seen = { ...seen, [s.id]: bellOf(s) };
@@ -204,9 +210,15 @@ export function refresh(): Promise<void> {
     queued = true;
     return inflight;
   }
+  const epoch = attentionEpoch;
+  const requestedFrom = new Map(latestAttention);
   inflight = (async () => {
     try {
-      setSessions(sortSessions(await api.terminalList()));
+      const list = await api.terminalList();
+      if (epoch === attentionEpoch) {
+        setSessions(list, requestedFrom);
+        attentionReady = true;
+      }
     } catch {
       /* transient — the poll or the next event retries */
     } finally {
@@ -223,19 +235,40 @@ export function refresh(): Promise<void> {
   return inflight;
 }
 
-function setSessions(list: TermSession[]) {
+function setSessions(list: TermSession[], requestedFrom: Map<string, api.SessionAttention>) {
+  list = list.map((s) => {
+    const current = latestAttention.get(s.id);
+    if (current && (
+      requestedFrom.get(s.id)?.sequence !== current.sequence || (s.attention && !newerAttention(s.attention, current))
+    )) return { ...s, attention: current };
+    if (!s.attention && current) {
+      latestAttention.delete(s.id);
+      const timer = pendingAttention.get(s.id);
+      if (timer) clearTimeout(timer);
+      pendingAttention.delete(s.id);
+    }
+    observeAttention(s, attentionReady);
+    return s;
+  });
   // Poll-path notification backstop: detect bell transitions here too (a server
   // without /api/events still toasts, ≤5s late). The dedup set in maybeNotify
   // absorbs the overlap when the SSE path already announced the same bell.
   const prevById = new Map(sessions.map((s) => [s.id, s]));
   for (const s of list) {
     const p = prevById.get(s.id);
-    if (p && bellOf(s) > bellOf(p)) {
+    if (p && !s.attention && bellOf(s) > bellOf(p)) {
       maybeNotify({ id: s.id, label: s.label, agent: s.agent, cwd: s.cwd, at: s.bellAt });
     }
   }
 
-  sessions = list;
+  sessions = sortSessions(list);
+  const live = new Set(list.map((s) => s.id));
+  for (const id of latestAttention.keys()) {
+    if (!live.has(id)) latestAttention.delete(id);
+  }
+  for (const [id, timer] of pendingAttention) {
+    if (!live.has(id)) { clearTimeout(timer); pendingAttention.delete(id); }
+  }
 
   // Seed a seen mark for each newly-listed session (start it at its own bell)
   // and prune marks for sessions that are gone. Viewed sessions keep the stamps
@@ -258,6 +291,10 @@ function setSessions(list: TermSession[]) {
   // must not dot the rail or count in the badge after you switch away.
   if (watchedId && !document.hidden && document.hasFocus()) {
     const w = list.find((s) => s.id === watchedId);
+    if (w?.attention && attentionSeen[w.id] !== w.attention.sequence) {
+      attentionSeen = { ...attentionSeen, [w.id]: w.attention.sequence };
+      persistAttentionSeen();
+    }
     if (w && bellOf(w) > (seen[w.id] ?? 0)) {
       seen = { ...seen, [w.id]: nowSecs() };
       persistSeen();
@@ -265,11 +302,48 @@ function setSessions(list: TermSession[]) {
   }
 }
 
+/** Snapshot and SSE share one sequence ledger. Initial observations and reconnect
+ * baselines update the rail silently; only new live transitions announce. */
+function observeAttention(s: Pick<TermSession, "id" | "label" | "attention">, announce: boolean): void {
+  const next = s.attention;
+  if (!next) return;
+  const previous = latestAttention.get(s.id);
+  if (previous && !newerAttention(next, previous)) return;
+  const timer = pendingAttention.get(s.id);
+  if (timer) clearTimeout(timer);
+  pendingAttention.delete(s.id);
+  latestAttention.set(s.id, next);
+  const newlyCreated = createdHere.has(s.id);
+  if (next.state !== "unknown") createdHere.delete(s.id);
+  if (attentionSeen[s.id] === undefined) {
+    attentionSeen = { ...attentionSeen, [s.id]: next.sequence };
+    persistAttentionSeen();
+  }
+  if ((!announce && !newlyCreated) || !next.kind ||
+    ((!previous || attentionBoot(previous) !== attentionBoot(next)) && !newlyCreated)) return;
+  const kind = next.kind;
+  const epoch = attentionEpoch;
+  const current = () => attentionEpoch === epoch && latestAttention.get(s.id)?.sequence === next.sequence;
+  // A short settle window cancels prompts that disappear before the user could act.
+  pendingAttention.set(s.id, setTimeout(() => {
+    pendingAttention.delete(s.id);
+    if (!current()) return;
+    const watching = () => watchedId === s.id && !document.hidden && document.hasFocus();
+    if (shouldSound(kind, watching())) {
+      void playAttentionSound(kind, () => current() && shouldSound(kind, watching()));
+    }
+    if (document.hidden || !document.hasFocus()) {
+      void deliver(s.label || s.id, kind === "request" ? "Your input is needed." : "Your turn — the agent finished.", s.id, current);
+    }
+  }, 120));
+}
+
 // ─── the notifier ───
 
 /** Bells already decided on (`id:bellAt`), so the SSE path and the poll backstop
  *  can't double-toast the same turn. */
 const notified = new Set<string>();
+const latestBell = new Map<string, string>();
 
 /** The newest bell actually toasted per session — the "one banner per session
  *  until seen" ledger. Deliberately NOT derived from `sessions` (which lags a
@@ -281,14 +355,22 @@ const announced = new Map<string, number>();
 let nativeNotify: boolean | null = null;
 
 function maybeNotify(e: TermEvent): void {
+  if (e.attention || latestAttention.has(e.id)) return; // semantic attention supersedes terminal bells
   const key = `${e.id}:${e.at}`;
   if (notified.has(key)) return;
   notified.add(key);
+  latestBell.set(e.id, e.at);
+  if (!attentionReady) return;
   const bell = Number(e.at) || 0;
   const seenAt = seen[e.id];
   // Unknown session (never listed) or already viewed past this bell → no toast;
   // the seen-seeding rule keeps reconnects/restarts silent by construction.
   if (seenAt == null || bell <= seenAt) return;
+  const epoch = attentionEpoch;
+  const current = () => attentionEpoch === epoch && latestBell.get(e.id) === e.at && !latestAttention.has(e.id) &&
+    sessions.some((s) => s.id === e.id) &&
+    !(watchedId === e.id && !document.hidden && document.hasFocus());
+  if (current()) void playAttentionSound("done", current);
   // One banner per session until it's seen: a toast for an earlier still-unread
   // bell already summoned the user for this session.
   if ((announced.get(e.id) ?? 0) > seenAt) return;
@@ -301,7 +383,8 @@ function maybeNotify(e: TermEvent): void {
   void deliver(e.label || e.id, e.last?.trim() || "Your turn — the agent finished.", e.id);
 }
 
-async function deliver(title: string, body: string, tag: string): Promise<void> {
+async function deliver(title: string, body: string, tag: string, current: () => boolean = () => true): Promise<void> {
+  if (!current()) return;
   // A push-capable surface (installed PWA / push-subscribed browser) already gets
   // the server's Web Push for this same bell — raising a local notification too is
   // the "exactly two per turn" double. Web Push is the authoritative channel there,
@@ -324,7 +407,7 @@ async function deliver(title: string, body: string, tag: string): Promise<void> 
       }
     }
   }
-  webNotify(title, body, tag);
+  if (current()) webNotify(title, body, tag);
 }
 
 function webNotify(title: string, body: string, tag: string): void {
@@ -371,6 +454,7 @@ async function probeNative(): Promise<void> {
  *  Browser mode needs the actual user gesture, so call it synchronously from
  *  the click handler, not after an await. */
 export function primeNotifications(): void {
+  unlockAttentionSound();
   if (nativeNotify !== false) {
     api.notifyPrime().catch(() => {});
   }
@@ -402,6 +486,20 @@ function connectEvents(): void {
   esHandle = api.terminalEvents(
     (kind, e) => {
       if (kind === "bell") maybeNotify(e);
+      if (kind === "closed") {
+        createdHere.delete(e.id);
+        latestAttention.delete(e.id);
+        latestBell.delete(e.id);
+        const timer = pendingAttention.get(e.id);
+        if (timer) clearTimeout(timer);
+        pendingAttention.delete(e.id);
+      }
+      if (kind === "attention" && e.attention) {
+        observeAttention(e, attentionReady);
+        sessions = sortSessions(sessions.map((s) => s.id === e.id ? { ...s, attention: latestAttention.get(e.id) } : s));
+        if (watchedId === e.id && !document.hidden && document.hasFocus()) markSeen(e.id);
+        rebuild();
+      }
       void refresh();
     },
     () => {
@@ -412,10 +510,14 @@ function connectEvents(): void {
       esHandle = null;
       setTimeout(connectEvents, 30_000);
     },
-    // (Re)connect edge: events are hints with no server replay, so the client
-    // owns catching up here — a bell landing during a network gap (wifi blip,
-    // phone asleep) must still surface as a dot/badge after reconnect.
-    () => void refresh(),
+    // Catch up without sounding historical transitions after a network gap.
+    () => {
+      attentionEpoch++;
+      attentionReady = false;
+      for (const timer of pendingAttention.values()) clearTimeout(timer);
+      pendingAttention.clear();
+      void refresh();
+    },
   );
 }
 

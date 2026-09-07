@@ -11,6 +11,8 @@ import type { TermSession } from "@/lib/api";
 import { log } from "@/lib/log";
 import * as push from "@/lib/push";
 import * as store from "@/lib/sessions";
+import { attentionLabel } from "@/lib/sessionAttention";
+import { setAttentionSoundEnabled, useAttentionSound } from "@/lib/attentionSound";
 
 // Legacy key string — keep the old "terminals" word so existing users' saved rail width survives the rename.
 const RAIL_KEY = "skillviewer-terminals-rail";
@@ -84,6 +86,7 @@ export default function SessionsWorkspace({
   const { sessions, loading, seen } = store.useSessions();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
+  const soundEnabled = useAttentionSound();
   // Web Push offer — shown until the user decides (mainly the installed phone
   // app, where watching desktop-started agents is the whole point).
   const [pushOffer, setPushOffer] = useState(() => push.canOfferPush());
@@ -328,6 +331,18 @@ export default function SessionsWorkspace({
       </div>
     </div>
   );
+  const soundToggle = (
+    <button
+      type="button"
+      onClick={() => setAttentionSoundEnabled(!soundEnabled)}
+      aria-label="Session sounds"
+      aria-pressed={soundEnabled}
+      title={soundEnabled ? "Mute session sounds" : "Enable session sounds"}
+      className={`shrink-0 rounded-md px-2 py-1 text-xs hover:bg-panel ${soundEnabled ? "text-accent" : "text-muted"}`}
+    >
+      Sounds {soundEnabled ? "on" : "off"}
+    </button>
+  );
 
   return (
     <div ref={rootRef} className={`flex ${embedded ? "h-full" : "h-dvh"} flex-col bg-app text-fg`}>
@@ -342,6 +357,7 @@ export default function SessionsWorkspace({
             </>
           }
         >
+          {!narrow && soundToggle}
           {active && canOpenEditor && (
             <button
               type="button"
@@ -392,10 +408,12 @@ export default function SessionsWorkspace({
                   <option key={s.id} value={s.id}>
                     {unread(s) ? "● " : ""}
                     {s.label}
+                    {attentionLabel(s) ? ` — ${attentionLabel(s)}` : ""}
                   </option>
                 ))
               )}
             </select>
+            {soundToggle}
             {pushOffer && store.nativeNotifyState() !== true && (
               <button
                 type="button"
@@ -453,6 +471,7 @@ export default function SessionsWorkspace({
               <div className="flex items-center justify-between border-b border-border py-1 pl-3 pr-1.5">
                 <span className="text-[0.65rem] font-semibold uppercase tracking-wider text-muted">Sessions</span>
                 <div className="flex items-center gap-0.5">
+                  {soundToggle}
                   {active && canOpenEditor && (
                     <button
                       type="button"
@@ -507,6 +526,11 @@ export default function SessionsWorkspace({
                         <span className="w-full truncate pl-3 font-mono text-[0.65rem] text-faint" title={s.cwd}>
                           {s.cwd}
                         </span>
+                        {attentionLabel(s) && (
+                          <span className={`pl-3 pt-0.5 text-[0.65rem] ${s.attention?.state === "blocked" ? "font-medium text-warn" : s.attention?.state === "working" ? "text-accent" : "text-faint"}`}>
+                            {attentionLabel(s)}
+                          </span>
+                        )}
                       </button>
                       <button
                         type="button"

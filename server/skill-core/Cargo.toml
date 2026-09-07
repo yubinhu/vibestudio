@@ -7,6 +7,9 @@ description = "Transport-agnostic skill filesystem + discovery logic (no GUI dep
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Herdr terminal-state manifests and their declarative matchers.
+toml = "0.9"
+regex = "1"
 serde_yaml = "0.9"
 walkdir = "2"
 # Logging facade only (no subscriber — a binary installs one). Already in the
