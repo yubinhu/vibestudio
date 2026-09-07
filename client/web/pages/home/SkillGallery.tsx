@@ -444,7 +444,7 @@ export default function SkillGallery() {
   // Discovered skills come from the shared module store: cached across visits, so
   // a revisit paints the last result instantly while a background rescan runs
   // (no empty-grid flash), and the dashboard's stat card reads the same one scan.
-  const { groups: discovered, dirtyRoots, loading: discovering } = useSkills();
+  const { groups: discovered, dirtyRoots, loading: discovering, scanning } = useSkills();
   const [busyRoot, setBusyRoot] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const confirm = useConfirm();
@@ -464,7 +464,7 @@ export default function SkillGallery() {
   useEffect(() => {
     if (mining?.status !== "running") return;
     const t = setInterval(() => {
-      if (!document.hidden) void refreshSkills();
+      if (!document.hidden) void refreshSkills(false);
     }, 15000);
     return () => clearInterval(t);
   }, [mining?.status]);
@@ -575,17 +575,17 @@ export default function SkillGallery() {
       <SectionTitle
         trailing={
           <>
-            {discovering ? <Spinner className="h-3 w-3" /> : <span className="text-xs text-faint">{totalFound}</span>}
+            <span className="text-xs text-faint">{totalFound}</span>
             <div className="ml-auto flex w-full items-center gap-1 sm:w-auto">
               {actions}
               <button
                 type="button"
                 onClick={() => void refreshSkills()}
-                disabled={discovering}
+                disabled={scanning}
                 title="Rescan your machine for installed skills"
                 className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted hover:bg-panel hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <RefreshIcon className={discovering ? "animate-spin" : ""} />
+                <RefreshIcon />
                 Discover
               </button>
             </div>
@@ -595,7 +595,7 @@ export default function SkillGallery() {
         Agent skills
       </SectionTitle>
       {actionError && <p className="mb-3 text-sm text-danger">{actionError}</p>}
-      {!discovering && totalFound === 0 ? (
+      {!discovering && !scanning && totalFound === 0 ? (
         <p className="max-w-2xl text-sm text-muted">
           No installed skills found. Skills live under <code className="font-mono text-[0.8em]">~/.agents/skills</code>,{" "}
           <code className="font-mono text-[0.8em]">~/.claude/skills</code>,{" "}

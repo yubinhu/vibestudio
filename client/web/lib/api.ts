@@ -121,8 +121,7 @@ const readImage = (root: string, rel: string) =>
 export const writeSkillAsset = (root: string, dir: string, name: string, bytes: Uint8Array) =>
   http<{ rel: string }>("POST", "fs/write-asset", { root, dir, name, data: bytesToB64(bytes) });
 
-export async function discoverSkills(): Promise<AgentSkills[]> {
-  const groups = await http<AgentSkills[]>("GET", "skills/discover");
+function tagStudioSkills(groups: AgentSkills[]): AgentSkills[] {
   // The bundled built-in skills (load-secrets, skill-miner) ship with the app
   // and install into personal dirs, so discovery tags them "personal". Re-tag
   // them "studio" so they keep their folder names but tuck into the bundled
@@ -131,6 +130,26 @@ export async function discoverSkills(): Promise<AgentSkills[]> {
     ...g,
     skills: g.skills.map((s) => (isBootstrapSkill(s.root) ? { ...s, kind: "studio" } : s)),
   }));
+}
+
+export async function discoverSkills(): Promise<AgentSkills[]> {
+  return tagStudioSkills(await http<AgentSkills[]>("GET", "skills/discover"));
+}
+
+export interface SkillDiscoverySnapshot {
+  groups: AgentSkills[];
+  /** The server is still searching for project skills in the background. */
+  scanning: boolean;
+}
+
+/** Paint installed skills immediately, then poll for background project results.
+ * Older servers ignore the query and return the original complete array. */
+export async function discoverSkillSnapshot(refresh = false): Promise<SkillDiscoverySnapshot> {
+  const result = await http<SkillDiscoverySnapshot | AgentSkills[]>(
+    "GET", `skills/discover?progressive=true${refresh ? "&refresh=true" : ""}`,
+  );
+  const snapshot = Array.isArray(result) ? { groups: result, scanning: false } : result;
+  return { ...snapshot, groups: tagStudioSkills(snapshot.groups) };
 }
 
 // --- Remote-SSH connection manager (desktop only) ---

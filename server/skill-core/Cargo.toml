@@ -7,8 +7,8 @@ description = "Transport-agnostic skill filesystem + discovery logic (no GUI dep
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Herdr terminal-state manifests and their declarative matchers.
 toml = "0.9"
+# Herdr's declarative terminal-state matcher (bundled manifests only).
 regex = "1"
 url = "2"
 serde_yaml = "0.9"

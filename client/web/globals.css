@@ -176,7 +176,15 @@ body {
 }
 .modal-backdrop-in { animation: modal-backdrop-in 0.16s ease-out; }
 .modal-in { animation: modal-in 0.16s ease-out; }
+/* Dim digits in sequence to send a soft wave of light across the overview count. */
+@keyframes skill-count-wave {
+  0%, 30%, 100% { opacity: 1; }
+  15% { opacity: 0.4; }
+}
+.skill-count-loading .skill-count-digit { animation: skill-count-wave 1.6s ease-in-out infinite; }
+
 @media (prefers-reduced-motion: reduce) {
+  .skill-count-loading .skill-count-digit { animation: none; }
   .modal-backdrop-in,
   .modal-in { animation: none; }
 }

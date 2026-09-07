@@ -95,8 +95,23 @@ See [the persistence audit](docs/persistence.md).
 
 ## Skill versioning: tracked by default
 
+**Discovery is progressive.** `GET /api/skills/discover?progressive=true` returns
+`{groups, scanning}` after reading canonical global folders and previously indexed
+project skill folders. The answering server persists project folder locations in
+`skill-projects.json` (using the locked, atomic JSON store); it rereads their contents
+on every request, so edits, additions and deletions appear without stale skill
+metadata. On first use, and at most once per minute on subsequent ordinary reads,
+one detached worker searches home for new project locations. Its bounded scan merges
+locations with the index, preserving known projects if the scan is truncated.
+The client polls while `scanning` is true and keeps the gallery visible throughout.
+Explicit Refresh adds `refresh=true` to bypass the cooldown; concurrent requests
+share the running crawl. Without `progressive=true`, the route preserves its
+synchronous full scan and complete array response for older clients, which cannot
+poll for background results. The index belongs to the server, so switching to an
+SSH host cannot reuse local project locations.
+
 Each personal skill is its **own git repo** (versioned/diffed/rolled-back/synced
-independently). **Auto-tracked:** `GET /api/skills/discover` → `discover_and_autotrack` →
+independently). **Auto-tracked:** `GET /api/skills/discover` → `discover_progressive` →
 `gitops::auto_track_personal`, which off-thread `git init`s + lands a baseline **"Initial
 version"** commit (an unborn HEAD reads all-dirty and can't sync; with no git identity we stop
 at the empty repo and prompt on first manual save).

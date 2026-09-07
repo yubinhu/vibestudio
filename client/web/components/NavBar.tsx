@@ -39,7 +39,7 @@ function StudioIcon() {
 
 /** A persistent app-nav link (Sessions, Connectors) shown on every page; the entry
  *  for the current page reads as active. `dot` is the same blue unread dot as the
- *  session rail's — "an agent finished a turn somewhere you aren't looking". */
+ *  session rail's — an agent needs input or finished while you weren't watching. */
 function NavLink({
   icon,
   label,
@@ -68,8 +68,8 @@ function NavLink({
       {dot && (
         <span
           className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-info"
-          title="An agent finished a turn"
-          aria-label="An agent finished a turn"
+          title="An agent needs attention"
+          aria-label="An agent needs attention"
         />
       )}
     </button>

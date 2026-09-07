@@ -892,9 +892,10 @@ mod unix {
                 availability: Vec::new(),
                 managed_connection_ids: vec!["known-id".into()],
             });
-            let mut runtime = ConnectorInventory::default();
-            runtime.connectors = checked;
-            inventory.merge(runtime);
+            inventory.merge(ConnectorInventory {
+                connectors: checked,
+                ..Default::default()
+            });
             assert_eq!(inventory.connectors.len(), 3);
             let managed = inventory
                 .connectors

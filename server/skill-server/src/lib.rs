@@ -1080,7 +1080,16 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
             content_type: "text/plain".into(),
             extra: vec![],
         },
-        (Method::Get, "/api/skills/discover") => json_reply(discover::discover_and_autotrack()),
+        (Method::Get, "/api/skills/discover") => {
+            if query_param(url, "progressive").as_deref() == Some("true") {
+                let force = query_param(url, "refresh").as_deref() == Some("true");
+                json_reply(discover::discover_progressive(force))
+            } else {
+                // Older clients cannot poll for background results, so retain
+                // both their array response and complete discovery behavior.
+                json_reply(discover::discover_and_autotrack())
+            }
+        }
         (Method::Post, "/api/skills/read") => {
             let root = skill::resolve_skill_input(&s("path"), ctx.examples_base.as_deref());
             json_reply(skill::build_raw_skill(&root))

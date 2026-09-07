@@ -1051,9 +1051,7 @@ fn scan_claude_plugins(
                 &path,
                 key,
                 ".claude-plugin/plugin.json",
-                disabled,
-                project.as_deref(),
-                None,
+                PluginScope { disabled, project: project.as_deref(), overrides: None },
             );
         }
     }
@@ -1255,9 +1253,7 @@ fn scan_codex_plugin(
         root,
         key,
         ".codex-plugin/plugin.json",
-        disabled,
-        project,
-        overrides,
+        PluginScope { disabled, project, overrides },
     );
     let label = format!("Plugin {}", clean_name(key));
     let Some((manifest, manifest_source)) = collector.read(
@@ -1400,16 +1396,21 @@ fn cached_plugin(
     }
 }
 
+struct PluginScope<'a> {
+    disabled: bool,
+    project: Option<&'a Path>,
+    overrides: Option<&'a Value>,
+}
+
 fn scan_plugin(
     collector: &mut Collector,
     agent: &str,
     root: &Path,
     key: &str,
     manifest_path: &str,
-    disabled: bool,
-    project: Option<&Path>,
-    overrides: Option<&Value>,
+    scope: PluginScope<'_>,
 ) {
+    let PluginScope { disabled, project, overrides } = scope;
     if !root.is_absolute() {
         return;
     }
@@ -2254,9 +2255,7 @@ mod tests {
                 &fixture.root.join(plugin),
                 plugin,
                 ".claude-plugin/plugin.json",
-                false,
-                None,
-                None,
+                PluginScope { disabled: false, project: None, overrides: None },
             );
         }
         assert_eq!(collector.inventory.connectors.len(), 2);

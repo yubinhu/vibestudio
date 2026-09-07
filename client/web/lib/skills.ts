@@ -1,9 +1,6 @@
-// App-wide discovered-skills cache: one module-level store the home page reads
-// from two places (the "Skills" stat card and the embedded gallery), so a scan
-// runs ONCE per visit instead of once per component, and — the point of this
-// module — its results survive unmount. A revisit paints the last-known skills
-// instantly and rescans in the background, instead of blanking to a spinner and
-// repopulating every time. Same external-store idiom as lib/mining.ts / lib/sessions.ts.
+// Shared inventory for the home stat card and gallery. The server returns
+// installed skills first and searches for project skills in the background;
+// poll that snapshot while Home is mounted, without restarting the search.
 import { useSyncExternalStore } from "react";
 import * as api from "@/lib/api";
 import type { AgentSkills } from "@/lib/api";
@@ -13,6 +10,7 @@ import type { AgentSkills } from "@/lib/api";
 // redundant scan on a quick bounce back to home. An explicit refreshSkills()
 // (after accept/discard/delete/mining) always runs regardless.
 const STALE_MS = 2000;
+const POLL_MS = 1000;
 
 const nowMs = () => Date.now();
 
@@ -23,7 +21,7 @@ export interface SkillsSnap {
   /** True only until the FIRST successful scan lands — drives the cold-start
    *  spinner. False forever after, so revisits show the cache, never a blank. */
   loading: boolean;
-  /** A scan is in flight (cold OR background) — drives the small header spinner
+  /** A request or server-side search is in flight — drives the header spinner
    *  without blanking the grid. */
   scanning: boolean;
   /** Total skills across groups (incl. proposed drafts) — the stat card's value. */
@@ -38,13 +36,19 @@ let scanning = false;
 let fetchedAt = 0;
 const listeners = new Set<() => void>();
 
-// Coalesce concurrent scans into one, with a single trailing rescan (sessions.ts
-// pattern): a mount storm, or an action firing mid-scan, still lands exactly one
-// fresh pass. This serialization is also why no epoch guard is needed — a scan
-// (discover + its dirty wave) fully completes before the next begins, so a slow
-// one can't clobber a newer one's results.
+// Serialize inventory reads. A user action during a read queues one force
+// refresh; another subscriber or background poll merely joins the current read.
 let inflight: Promise<void> | null = null;
-let queued = false;
+let queuedRefresh = false;
+let serverScanning = false;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let revision = 0;
+
+// Git badges must not hold up the next project-discovery snapshot. Keep at most
+// one dirty request in flight and one latest request waiting; stale results can
+// never replace badges for a newer inventory.
+let checkingDirty = false;
+let pendingDirty: { roots: string[]; revision: number } | null = null;
 
 let snap: SkillsSnap = { groups, dirtyRoots, loading, scanning, total: 0 };
 
@@ -54,45 +58,94 @@ function rebuild() {
   for (const l of listeners) l();
 }
 
-/** Rescan now. Shows the cached groups throughout (never blanks after the first
- *  load); swaps in fresh results — then the dirty badges — when they land. */
-export function refreshSkills(): Promise<void> {
+function clearPoll() {
+  if (pollTimer !== null) clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+function schedulePoll() {
+  if (!listeners.size || !serverScanning || inflight || pollTimer !== null) return;
+  pollTimer = setTimeout(() => {
+    pollTimer = null;
+    void readSkills();
+  }, POLL_MS);
+}
+
+function refreshDirty() {
+  pendingDirty = {
+    roots: [...new Set(groups.flatMap((g) => g.skills.filter((s) => !s.proposed).map((s) => s.root)))],
+    revision,
+  };
+  if (checkingDirty) return;
+  checkingDirty = true;
+  void (async () => {
+    try {
+      while (pendingDirty) {
+        const next = pendingDirty;
+        pendingDirty = null;
+        try {
+          const states = next.roots.length ? await api.gitDirtyMany(next.roots) : [];
+          if (next.revision === revision) {
+            dirtyRoots = new Set(states.filter((d) => d.dirty).map((d) => d.root));
+            rebuild();
+          }
+        } catch {
+          /* dirty badges are best-effort */
+        }
+      }
+    } finally {
+      checkingDirty = false;
+    }
+  })();
+}
+
+function readSkills(refresh = false): Promise<void> {
   if (inflight) {
-    queued = true;
+    if (refresh) queuedRefresh = true;
     return inflight;
   }
+  clearPoll();
   scanning = true;
   rebuild();
   inflight = (async () => {
     try {
-      const g = await api.discoverSkills();
-      groups = g;
-      loading = false;
-      fetchedAt = nowMs();
-      rebuild();
-      // Dirty flags — one batch call, awaited so the next queued scan sees a
-      // settled state. Proposed drafts sit in a staging dir that isn't a repo, so
-      // they're never dirty and are excluded.
-      const roots = g.flatMap((gr) => gr.skills.filter((s) => !s.proposed).map((s) => s.root));
-      try {
-        const states = await api.gitDirtyMany(roots);
-        dirtyRoots = new Set(states.filter((d) => d.dirty).map((d) => d.root));
-      } catch {
-        /* dirty badges are best-effort */
-      }
-    } catch {
-      /* keep whatever was already cached if a rescan fails */
+      let force = refresh;
+      do {
+        queuedRefresh = false;
+        try {
+          const result = await api.discoverSkillSnapshot(force);
+          const first = loading;
+          groups = result.groups;
+          serverScanning = result.scanning;
+          loading = false;
+          fetchedAt = nowMs();
+          revision++;
+          pendingDirty = null;
+          rebuild();
+          // Check the first quick inventory and the final one; intermediate polls
+          // need no repeated git sweep. Publishing groups always comes first.
+          if (first || !serverScanning) refreshDirty();
+        } catch {
+          /* keep the cache; a running server search is polled again */
+        }
+        force = queuedRefresh;
+      } while (force);
     } finally {
       inflight = null;
-      scanning = false;
+      scanning = serverScanning;
       rebuild();
-      if (queued) {
-        queued = false;
-        void refreshSkills();
-      }
+      schedulePoll();
     }
   })();
   return inflight;
+}
+
+/** Explicit action: refresh the inventory and request a new project search.
+ * Resolves when the immediate snapshot lands; background results and git badges
+ * continue independently, keeping the cached cards available throughout.
+ * Automatic mining ticks pass false to read without restarting the search. */
+export function refreshSkills(refresh = true): Promise<void> {
+  return readSkills(refresh);
 }
 
 function subscribe(fn: () => void): () => void {
@@ -100,9 +153,10 @@ function subscribe(fn: () => void): () => void {
   // Paint the cache immediately; refresh in the background. The cold start (no
   // scan yet) shows the spinner via loading=true; a fresh-enough cache skips the
   // redundant rescan (coalescing handles a same-tick double-mount).
-  if (!inflight && nowMs() - fetchedAt >= STALE_MS) void refreshSkills();
+  if (!inflight && (serverScanning || nowMs() - fetchedAt >= STALE_MS)) void readSkills();
   return () => {
     listeners.delete(fn);
+    if (!listeners.size) clearPoll();
   };
 }
 

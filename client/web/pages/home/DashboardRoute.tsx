@@ -281,9 +281,8 @@ export function Component() {
     };
   }, []);
 
-  // The stat card: cached count shown instantly on revisit; `loading` is true only
-  // on the very first scan (nothing cached yet), so it never blanks to a spinner
-  // again. `dirtyRoots` excludes proposed drafts already, so its size is the count.
+  // Keep the count visible during scanning; wait for the first inventory
+  // before showing its change summary. `dirtyRoots` already excludes proposals.
   const skillStats = skills.loading ? null : { total: skills.total, dirty: skills.dirtyRoots.size };
 
   const sessions = sessionStore.sessions;
@@ -340,7 +339,24 @@ export function Component() {
             <StatCard
               icon={<SkillIcon />}
               label="Skills"
-              value={skillStats ? skillStats.total : <Spinner className="h-5 w-5" />}
+              value={
+                <span
+                  className={`inline-block tabular-nums${skills.loading || skills.scanning ? " skill-count-loading" : ""}`}
+                  aria-busy={skills.loading || skills.scanning}
+                >
+                  <span className="sr-only">{skills.total}</span>
+                  {String(skills.total).split("").map((digit, index) => (
+                    <span
+                      key={index}
+                      className="skill-count-digit inline-block"
+                      style={{ animationDelay: `${index * 160}ms` }}
+                      aria-hidden="true"
+                    >
+                      {digit}
+                    </span>
+                  ))}
+                </span>
+              }
               sub={skillStats ? (skillStats.dirty > 0 ? `${skillStats.dirty} with changes` : "all committed") : undefined}
               subTone={skillStats && skillStats.dirty > 0 ? "warn" : "muted"}
               onClick={() => document.getElementById("skills")?.scrollIntoView({ behavior: "smooth", block: "start" })}
@@ -379,7 +395,7 @@ export function Component() {
               value={connectorTotal ?? (connectorLoadError ? "—" : <Spinner className="h-5 w-5" />)}
               sub={`${serviceSummary} · ${secretSummary}`}
               subTone={connectorLoadError || needsReauth > 0 ? "warn" : "muted"}
-              onClick={() => document.getElementById("connectors")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              onClick={() => navigate(connectorsPath())}
             />
             <StatCard
               icon={<ServerIcon />}
