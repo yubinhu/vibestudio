@@ -69,6 +69,10 @@ pub struct AgentDef {
     /// [`McpWiring`]. The agent is handed only the gateway URL — VibeStudio
     /// holds the OAuth token — so no header/secret ever appears in agent config.
     pub mcp: Option<McpWiring>,
+    /// Passive, metadata-only MCP inventory. Never starts the configured server.
+    pub connector_discovery: Option<crate::connectors::ConnectorAdapter>,
+    /// Optional inventory through the agent's own authenticated runtime.
+    pub connector_runtime: Option<ConnectorRuntime>,
     /// Extract a short human title for a live terminal from the agent's own
     /// session record: `(cwd, terminal spawn time, forced session id)`. The
     /// session id (from `claude --session-id` at launch) gives an exact transcript
@@ -84,6 +88,12 @@ pub struct AgentDef {
     /// Bundled Herdr detector label for this agent's interactive TUI. None
     /// retains legacy terminal-bell notifications for unsupported agents.
     pub attention_detector: Option<&'static str>,
+}
+
+#[derive(Clone, Copy)]
+pub enum ConnectorRuntime {
+    Claude,
+    Codex,
 }
 
 /// The two shapes of "add/remove a remote streamable-HTTP MCP server named
@@ -122,6 +132,8 @@ pub const AGENTS: &[AgentDef] = &[
         launch: Some(claude_launch),
         resume: Some(claude_resume),
         mcp: Some(McpWiring::Cli { bin: "claude", add: claude_mcp_add, remove: claude_mcp_remove }),
+        connector_discovery: Some(crate::connectors::ConnectorAdapter::ClaudeCode),
+        connector_runtime: Some(ConnectorRuntime::Claude),
         session_title: Some(crate::session_title::claude_title),
         last_message: Some(crate::session_title::claude_last_message),
         attention_detector: Some("claude"),
@@ -134,6 +146,8 @@ pub const AGENTS: &[AgentDef] = &[
         launch: Some(codex_launch),
         resume: Some(codex_resume),
         mcp: Some(McpWiring::Cli { bin: "codex", add: codex_mcp_add, remove: codex_mcp_remove }),
+        connector_discovery: Some(crate::connectors::ConnectorAdapter::Codex),
+        connector_runtime: Some(ConnectorRuntime::Codex),
         session_title: Some(crate::session_title::codex_title),
         last_message: None,
         attention_detector: Some("codex"),
@@ -154,6 +168,11 @@ pub const AGENTS: &[AgentDef] = &[
             servers_key: "mcpServers",
             entry: cursor_mcp_entry,
         }),
+        connector_discovery: Some(crate::connectors::ConnectorAdapter::Json {
+            user: ".cursor/mcp.json", project: ".cursor/mcp.json", key: "mcpServers",
+            clients: &["IDE", "CLI"],
+        }),
+        connector_runtime: None,
         session_title: Some(crate::session_title::cursor_title),
         last_message: None,
         attention_detector: Some("cursor"),
@@ -166,6 +185,11 @@ pub const AGENTS: &[AgentDef] = &[
         launch: Some(gemini_launch),
         resume: Some(gemini_resume),
         mcp: Some(McpWiring::Cli { bin: "gemini", add: gemini_mcp_add, remove: gemini_mcp_remove }),
+        connector_discovery: Some(crate::connectors::ConnectorAdapter::Json {
+            user: ".gemini/settings.json", project: ".gemini/settings.json", key: "mcpServers",
+            clients: &["CLI"],
+        }),
+        connector_runtime: None,
         session_title: Some(crate::session_title::gemini_title),
         last_message: None,
         attention_detector: Some("gemini"),
@@ -178,6 +202,8 @@ pub const AGENTS: &[AgentDef] = &[
         launch: None,
         resume: None,
         mcp: None,
+        connector_discovery: None,
+        connector_runtime: None,
         // Not launchable here, and its on-disk transcript format is unverified (no
         // install to test against) — wire this once there's a real store to read.
         session_title: None,
@@ -202,6 +228,8 @@ pub const AGENTS: &[AgentDef] = &[
             servers_key: "mcp",
             entry: opencode_mcp_entry,
         }),
+        connector_discovery: Some(crate::connectors::ConnectorAdapter::OpenCode),
+        connector_runtime: None,
         session_title: Some(crate::session_title::opencode_title),
         last_message: None,
         attention_detector: Some("opencode"),

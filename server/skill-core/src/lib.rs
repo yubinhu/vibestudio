@@ -5,6 +5,8 @@ pub mod agents;
 pub mod commit_agent;
 pub mod commitmsg;
 pub mod connections;
+pub mod connectors;
+pub mod connector_runtime;
 pub mod discover;
 pub mod engine;
 pub mod filetypes;

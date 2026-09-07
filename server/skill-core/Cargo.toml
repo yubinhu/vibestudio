@@ -10,6 +10,7 @@ serde_json = "1"
 # Herdr terminal-state manifests and their declarative matchers.
 toml = "0.9"
 regex = "1"
+url = "2"
 serde_yaml = "0.9"
 walkdir = "2"
 # Logging facade only (no subscriber — a binary installs one). Already in the
@@ -29,3 +30,6 @@ urlencoding = "2"
 # opencode keeps its sessions in a WAL SQLite db (session_title.rs). `bundled`
 # compiles SQLite in-tree so releases don't depend on a system libsqlite3.
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

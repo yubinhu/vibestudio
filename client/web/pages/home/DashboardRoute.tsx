@@ -11,10 +11,11 @@ import NewSessionDialog from "@/components/NewSessionDialog";
 import RecentStrip from "@/components/RecentStrip";
 import SkillGallery from "@/pages/home/SkillGallery";
 import * as api from "@/lib/api";
-import type { ConnectionInfo, TermSession } from "@/lib/api";
+import type { TermSession } from "@/lib/api";
 import { useSessions, isUnread, refresh as refreshSessions, noteCreated, nativeNotifyState } from "@/lib/sessions";
 import { useMining } from "@/lib/mining";
 import { useSkills } from "@/lib/skills";
+import { useConnectors } from "@/lib/connectors";
 import OpenSkillDialog from "@/components/OpenSkillDialog";
 import * as push from "@/lib/push";
 import { useRemote } from "@/lib/remote";
@@ -69,7 +70,6 @@ const PickaxeIcon = () => (
     <path d="M19.7 8.3a12.5 12.5 0 0 1 1.3 10.2 1 1 0 0 1-1.7-.1 22 22 0 0 0-3.4-6.3" />
   </Icon>
 );
-const KeyIcon = () => <Icon><circle cx="7.5" cy="15.5" r="4.5" /><path d="m21 2-9.5 9.5" /><path d="m15.5 7.5 3 3" /></Icon>;
 const LinkIcon = () => <Icon><path d="M9 17H7A5 5 0 0 1 7 7h2" /><path d="M15 7h2a5 5 0 1 1 0 10h-2" /><line x1="8" x2="16" y1="12" y2="12" /></Icon>;
 const SkillIcon = () => <Icon><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></Icon>;
 const ServerIcon = () => <Icon><rect width="20" height="8" x="2" y="2" rx="2" /><rect width="20" height="8" x="2" y="14" rx="2" /><path d="M6 6h.01M6 18h.01" /></Icon>;
@@ -80,10 +80,11 @@ const actionBase = "inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-s
 const infoTint =
   "border-[color-mix(in_srgb,var(--info)_45%,transparent)] bg-[color-mix(in_srgb,var(--info)_7%,var(--surface))] hover:border-[color-mix(in_srgb,var(--info)_60%,transparent)] hover:bg-[color-mix(in_srgb,var(--info)_12%,var(--surface))]";
 
-function Heading({ children, count, action }: { children: ReactNode; count?: ReactNode; action?: ReactNode }) {
+function Heading({ children, count, action, level = 2 }: { children: ReactNode; count?: ReactNode; action?: ReactNode; level?: 2 | 3 }) {
+  const Title = level === 3 ? "h3" : "h2";
   return (
     <div className="mb-3 flex items-center gap-2.5">
-      <h2 className="text-sm font-semibold tracking-wide text-fg">{children}</h2>
+      <Title className="text-sm font-semibold tracking-wide text-fg">{children}</Title>
       {count != null && <span className="text-xs text-faint">{count}</span>}
       {action && <span className="ml-auto">{action}</span>}
     </div>
@@ -175,34 +176,6 @@ function hostLabel(id: string): string {
   return host.split(".")[0] || host;
 }
 
-function ConnectionCard({ c, onClick }: { c: ConnectionInfo; onClick: () => void }) {
-  const tone =
-    c.status === "connected"
-      ? { dot: "bg-ok", label: "Connected", cls: "text-ok bg-[color-mix(in_srgb,var(--ok)_16%,transparent)]" }
-      : c.status === "needs_reauth"
-        ? { dot: "bg-warn", label: "Needs sign-in", cls: "text-warn bg-[color-mix(in_srgb,var(--warning)_16%,transparent)]" }
-        : { dot: "bg-danger", label: "Error", cls: "text-danger bg-[color-mix(in_srgb,var(--error)_16%,transparent)]" };
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-4 text-left transition-all hover:-translate-y-0.5 hover:border-border-strong hover:bg-panel hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]"
-    >
-      <div className="flex items-center gap-2">
-        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${tone.dot}`} aria-hidden />
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">{c.label}</span>
-        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide ${tone.cls}`}>{tone.label}</span>
-      </div>
-      <span className="truncate font-mono text-[0.7rem] text-faint" title={c.host}>
-        {c.host}
-      </span>
-      <span className="truncate text-xs text-muted" title={c.agentsConfigured.join(", ")}>
-        {c.agentsConfigured.length > 0 ? `Wired to ${c.agentsConfigured.join(", ")}` : "Not yet wired to agents"}
-      </span>
-    </button>
-  );
-}
-
 // A gesture-driven "enable notifications" nudge for phone/browser clients — the
 // one place WebKit will let us ask (permission requires a real tap, no button =
 // no way to opt in). Shows only where there's NO desktop toast surface
@@ -273,8 +246,10 @@ export function Component() {
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
 
-  const [connections, setConnections] = useState<ConnectionInfo[] | null>(null);
-  const [secretNames, setSecretNames] = useState<string[] | null>(null);
+  const connectorStore = useConnectors();
+  const connectors = connectorStore.inventory?.connectors;
+  const [secretCount, setSecretCount] = useState<number | null>(null);
+  const [secretError, setSecretError] = useState<string | null>(null);
   // Skills come from the shared cache store (same one the gallery below uses), so
   // the count is cached across visits and the page runs ONE discovery scan, not two.
   const skills = useSkills();
@@ -290,14 +265,17 @@ export function Component() {
     return () => clearInterval(t);
   }, []);
 
-  // One-shot overview fetches. Each tolerates a 404 (feature absent on this server)
-  // by settling to an empty/zero value so its card just reads "0" rather than hanging.
-  // (Skills are handled by the useSkills() cache store above, not fetched here.)
+  // The footer only needs the count, not secret names or values. A failed read
+  // stays unknown, so an unavailable store cannot be mistaken for an empty one.
   useEffect(() => {
     let alive = true;
-    api.connectionsList().then((c) => alive && setConnections(c)).catch(() => alive && setConnections([]));
-    // secretsList (not just the count) so the Connectors section can show key names.
-    api.secretsList().then((l) => alive && setSecretNames(l.map((e) => e.key))).catch(() => alive && setSecretNames([]));
+    api.secretsStatus().then((status) => {
+      if (!alive) return;
+      setSecretCount(status.count);
+      setSecretError(null);
+    }).catch(() => {
+      if (alive) setSecretError("Couldn’t load API keys and secrets from this server.");
+    });
     return () => {
       alive = false;
     };
@@ -313,10 +291,14 @@ export function Component() {
   const waitingIds = new Set(waiting.map((s) => s.id));
   const running = sessions.filter((s) => !waitingIds.has(s.id));
 
-  const connected = connections?.filter((c) => c.status === "connected").length ?? 0;
-  const needsReauth = connections ? connections.length - connected : 0;
+  const needsReauth = connectors?.filter((c) => c.availability.some((a) => a.state === "needs_auth")).length ?? 0;
   const remoteConnected = remote.status.state === "connected";
-  const secretCount = secretNames ? secretNames.length : null;
+  const connectorTotal = connectors && secretCount != null ? connectors.length + secretCount : null;
+  const connectorLoadError = !!connectorStore.error || !!secretError;
+  const serviceSummary = connectors ? `${connectors.length} ${connectors.length === 1 ? "service" : "services"}${connectorStore.error ? " (last result)" : ""}` : connectorStore.error ? "Services unavailable" : "Services loading…";
+  const secretSummary = secretCount != null ? `${secretCount} ${secretCount === 1 ? "API key or secret" : "API keys & secrets"}` : secretError ? "Secrets unavailable" : "Secrets loading…";
+  const serviceAttention = connectors?.filter((c) => c.availability.some((a) => a.state === "needs_auth" || a.state === "error")).length ?? 0;
+
 
   const openSession = (id: string) => navigate(sessionsPath(id));
   const openNewSession = () => setNewSessionOpen(true);
@@ -327,7 +309,7 @@ export function Component() {
     <div className="flex min-h-dvh flex-col">
       <NavBar />
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-6 pb-24 pt-10">
+      <main className="mx-auto w-full max-w-6xl flex-1 px-6 pb-10 pt-10">
         {/* Hero — greeting + positioning + the primary on-ramps. */}
         <section className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -392,15 +374,11 @@ export function Component() {
               onClick={() => navigate(miningPath())}
             />
             <StatCard
-              icon={<KeyIcon />}
+              icon={<LinkIcon />}
               label="Connectors"
-              value={connections && secretNames ? connections.length + secretNames.length : <Spinner className="h-5 w-5" />}
-              sub={
-                needsReauth > 0
-                  ? `${needsReauth} need sign-in`
-                  : `${connections?.length ?? 0} connector${(connections?.length ?? 0) === 1 ? "" : "s"} · ${secretCount ?? 0} key${(secretCount ?? 0) === 1 ? "" : "s"}`
-              }
-              subTone={needsReauth > 0 ? "warn" : "muted"}
+              value={connectorTotal ?? (connectorLoadError ? "—" : <Spinner className="h-5 w-5" />)}
+              sub={`${serviceSummary} · ${secretSummary}`}
+              subTone={connectorLoadError || needsReauth > 0 ? "warn" : "muted"}
               onClick={() => document.getElementById("connectors")?.scrollIntoView({ behavior: "smooth", block: "start" })}
             />
             <StatCard
@@ -462,66 +440,20 @@ export function Component() {
         )}
 
         <SkillGallery />
-
-        {/* Connectors — the detail view: each connection with its status + which
-            agents it's wired to, plus your API keys by name. */}
-        <section id="connectors" className="mt-10">
-          <Heading
-            count={
-              <>
-                {connected} connected
-                {needsReauth > 0 && <span className="text-warn"> · {needsReauth} need sign-in</span>}
-                {secretCount != null && secretCount > 0 && ` · ${secretCount} key${secretCount === 1 ? "" : "s"}`}
-              </>
-            }
-            action={
-              <button type="button" onClick={() => navigate(connectorsPath())} className="text-xs font-medium text-accent hover:opacity-80">
-                Manage →
-              </button>
-            }
-          >
-            Connectors
-          </Heading>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {(connections ?? []).map((c) => (
-              <ConnectionCard key={c.id} c={c} onClick={() => navigate(connectorsPath())} />
-            ))}
-            <button
-              type="button"
-              onClick={() => navigate(connectorsPath())}
-              className="flex items-center gap-2 rounded-xl border border-dashed border-border p-4 text-left text-muted transition-colors hover:border-accent hover:text-accent"
-            >
-              <LinkIcon />
-              <span className="text-sm font-medium">Connect a service</span>
-            </button>
-          </div>
-          {secretNames && secretNames.length > 0 && (
-            <div className="mt-4">
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">API keys</div>
-              <div className="flex flex-wrap gap-2">
-                {secretNames.map((k) => (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => navigate(connectorsPath())}
-                    title="Manage in Connectors"
-                    className="rounded-md border border-border bg-surface px-2.5 py-1 font-mono text-xs text-fg transition-colors hover:bg-panel"
-                  >
-                    {k}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => navigate(connectorsPath())}
-                  className="rounded-md border border-dashed border-border px-2.5 py-1 text-xs text-muted transition-colors hover:border-accent hover:text-accent"
-                >
-                  + Add key
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
       </main>
+
+      <footer id="connectors" aria-label="Connectors" className="mx-auto w-full max-w-6xl px-6 pb-6">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-5 gap-y-2 border-t border-border py-4 text-xs text-muted sm:flex sm:flex-wrap">
+          <span className="inline-flex items-center gap-2 font-medium"><LinkIcon />Connectors</span>
+          <div className="col-span-2 row-start-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+            <button type="button" onClick={() => navigate(connectorsPath())} className={`${connectorStore.error ? "text-danger" : "text-muted"} transition-colors hover:text-fg`}>{serviceSummary}</button>
+            <span aria-hidden className="text-faint">·</span>
+            <button type="button" onClick={() => navigate(connectorsPath("secrets"))} className={`${secretError ? "text-danger" : "text-muted"} transition-colors hover:text-fg`}>{secretSummary}</button>
+            {serviceAttention > 0 && <span className="text-warn">{serviceAttention} need attention</span>}
+          </div>
+          <button type="button" onClick={() => navigate(connectorsPath())} className="col-start-2 row-start-1 ml-auto font-medium text-muted transition-colors hover:text-fg">Manage →</button>
+        </div>
+      </footer>
 
       {remoteOpen && (
         <RemoteDialog

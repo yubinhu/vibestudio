@@ -30,9 +30,11 @@ function KeyIcon() {
  *  here; adding a secret refreshes a skill's required-env on its next save/reopen,
  *  not instantly. Carries the activation-skill installer because that skill is the
  *  local store's runtime mechanism — it's how agents load these vars. */
-export default function LocalStoreCard() {
+export default function LocalStoreCard({ onCountChange }: { onCountChange?: (count: number | null) => void }) {
   const [status, setStatus] = useState<SecretsStatus | null>(null);
   const [secrets, setSecrets] = useState<SecretEntry[] | null>(null);
+  const [refreshing, setRefreshing] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [reveal, setReveal] = useState<Set<string>>(new Set());
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
@@ -46,13 +48,20 @@ export default function LocalStoreCard() {
   const confirm = useConfirm();
 
   const refresh = useCallback(async () => {
-    const [st, ls] = await Promise.all([
-      api.secretsStatus().catch(() => null),
-      api.secretsList().catch(() => [] as SecretEntry[]),
-    ]);
-    setStatus(st);
-    setSecrets(ls);
-  }, []);
+    setRefreshing(true);
+    setLoadError(null);
+    try {
+      const [st, ls] = await Promise.all([api.secretsStatus(), api.secretsList()]);
+      setStatus(st);
+      setSecrets(ls);
+      onCountChange?.(ls.length);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "The secret store could not be reached.");
+      onCountChange?.(null);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [onCountChange]);
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -64,8 +73,8 @@ export default function LocalStoreCard() {
     setNote(null);
     try {
       await api.secretSet(key.trim(), value);
-      setNewKey("");
-      setNewValue("");
+      setNewKey((current) => current === key ? "" : current);
+      setNewValue((current) => current === value ? "" : current);
       await refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn’t save secret");
@@ -156,22 +165,20 @@ export default function LocalStoreCard() {
     }
   };
 
-  const loading = secrets === null || status === null;
+  const loaded = secrets !== null && status !== null;
   const installedAny = status?.agents.some((a) => a.hasSkill) ?? false;
 
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-surface">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-4">
+      <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-4 sm:px-5">
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-panel text-muted" aria-hidden>
           <KeyIcon />
         </span>
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-fg">Your secrets</h2>
-          <p className="text-xs text-muted">On this machine — cloud sync coming soon.</p>
+          <h2 className="text-lg font-semibold text-fg">API keys & secrets</h2>
+          <p className="text-xs text-muted">Stored on the active server.</p>
         </div>
-        {/* Gated on a real load: don't claim "Active" before we've reached the
-            store (or if it's unreachable — refresh swallows fetch errors). */}
-        {!loading && (
+        {loaded && !refreshing && !loadError && (
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <Badge tone="ok">
               <span className="h-1.5 w-1.5 rounded-full bg-ok" aria-hidden />
@@ -182,38 +189,60 @@ export default function LocalStoreCard() {
             </span>
           </div>
         )}
+        {loaded && refreshing && (
+          <span className="ml-auto flex items-center gap-2 text-xs text-muted" role="status">
+            <Spinner className="h-3.5 w-3.5" /> Refreshing…
+          </span>
+        )}
       </header>
 
-      {loading ? (
+      {loadError && (
+        <div role="alert" className="mx-4 my-4 flex flex-wrap items-start gap-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-3 sm:mx-5">
+          <div className="min-w-0 flex-1 text-sm">
+            <p className="font-medium text-danger">Couldn’t {loaded ? "refresh" : "load"} API keys & secrets.</p>
+            <p className="mt-1 break-words text-xs text-muted">{loadError}</p>
+            {loaded && <p className="mt-1 text-xs text-muted">Showing the last loaded values.</p>}
+          </div>
+          <button type="button" onClick={() => void refresh()} disabled={refreshing || busy} className={`${btnGhost} shrink-0`}>Retry</button>
+        </div>
+      )}
+
+      {!loaded && refreshing ? (
         <p className="flex items-center gap-2 px-5 py-6 text-sm text-muted">
           <Spinner className="h-3.5 w-3.5" /> Loading secrets…
         </p>
-      ) : (
-        <div className="space-y-5 px-5 py-5">
+      ) : loaded ? (
+        <div className="space-y-5 px-4 py-5 sm:px-5">
           <form
             onSubmit={(e) => {
               e.preventDefault();
               void add(newKey, newValue);
             }}
-            className="flex gap-2"
+            className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] sm:items-end"
           >
-            <input
-              value={newKey}
-              onChange={(e) => setNewKey(e.target.value.toUpperCase())}
-              placeholder="OPENAI_API_KEY"
-              spellCheck={false}
-              className="w-2/5 rounded-md border border-border bg-surface px-2.5 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
-            />
-            <input
-              value={newValue}
-              onChange={(e) => setNewValue(e.target.value)}
-              placeholder="value"
-              type="password"
-              spellCheck={false}
-              autoComplete="off"
-              className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2.5 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
-            />
-            <button type="submit" disabled={busy || !newKey.trim()} className={btnPrimary}>
+            <label className="min-w-0 text-xs font-medium text-muted">
+              Key name
+              <input
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value.toUpperCase())}
+                placeholder="OPENAI_API_KEY"
+                spellCheck={false}
+                autoComplete="off"
+                className="mt-1.5 w-full min-w-0 rounded-md border border-border bg-surface px-2.5 py-2 font-mono text-sm font-normal text-fg outline-none focus:border-accent"
+              />
+            </label>
+            <label className="min-w-0 text-xs font-medium text-muted">
+              Secret value
+              <input
+                value={newValue}
+                onChange={(e) => setNewValue(e.target.value)}
+                type="password"
+                spellCheck={false}
+                autoComplete="off"
+                className="mt-1.5 w-full min-w-0 rounded-md border border-border bg-surface px-2.5 py-2 font-mono text-sm font-normal text-fg outline-none focus:border-accent"
+              />
+            </label>
+            <button type="submit" disabled={busy || !newKey.trim()} className={`${btnPrimary} min-h-10`}>
               Save
             </button>
           </form>
@@ -226,16 +255,16 @@ export default function LocalStoreCard() {
               <ul className="space-y-1.5">
                 {importing.map((e) => (
                   <li key={e.key}>
-                    <label className="flex items-center gap-2 text-sm">
+                    <label className="flex min-w-0 items-start gap-2 text-sm">
                       <input
                         type="checkbox"
                         checked={!!picked[e.key]}
                         onChange={(ev) => setPicked((p) => ({ ...p, [e.key]: ev.target.checked }))}
-                        className="accent-accent"
+                        className="mt-0.5 shrink-0 accent-accent"
                       />
-                      <span className="font-mono text-xs text-fg">{e.key}</span>
+                      <span className="min-w-0 break-all font-mono text-xs text-fg">{e.key}</span>
                       {e.exists && (
-                        <span className="rounded-full bg-warn/15 px-1.5 py-0.5 text-[0.6rem] font-medium uppercase tracking-wide text-warn">
+                        <span className="shrink-0 rounded-full bg-warn/15 px-1.5 py-0.5 text-[0.6rem] font-medium uppercase tracking-wide text-warn">
                           overwrites
                         </span>
                       )}
@@ -258,7 +287,7 @@ export default function LocalStoreCard() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button type="button" onClick={() => envInputRef.current?.click()} disabled={busy} className={btnGhost}>
                 Import .env…
               </button>
@@ -282,9 +311,9 @@ export default function LocalStoreCard() {
               {secrets.map((s) => {
                 const shown = reveal.has(s.key);
                 return (
-                  <li key={s.key} className="flex items-center gap-2 border-t border-border px-3 py-2 text-sm first:border-t-0">
-                    <code className="shrink-0 font-mono text-fg">{s.key}</code>
-                    <span className="ml-auto min-w-0 truncate font-mono text-xs text-faint">{shown ? s.value : mask(s.value)}</span>
+                  <li key={s.key} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-2 border-t border-border px-3 py-2 text-sm first:border-t-0 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto_auto]">
+                    <code className="col-span-3 min-w-0 break-all font-mono text-fg sm:col-span-1">{s.key}</code>
+                    <span className="min-w-0 break-all font-mono text-xs text-faint">{shown ? s.value : mask(s.value)}</span>
                     <button
                       type="button"
                       onClick={() =>
@@ -295,7 +324,9 @@ export default function LocalStoreCard() {
                           return n;
                         })
                       }
-                      className="shrink-0 text-xs text-faint hover:text-fg"
+                      aria-label={`${shown ? "Hide" : "Show"} ${s.key}`}
+                      aria-pressed={shown}
+                      className="min-h-9 rounded-md px-1 text-xs text-faint hover:text-fg"
                     >
                       {shown ? "Hide" : "Show"}
                     </button>
@@ -304,7 +335,7 @@ export default function LocalStoreCard() {
                       onClick={() => void remove(s.key)}
                       disabled={busy}
                       aria-label={`Delete ${s.key}`}
-                      className="shrink-0 text-faint hover:text-danger"
+                      className="min-h-9 min-w-8 rounded-md text-faint hover:text-danger"
                     >
                       ✕
                     </button>
@@ -319,7 +350,7 @@ export default function LocalStoreCard() {
           )}
 
           <div className="space-y-2 rounded-lg border border-border bg-panel px-3 py-2.5">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-medium text-fg">Activation skill</span>
               <button type="button" onClick={() => void runSetup()} disabled={busy} className={btnGhost}>
                 {busy ? "…" : installedAny ? "Reinstall" : "Set up"}
@@ -355,7 +386,7 @@ export default function LocalStoreCard() {
           {note && <p className="text-xs text-ok">{note}</p>}
           {err && <p className="text-xs text-danger">{err}</p>}
         </div>
-      )}
+      ) : null}
     </section>
   );
 }

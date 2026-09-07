@@ -929,6 +929,55 @@ export const connectionReconnect = (id: string, origin: string) =>
 export const connectionDelete = (id: string) =>
   http<{ ok: boolean }>("POST", "connections/delete", { id }).then(() => {});
 
+// --- connector inventory (agent-owned configuration + runtime discovery) ---
+// Discovery returns identity/provenance only: never commands, headers, or tokens.
+export type ConnectorState = "configured" | "connected" | "needs_auth" | "disabled" | "error";
+export interface ConnectorAvailability {
+  agentId: string;
+  state: ConnectorState;
+  scope: "user" | "project" | "plugin" | "account" | "managed";
+  projectPath?: string;
+  sourceId: string;
+  sourceLabel: string;
+  sourcePath?: string;
+  managedConnectionId?: string;
+}
+export interface ConnectorInfo {
+  id: string;
+  name: string;
+  kind: "remote" | "local" | "app";
+  host?: string;
+  availability: ConnectorAvailability[];
+  /** Studio ownership is independent of whether any agent is configured. */
+  managedConnectionIds?: string[];
+}
+export interface ConnectorAgent {
+  id: string;
+  label: string;
+  clients: string[];
+}
+export interface ConnectorSource {
+  id: string;
+  label: string;
+  agentId?: string;
+  state: "scanned" | "unavailable" | "error";
+  message?: string;
+  /** Optional for older servers; omitted sources are configuration evidence. */
+  discovery?: "configuration" | "runtime";
+}
+export interface ConnectorInventory {
+  connectors: ConnectorInfo[];
+  agents: ConnectorAgent[];
+  sources: ConnectorSource[];
+  scannedAt: number;
+}
+/** Read configuration on the active server; optional project scope is absolute. */
+export const connectorsDiscover = (project?: string) =>
+  http<ConnectorInventory>("GET", `connectors/discover${project ? `?project=${encodeURIComponent(project)}` : ""}`);
+/** Explicit, bounded runtime check. May start installed agent runtimes. */
+export const connectorsCheck = (project?: string) =>
+  http<ConnectorInventory>("POST", "connectors/check", { project });
+
 // --- app-managed agent terminals (tmux-backed; survive UI disconnect) ---
 
 /** A launchable agent in the "New session" picker. The same agent can appear as

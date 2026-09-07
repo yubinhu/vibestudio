@@ -11,8 +11,9 @@
 // slashes, so it rides as a `file/*` splat with each segment encoded; the router
 // decodes the splat on read.
 
-/** The dedicated Connectors page (machine-local secrets store + OAuth connectors). */
-export const connectorsPath = () => "/connectors";
+/** API keys and secrets belong to the same Connectors page. */
+export const connectorsPath = (section: "connectors" | "secrets" = "connectors") =>
+  section === "secrets" ? "/connectors#secrets" : "/connectors";
 
 /** The mining page: the latest run's record and the files in its run dir. */
 export const miningPath = () => "/mining";

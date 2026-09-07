@@ -22,7 +22,7 @@ use std::thread;
 
 use serde_json::{json, Value};
 use skill_core::{
-    commit_agent, commitmsg, connections, discover, engine, github, gitops, mining, preferences, recents,
+    commit_agent, commitmsg, connections, connectors, connector_runtime, discover, engine, github, gitops, mining, preferences, recents,
     reveal, secrets, skill, sync, update,
 };
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
@@ -1444,6 +1444,19 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
         }
         (Method::Post, "/api/secrets/delete") => {
             json_reply(secrets::secret_delete(&s("key")).map(|_| json!({ "ok": true })))
+        }
+        // Connector inventory follows the active server like skills. Passive
+        // discovery reads configuration only; runtime checks are explicit POSTs
+        // because agent startup can launch configured MCP subprocesses.
+        (Method::Get, "/api/connectors/discover") => {
+            json_reply(connectors::discover(query_param(url, "project").as_deref()))
+        }
+        (Method::Post, "/api/connectors/check") => {
+            let project = v.get("project").and_then(Value::as_str);
+            json_reply(connectors::discover(project).map(|mut inventory| {
+                inventory.merge(connector_runtime::discover(project));
+                inventory
+            }))
         }
         // --- MCP connections: Studio holds the OAuth tokens; agents reach the
         // MCP through the loopback /gw/<id>/mcp gateway (see gateway.rs) ---

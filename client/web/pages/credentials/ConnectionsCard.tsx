@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
-import { Badge, Spinner, btnGhost, btnPrimary } from "@/components/ui";
-import { useConfirm } from "@/components/useConfirm";
+import { Spinner, btnGhost, btnPrimary } from "@/components/ui";
 import * as api from "@/lib/api";
 import type { ConnectionInfo } from "@/lib/api";
 
@@ -63,8 +62,6 @@ const CATALOG = [
   },
 ];
 
-const catalogFor = (host: string) => CATALOG.find((c) => new URL(c.url).host === host);
-
 /** Prefer the server's human `message` (carried as `detail` by the http
  *  helper) over the machine `error` code the Error message holds. */
 function errText(e: unknown, fallback: string): string {
@@ -86,20 +83,9 @@ function openExternal(url: string) {
   a.remove();
 }
 
-function PlugIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M12 22v-5" />
-      <path d="M9 8V2" />
-      <path d="M15 8V2" />
-      <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
-    </svg>
-  );
-}
-
 /** The begin → open-browser → poll loop, shared by Add and Reconnect: add mode
  *  starts on the URL form; reconnect mode begins as soon as the dialog opens. */
-function ConnectDialog({
+export function ConnectDialog({
   reconnect,
   onClose,
   onDone,
@@ -266,164 +252,5 @@ function ConnectDialog({
         </form>
       )}
     </Modal>
-  );
-}
-
-function ConnectionRow({
-  c,
-  busy,
-  onReconnect,
-  onDisconnect,
-}: {
-  c: ConnectionInfo;
-  busy: boolean;
-  onReconnect: () => void;
-  onDisconnect: () => void;
-}) {
-  const cat = catalogFor(c.host);
-  return (
-    <li className="border-t border-border px-3 py-2.5 first:border-t-0">
-      <div className="flex items-center gap-2">
-        <span className="min-w-0 truncate text-sm font-medium text-fg">{c.label}</span>
-        <span className="shrink-0 text-xs text-muted">{c.host}</span>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {c.status === "connected" && <Badge tone="ok">Connected</Badge>}
-          {c.status === "needs_reauth" && (
-            <>
-              <Badge tone="warn">Reconnect needed</Badge>
-              <button type="button" onClick={onReconnect} disabled={busy} className={btnPrimary}>
-                Reconnect
-              </button>
-            </>
-          )}
-          {c.status === "error" && <Badge tone="danger">Error</Badge>}
-          <button
-            type="button"
-            onClick={onDisconnect}
-            disabled={busy}
-            aria-label={`Disconnect ${c.label}`}
-            className="shrink-0 text-faint hover:text-danger"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-      {c.status === "error" && c.lastError && <p className="mt-1 text-xs text-danger">{c.lastError}</p>}
-      <div className="mt-1 flex flex-wrap items-center gap-2">
-        <p className="text-xs text-muted">
-          {cat ? cat.capability : `Can act on your ${c.host} account when your agents call it.`}
-        </p>
-        {cat?.pill && (
-          <Badge tone="warn" className="shrink-0">
-            {cat.pill}
-          </Badge>
-        )}
-      </div>
-    </li>
-  );
-}
-
-/** OAuth-connected MCP services. Studio does the sign-in and holds the tokens;
- *  agents reach each service through its loopback gateway URL. */
-export default function ConnectionsCard() {
-  const [connections, setConnections] = useState<ConnectionInfo[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<{ reconnect?: ConnectionInfo } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const confirm = useConfirm();
-
-  const refresh = useCallback(async () => {
-    try {
-      setConnections(await api.connectionsList());
-      setErr(null);
-    } catch (e) {
-      setConnections((c) => c ?? []);
-      setErr(e instanceof Error ? e.message : "Couldn’t load connectors");
-    }
-  }, []);
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const closeAndRefresh = useCallback(() => {
-    setDialog(null);
-    void refresh();
-  }, [refresh]);
-
-  const disconnect = async (c: ConnectionInfo) => {
-    if (
-      !(await confirm({
-        title: `Disconnect ${c.label}?`,
-        body: `Your agents lose access immediately. Nothing changes in your ${c.host} account.`,
-        confirmLabel: "Disconnect",
-        danger: true,
-      }))
-    )
-      return;
-    setBusy(true);
-    setErr(null);
-    try {
-      await api.connectionDelete(c.id);
-      await refresh();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Couldn’t disconnect");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="overflow-hidden rounded-xl border border-border bg-surface">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-4">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-panel text-muted" aria-hidden>
-          <PlugIcon />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-fg">Managed connectors</h2>
-          <p className="text-xs text-muted">
-            Services your agents can use. Sign in once — VibeStudio holds the keys.
-          </p>
-        </div>
-        {connections !== null && connections.length > 0 && (
-          <button type="button" onClick={() => setDialog({})} className={`ml-auto shrink-0 ${btnGhost}`}>
-            Add connector
-          </button>
-        )}
-      </header>
-
-      {connections === null ? (
-        <p className="flex items-center gap-2 px-5 py-6 text-sm text-muted">
-          <Spinner className="h-3.5 w-3.5" /> Loading connectors…
-        </p>
-      ) : (
-        <div className="space-y-4 px-5 py-5">
-          {connections.length === 0 ? (
-            <div className="space-y-3 rounded-lg border border-dashed border-border px-3 py-6 text-center">
-              <p className="text-xs text-faint">
-                No connectors managed by VibeStudio yet. Connect a service to make it available to your supported agents.
-              </p>
-              <button type="button" onClick={() => setDialog({})} className={btnPrimary}>
-                Add connector
-              </button>
-            </div>
-          ) : (
-            <ul className="space-y-0 overflow-hidden rounded-lg border border-border">
-              {connections.map((c) => (
-                <ConnectionRow
-                  key={c.id}
-                  c={c}
-                  busy={busy}
-                  onReconnect={() => setDialog({ reconnect: c })}
-                  onDisconnect={() => void disconnect(c)}
-                />
-              ))}
-            </ul>
-          )}
-          {err && <p className="text-xs text-danger">{err}</p>}
-        </div>
-      )}
-
-      {dialog && <ConnectDialog reconnect={dialog.reconnect} onClose={() => setDialog(null)} onDone={closeAndRefresh} />}
-    </section>
   );
 }

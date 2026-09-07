@@ -286,6 +286,17 @@ Features consume capabilities, not names (mining = `launch` + navigate; "continu
 offered for mining; no cwd-scoped resume, e.g. Cursor → can't revive). **New agent = one
 entry**; leave a capability `None` if undocumented.
 
+## Connectors
+
+The `/connectors` page inventories services by agent availability, combining
+read-only configuration discovery with explicit runtime checks. Connector adapters
+are capabilities in the agent registry; the frontend consumes a common inventory
+over `/api/connectors/discover` and `/api/connectors/check`. Configuration evidence
+is labeled **Configured**, separate from live status. API keys and secrets share
+the Connectors page and overview total, with their own storage controls and count.
+Sources, project scopes and scan failures remain visible. See
+[connector discovery](docs/connectors.md) for the contract and reference docs.
+
 ## Connection manager (VS Code "Remote - SSH")
 
 A **local proxy switchboard**; the webview never changes origin.
