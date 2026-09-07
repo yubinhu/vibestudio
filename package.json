@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev:vite": "vite",
+    "dev:home-lab": "vite --config vite.home-lab.config.ts",
+    "build:home-lab": "tsc --noEmit && vite build --config vite.home-lab.config.ts",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "cd client/desktop && tauri",

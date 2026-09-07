@@ -16,5 +16,5 @@
     "types": ["vite/client", "node"],
     "paths": { "@/*": ["./client/web/*"] }
   },
-  "include": ["client/web", "vite.config.ts"]
+  "include": ["client/web", "vite.config.ts", "vite.home-lab.config.ts"]
 }

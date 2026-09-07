@@ -83,8 +83,8 @@ const infoTint =
 function Heading({ children, count, action, level = 2 }: { children: ReactNode; count?: ReactNode; action?: ReactNode; level?: 2 | 3 }) {
   const Title = level === 3 ? "h3" : "h2";
   return (
-    <div className="mb-3 flex items-center gap-2.5">
-      <Title className="text-sm font-semibold tracking-wide text-fg">{children}</Title>
+    <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-2">
+      <Title className="text-2xl font-semibold tracking-tight text-fg">{children}</Title>
       {count != null && <span className="text-xs text-faint">{count}</span>}
       {action && <span className="ml-auto">{action}</span>}
     </div>
@@ -310,20 +310,15 @@ export function Component() {
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-6 pb-10 pt-10">
         {/* Hero — greeting + positioning + the primary on-ramps. */}
-        <section className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+        <section className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-accent">VibeStudio</p>
-            <h1 className="mt-1 text-3xl font-semibold tracking-tight text-fg">{greeting()}.</h1>
+            <h1 className="text-3xl font-semibold tracking-tight text-fg">{greeting()}.</h1>
             <p className="mt-1.5 text-sm text-muted">Run, teach, and connect all your coding agents — from any device, anywhere.</p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex shrink-0 flex-wrap gap-2">
             <button type="button" onClick={openNewSession} className={`${actionBase} bg-action text-action-fg hover:bg-action-hover`}>
               <TerminalIcon />
               New session
-            </button>
-            <button type="button" onClick={() => setOpenDialogOpen(true)} className={`${actionBase} border border-border text-fg hover:bg-panel`}>
-              <Icon><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></Icon>
-              Open
             </button>
           </div>
         </section>
@@ -333,7 +328,7 @@ export function Component() {
 
         {/* At a glance — the overview strip, up top: quick counts + where you're
             running. Each card scrolls to (or opens) the fuller view below. */}
-        <section className="mt-10">
+        <section className="mt-8">
           <Heading>At a glance</Heading>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
@@ -455,7 +450,7 @@ export function Component() {
           </section>
         )}
 
-        <SkillGallery />
+        <SkillGallery onBrowse={() => setOpenDialogOpen(true)} />
       </main>
 
       <footer id="connectors" aria-label="Connectors" className="mx-auto w-full max-w-6xl px-6 pb-6">

@@ -1,0 +1,339 @@
+.home-lab {
+  --lab-bg: #f1f4ed;
+  --lab-surface: #fbfbf9;
+  --lab-frame: #ffffff;
+  --lab-fg: #152b2f;
+  --lab-muted: #5e706b;
+  --lab-border: #dce3dc;
+  --lab-border-strong: #b9c5ba;
+  --lab-selected: #d2f16a;
+  --lab-selected-fg: #152b2f;
+  --lab-focus: #526719;
+  min-height: 100vh;
+  background: var(--lab-bg);
+  color: var(--lab-fg);
+  color-scheme: light;
+}
+
+.home-lab[data-theme="dark"] {
+  --lab-bg: #101c1e;
+  --lab-surface: #152426;
+  --lab-frame: #101c1e;
+  --lab-fg: #eff4eb;
+  --lab-muted: #a9b6b0;
+  --lab-border: #304448;
+  --lab-border-strong: #4b6264;
+  --lab-focus: #d2f16a;
+  color-scheme: dark;
+}
+
+.home-lab-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px 32px;
+  padding: 24px 28px;
+  border-bottom: 1px solid var(--lab-border);
+  background: var(--lab-surface);
+}
+
+.home-lab-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.home-lab-mark {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.home-lab-title-row h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.6px;
+  line-height: 1.35;
+}
+
+.home-lab-experiment-tag {
+  border: 1px solid var(--lab-border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--lab-muted);
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.home-lab-intro p {
+  margin: 9px 0 0;
+  color: var(--lab-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.home-lab-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 20px;
+}
+
+.home-lab-control {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.home-lab-control-label {
+  color: var(--lab-muted);
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1;
+}
+
+.home-lab-segments {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--lab-border);
+  border-radius: 11px;
+  background: var(--lab-bg);
+}
+
+.home-lab-segments button {
+  min-height: 40px;
+  flex: 1 0 auto;
+  border: 0;
+  border-radius: 7px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--lab-muted);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.home-lab-segments button:hover {
+  background: var(--lab-surface);
+  color: var(--lab-fg);
+}
+
+.home-lab-segments button[aria-pressed="true"] {
+  background: var(--lab-selected);
+  color: var(--lab-selected-fg);
+}
+
+.home-lab-segments button:focus-visible {
+  outline: 2px solid var(--lab-focus);
+  outline-offset: 2px;
+}
+
+.home-lab-workspace {
+  padding: 20px 28px 32px;
+}
+
+.home-lab-comparison-note {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin-bottom: 16px;
+  color: var(--lab-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.home-lab-previews {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+
+.home-lab-previews--compare {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.home-lab-preview {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--lab-border-strong);
+  border-radius: 12px;
+  background: var(--lab-surface);
+}
+
+.home-lab-preview-heading {
+  display: flex;
+  min-height: 96px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--lab-border);
+}
+
+.home-lab-preview-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.home-lab-version-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--lab-muted);
+}
+
+.home-lab-version-dot--proposed {
+  background: var(--lab-focus);
+}
+
+.home-lab-preview-heading h2 {
+  flex-shrink: 0;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.home-lab-version-note,
+.home-lab-scale {
+  color: var(--lab-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.home-lab-version-note {
+  padding-left: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-lab-scale {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.home-lab-preview-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.home-lab-preview-tools a {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  color: var(--lab-focus);
+  font-size: 13px;
+  font-weight: 550;
+  text-decoration: none;
+}
+
+.home-lab-preview-tools a:hover {
+  text-decoration: underline;
+}
+
+.home-lab-preview-tools a:focus-visible {
+  outline: 2px solid var(--lab-focus);
+  outline-offset: 2px;
+}
+
+.home-lab-preview-canvas {
+  padding: 12px;
+  background: var(--lab-bg);
+}
+
+.home-lab-stage {
+  width: 100%;
+  min-width: 0;
+}
+
+.home-lab-frame-window {
+  position: relative;
+  overflow: hidden;
+  margin: 0 auto;
+  background: var(--lab-frame);
+  box-shadow: 0 0 0 1px var(--lab-border);
+}
+
+.home-lab-frame {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  max-width: none;
+  border: 0;
+  background: var(--lab-frame);
+  transform-origin: top left;
+}
+
+@media (max-width: 800px) {
+  .home-lab-toolbar {
+    padding: 20px;
+  }
+
+  .home-lab-workspace {
+    padding: 16px 20px 24px;
+  }
+
+  .home-lab-previews--compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .home-lab-toolbar {
+    gap: 20px;
+    padding: 18px 16px;
+  }
+
+  .home-lab-controls {
+    width: 100%;
+    gap: 14px;
+  }
+
+  .home-lab-segments button {
+    padding-inline: 10px;
+  }
+
+  .home-lab-workspace {
+    padding-inline: 12px;
+  }
+
+  .home-lab-preview-heading {
+    padding-inline: 12px;
+  }
+
+  .home-lab-preview-canvas {
+    padding: 8px;
+  }
+
+  .home-lab-version-note {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-lab-segments button {
+    transition: none;
+  }
+}

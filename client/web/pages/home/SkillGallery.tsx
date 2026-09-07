@@ -35,6 +35,13 @@ function ImportIcon() {
     </svg>
   );
 }
+function OpenIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
 function RefreshIcon({ className = "" }: { className?: string }) {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={className}>
@@ -47,19 +54,19 @@ function RefreshIcon({ className = "" }: { className?: string }) {
 }
 const gridCls = "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4";
 const cardCls =
-  "group flex flex-col gap-1.5 rounded-xl border border-border bg-surface p-4 text-left transition-all hover:-translate-y-0.5 hover:border-border-strong hover:bg-panel hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]";
+  "group flex min-w-0 flex-col gap-1.5 rounded-xl border border-border bg-surface p-4 text-left transition-all hover:-translate-y-0.5 hover:border-border-strong hover:bg-panel hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]";
 // A skill with uncommitted changes is "pending review" like a proposed skill, so
 // it wears the same tinted-border treatment — in amber (its CHANGES tone) rather
 // than the proposed card's green — so the two read as one family of review cards.
 const dirtyCardCls =
-  "group flex flex-col gap-1.5 rounded-xl border border-[color-mix(in_srgb,var(--warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,var(--surface))] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[color-mix(in_srgb,var(--warning)_60%,transparent)] hover:bg-[color-mix(in_srgb,var(--warning)_12%,var(--surface))] hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]";
+  "group flex min-w-0 flex-col gap-1.5 rounded-xl border border-[color-mix(in_srgb,var(--warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--warning)_6%,var(--surface))] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[color-mix(in_srgb,var(--warning)_60%,transparent)] hover:bg-[color-mix(in_srgb,var(--warning)_12%,var(--surface))] hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]";
 // Proposed cards wear a green-tinted border to stand apart in the grid. The card
 // body opens the skill (same click-to-open as a normal card), but Accept /
 // Discard live below as their own buttons — so the root stays a container, not a
 // single button. Mirrors the SkillCard look (h-full, hover) so they sit flush.
 const proposedCardCls =
-  "group flex h-full flex-col gap-1.5 rounded-xl border border-[color-mix(in_srgb,var(--ok)_40%,transparent)] bg-[color-mix(in_srgb,var(--ok)_6%,var(--surface))] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[color-mix(in_srgb,var(--ok)_60%,transparent)] hover:bg-[color-mix(in_srgb,var(--ok)_12%,var(--surface))] hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]";
-const pillCls = "shrink-0 rounded-full px-1.5 py-0.5 text-[0.6rem] font-medium uppercase tracking-wide";
+  "group flex h-full min-w-0 flex-col gap-1.5 rounded-xl border border-[color-mix(in_srgb,var(--ok)_40%,transparent)] bg-[color-mix(in_srgb,var(--ok)_6%,var(--surface))] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[color-mix(in_srgb,var(--ok)_60%,transparent)] hover:bg-[color-mix(in_srgb,var(--ok)_12%,var(--surface))] hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]";
+const pillCls = "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium";
 
 function CheckIcon() {
   return (
@@ -131,28 +138,32 @@ function SkillCard({
   const name = skill.name ?? baseName(skill.root);
   const tag = KIND_TAG[kindMeta(skill.kind).kind];
   return (
-    <div className="group relative h-full">
+    <div className="group relative h-full min-w-0">
       {/* w-full so the shrink-wrapping <button> fills the column; h-full keeps
           sibling cards equal-height with the delete control at the real bottom. */}
       <button type="button" onClick={() => onOpen(skill.root)} className={`${dirty ? dirtyCardCls : cardCls} h-full w-full`}>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full min-w-0 items-center gap-2">
           <FolderIcon open={false} name={name} size={18} />
-          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">{name}</span>
-          {dirty && <ChangesTag />}
+          <span className="min-w-0 flex-1 truncate text-base font-semibold text-fg">{name}</span>
           <span className={`${pillCls} ${tag.cls}`}>
             {tag.label}
           </span>
         </div>
-        {skill.project && (
-          <span className="inline-flex max-w-full items-center gap-1 text-xs font-medium text-accent" title={`Project skill in ${skill.project}`}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            </svg>
-            <span className="truncate">{skill.project}</span>
-          </span>
+        {(dirty || skill.project) && (
+          <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {dirty && <ChangesTag />}
+            {skill.project && (
+              <span className="inline-flex min-w-0 max-w-full items-center gap-1 text-xs font-medium text-accent" title={`Project skill in ${skill.project}`}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden>
+                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                </svg>
+                <span className="truncate">{skill.project}</span>
+              </span>
+            )}
+          </div>
         )}
         {skill.description && <p className="line-clamp-2 text-xs leading-relaxed text-muted">{skill.description}</p>}
-        <span className="mt-auto truncate pt-0.5 pr-7 font-mono text-[0.7rem] text-faint" title={skill.root}>
+        <span className="mt-auto w-full truncate pt-0.5 pr-7 font-mono text-[0.7rem] text-faint" title={skill.root}>
           {skill.root}
         </span>
       </button>
@@ -187,16 +198,16 @@ function InfoIcon() {
 
 // A real hover popover for the shared-standard explainer — the desktop webview
 // renders nothing for a native `title`, so the ⓘ carries its own DOM tooltip.
-// Keeps the section header to one line; the chips + note appear only on hover.
+// The tooltip is anchored to the header row so it stays within phone viewports.
 function SharedStandardInfo({ info }: { info: AgentGroupInfo }) {
   return (
-    <span className="group/info relative flex items-center">
-      <span className="cursor-help text-faint transition-colors hover:text-muted">
+    <span className="group/info flex shrink-0 items-center">
+      <span tabIndex={0} aria-label="About shared standard skills" className="inline-flex h-8 w-8 cursor-help items-center justify-center rounded text-faint transition-colors hover:text-muted focus-visible:outline-accent">
         <InfoIcon />
       </span>
       <span
         role="tooltip"
-        className="pointer-events-none absolute left-0 top-full z-30 mt-1.5 hidden w-max max-w-xs flex-wrap items-center gap-x-1.5 gap-y-1 rounded-lg border border-border bg-surface px-3 py-2 text-xs leading-relaxed text-muted shadow-lg group-hover/info:flex"
+        className="pointer-events-none absolute left-0 top-full z-30 mt-1.5 hidden w-max max-w-[min(20rem,calc(100vw-3rem))] flex-wrap items-center gap-x-1.5 gap-y-1 rounded-lg border border-border bg-surface px-3 py-2 text-xs leading-relaxed text-muted shadow-lg group-hover/info:flex group-focus-within/info:flex"
       >
         <span>Shared standard — read by</span>
         {info.sharedWith.map((a) => (
@@ -278,24 +289,26 @@ function AgentSection({
         type="button"
         onClick={() => setShowBundled((o) => !o)}
         aria-expanded={showBundled}
-        className="flex items-center gap-1.5 text-xs text-muted hover:text-fg"
+        className="flex min-h-9 max-w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs text-muted hover:bg-panel hover:text-fg"
       >
-        <span className="w-3 text-faint" aria-hidden>
+        <span className="w-3 shrink-0 text-faint" aria-hidden>
           {showBundled ? "▾" : "▸"}
         </span>
-        {bundledLabel}
+        <span>{bundledLabel}</span>
       </button>
     ) : null;
   return (
-    <section>
-      {/* One-line header; the shared-standard explainer (Agent Skills only) lives
+    <section className="border-t border-border/60 pt-3 first:border-t-0 first:pt-0">
+      {/* The shared-standard explainer (Agent Skills only) lives
           in a hover popover on the ⓘ so the row stays compact — a real DOM
           popover, since native `title` tooltips render nothing in the webview. */}
-      <div className="mb-3 flex items-center gap-2">
-        <span className="h-2 w-2 rounded-full" style={{ background: agentColor(group.agent) }} aria-hidden />
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">{agentLabel(group.agent)}</h3>
-        <span className="text-xs text-faint">{group.skills.length}</span>
-        {info && <SharedStandardInfo info={info} />}
+      <div className="relative mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: agentColor(group.agent) }} aria-hidden />
+          <h3 className="min-w-0 text-xs font-semibold text-muted">{agentLabel(group.agent)}</h3>
+          <span className="text-xs text-faint">{group.skills.length}</span>
+          {info && <SharedStandardInfo info={info} />}
+        </div>
         {/* No cards to anchor the section: the bundled toggle joins the header
             row instead of dangling alone beneath it. */}
         {own.length === 0 && proposals.length === 0 && changedBundled.length === 0 && bundledToggle}
@@ -335,7 +348,7 @@ function AgentSection({
         </div>
       )}
       {(own.length > 0 || proposals.length > 0 || changedBundled.length > 0) && bundledToggle && (
-        <div className="mt-3">{bundledToggle}</div>
+        <div className="mt-2 -ml-2">{bundledToggle}</div>
       )}
       {showBundled && bundled.length > 0 && (
         <div className={`mt-3 ${gridCls}`}>
@@ -377,10 +390,12 @@ function ProposedCard({
       {/* Card body opens the skill — where the path/dir is visible — so the path
           is dropped from the card face. The bottom slot that ordinary cards use
           for the path holds Accept / Discard here, keeping both the same height. */}
-      <button type="button" onClick={() => onOpen(skill.root)} className="flex flex-1 flex-col gap-1.5 text-left">
-        <div className="flex items-center gap-2">
+      <button type="button" onClick={() => onOpen(skill.root)} className="flex min-w-0 flex-1 flex-col gap-1.5 text-left">
+        <div className="flex w-full min-w-0 items-center gap-2">
           <FolderIcon open={false} name={name} size={18} />
-          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">{name}</span>
+          <span className="min-w-0 flex-1 truncate text-base font-semibold text-fg">{name}</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
           <ProposedTag />
         </div>
         {skill.description && <p className="line-clamp-2 text-xs leading-relaxed text-muted">{skill.description}</p>}
@@ -425,15 +440,15 @@ function PickaxeIcon({ className = "", size = 13 }: { className?: string; size?:
  *  glance headings so every section on the home page reads at one weight. */
 function SectionTitle({ children, trailing }: { children: ReactNode; trailing?: ReactNode }) {
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-2.5">
-      <h2 className="text-sm font-semibold tracking-wide text-fg">{children}</h2>
+    <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-2">
+      <h2 className="text-2xl font-semibold tracking-tight text-fg">{children}</h2>
       {trailing}
     </div>
   );
 }
 
 /** The home dashboard's discovered skills and skill actions. */
-export default function SkillGallery() {
+export default function SkillGallery({ onBrowse }: { onBrowse: () => void }) {
   const navigate = useNavigate();
   const onOpen = (p: string) => navigate(studioPath(p));
   const [newOpen, setNewOpen] = useState(false);
@@ -537,14 +552,14 @@ export default function SkillGallery() {
   const groups = discovered;
   const totalFound = groups.reduce((n, g) => n + g.skills.length, 0);
 
-  // Skill actions live with the gallery; opening work belongs to the dashboard header.
+  // Skill actions and browsing live together beside the gallery.
   const actions = (
     <>
       <button
         type="button"
         onClick={() => setMineOpen(true)}
         title="Mine your past conversations to create or update skills"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-accent hover:bg-accent-soft"
+        className="flex min-h-9 items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent-soft"
       >
         <PickaxeIcon size={15} />
         <span className="text-xs font-medium">Mine</span>
@@ -553,7 +568,7 @@ export default function SkillGallery() {
         type="button"
         onClick={() => setNewOpen(true)}
         title="New skill"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
+        className="flex min-h-9 items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs font-medium text-fg hover:border-border-strong hover:bg-surface"
       >
         <PlusIcon />
         <span className="text-xs">New</span>
@@ -562,10 +577,18 @@ export default function SkillGallery() {
         type="button"
         onClick={() => setImportOpen(true)}
         title="Import a skill from a folder, .skill or .zip"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
+        className="flex min-h-9 items-center gap-1.5 rounded px-3 py-1.5 text-xs text-muted hover:bg-panel hover:text-fg"
       >
         <ImportIcon />
         <span className="text-xs">Import</span>
+      </button>
+      <button
+        type="button"
+        onClick={onBrowse}
+        className="flex min-h-9 items-center gap-1.5 rounded px-3 py-1.5 text-xs text-muted hover:bg-panel hover:text-fg"
+      >
+        <OpenIcon />
+        Open
       </button>
     </>
   );
@@ -575,19 +598,19 @@ export default function SkillGallery() {
       <SectionTitle
         trailing={
           <>
-            <span className="text-xs text-faint">{totalFound}</span>
-            <div className="ml-auto flex w-full items-center gap-1 sm:w-auto">
+            <span className="text-xs tabular-nums text-faint">{totalFound}</span>
+            <button
+              type="button"
+              onClick={() => void refreshSkills()}
+              disabled={scanning}
+              aria-label="Discover"
+              title="Rescan your machine for installed skills"
+              className="flex h-9 w-9 items-center justify-center rounded text-muted hover:bg-panel hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <RefreshIcon />
+            </button>
+            <div className="-ml-3 flex w-full flex-wrap items-center gap-1 sm:ml-auto sm:w-auto">
               {actions}
-              <button
-                type="button"
-                onClick={() => void refreshSkills()}
-                disabled={scanning}
-                title="Rescan your machine for installed skills"
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted hover:bg-panel hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <RefreshIcon />
-                Discover
-              </button>
             </div>
           </>
         }
@@ -605,7 +628,7 @@ export default function SkillGallery() {
           <code className="font-mono text-[0.8em]">~/.openclaw/skills</code>.
         </p>
       ) : (
-        <div className="space-y-8">
+        <div className="space-y-3">
           {groups.map((g) => (
             <AgentSection
               key={g.agent}

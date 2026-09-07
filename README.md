@@ -4,7 +4,7 @@
 
 Manage the coding agents running on your machine — from anywhere. Available on macOS, Linux, Windows, iPhone, and Android.
 
-![VibeStudio — run, teach, and connect your coding agents from one dashboard](./dashboard.png)
+![VibeStudio home — an at-a-glance overview, recent work, and agent skills](./dashboard.png)
 
 **Download →** [macOS](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-macOS.dmg) · [Windows](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Windows-x64-setup.exe) · [Linux](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-Linux-x86_64.deb) — free, runs locally, no account. ([install notes](#install))
 
@@ -69,6 +69,7 @@ npm run dev          # native desktop
 |------|---------|------|
 | Native desktop | `npm run dev` | the app window |
 | Browser, local backend | `cargo run -p skill-server` + `npm run dev:vite` | `localhost:1420` |
+| [Home UI lab](./client/web/app/home-lab/README.md) | Backend + `npm run dev:home-lab` | `localhost:1421/home-lab.html` |
 
 ## Roadmap
 

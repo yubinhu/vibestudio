@@ -6,7 +6,7 @@ import boundaries from "eslint-plugin-boundaries";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist", "client/desktop", "server", "public", "node_modules", ".next"] },
+  { ignores: ["dist", "build", "client/desktop", "server", "public", "node_modules", ".next"] },
   {
     files: ["**/*.{ts,tsx}"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
