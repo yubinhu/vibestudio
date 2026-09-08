@@ -6,7 +6,7 @@ Manage the coding agents running on your machine — from anywhere. Available on
 
 ![VibeStudio home — an at-a-glance overview, recent work, and agent skills](./dashboard.png)
 
-**Download →** [Latest release](https://github.com/yubinhu/vibestudio/releases/latest) — macOS · Windows · Linux — free, runs locally, no account. ([install notes](#install))
+**Download →** [macOS](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-macos.dmg) · [Windows](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-windows.exe) · [Linux](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-linux.deb) — free, runs locally, no account. ([install notes](#install))
 
 Your coding agents work best where your code, keys, and tools already live: your own machine. But you're not always sitting at it. VibeStudio is one dashboard for every agent running there — Claude Code, Codex, Cursor, Gemini CLI, opencode — driven from your desktop, a browser, or your phone.
 
@@ -24,13 +24,15 @@ Built with [Tauri](https://tauri.app/), it also drives any remote dev host nativ
 
 ## Install
 
-Grab the installer for your platform from the [latest release](https://github.com/yubinhu/vibestudio/releases/latest):
+Download the latest installer for your platform:
 
 | Platform | Installer |
 |----------|--|
-| **macOS** — Apple silicon & Intel | Universal `.dmg` |
-| **Windows** — Intel/AMD 64-bit | `.exe` |
-| **Linux** — Debian/Ubuntu, Intel/AMD 64-bit | `.deb` |
+| **macOS** — Apple silicon & Intel | [Download universal .dmg](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-macos.dmg) |
+| **Windows** — Intel/AMD 64-bit | [Download .exe](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-windows.exe) |
+| **Linux** — Debian/Ubuntu, Intel/AMD 64-bit | [Download .deb](https://github.com/yubinhu/vibestudio/releases/latest/download/VibeStudio-linux.deb) |
+
+[Release notes and other assets](https://github.com/yubinhu/vibestudio/releases/latest).
 
 ### First launch
 
