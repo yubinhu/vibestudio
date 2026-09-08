@@ -29,7 +29,7 @@ const session = (id, a, created = "1") => ({
   id, label: id, agent: "claude", cwd: "/work", created, activity: "0", bellAt: "0", attention: a,
 });
 
-function harness(initial) {
+function harness(initial, { notifyWhileVisible = false, pushGranted = false, notifyStatus } = {}) {
   const workspace = load("workspaceConnection", { window: { dispatchEvent() {} }, Event: class {} });
   let list = initial;
   let focused = true;
@@ -45,7 +45,7 @@ function harness(initial) {
       return next ?? Promise.resolve(list);
     },
     terminalEvents: (event, down, open, gap) => { events = { event, down, open, gap }; return { close() {} }; },
-    notifyStatus: async () => ({ native: true }),
+    notifyStatus: notifyStatus ?? (async () => ({ native: true, notifyWhileVisible })),
     notifyBadge: async () => {},
     notifyNative: async (title, body) => { notices.push({ title, body }); },
   };
@@ -53,12 +53,13 @@ function harness(initial) {
     localStorage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) },
     window: { addEventListener() {} },
     document: { get hidden() { return hidden; }, hasFocus: () => focused, addEventListener() {} },
+    Notification: { permission: pushGranted ? "granted" : "default" },
     setTimeout: (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; },
     clearTimeout: (id) => timers.delete(id),
   }, {
     "@/lib/api": api,
     "@/lib/log": { log: { warn() {} } },
-    "@/lib/push": { canPush: () => false },
+    "@/lib/push": { canPush: () => pushGranted },
     "@/lib/routes": { sessionsPath: (id) => `/sessions?id=${id}` },
     "./sessionAttention": attention,
     "./workspaceConnection": workspace,
@@ -158,6 +159,71 @@ test("done is silent when watched, audible in another session, and requests beco
   h.setList([next]); h.event("attention", next);
   await h.settle();
   assert.deepEqual(h.sounds, ["request", "done"]);
+});
+
+test("mobile shows a single banner on Home and for another session, but not the watched session", async () => {
+  const h = harness([session("a", state(1, "working"))], { notifyWhileVisible: true });
+  h.connect(); await h.settle();
+  const done = session("a", state(2, "idle", "done"));
+  h.setList([done]); h.event("attention", done); h.event("attention", done);
+  await h.settle();
+  assert.deepEqual(h.sounds, ["done"]);
+  assert.equal(h.notices.length, 1);
+  h.store.setWatched("another-session");
+  const blocked = session("a", state(3, "blocked", "request"));
+  h.setList([blocked]); h.event("attention", blocked);
+  await h.settle();
+  assert.equal(h.notices.length, 2);
+  h.store.setWatched("a");
+  const working = session("a", state(4, "working"));
+  h.setList([working]); h.event("attention", working);
+  const request = session("a", state(5, "blocked", "request"));
+  h.setList([request]); h.event("attention", request);
+  await h.settle();
+  assert.deepEqual(h.sounds, ["done", "request", "request"]);
+  assert.equal(h.notices.length, 2);
+});
+
+test("opening a mobile session before its alert settles cancels its done sound and banner", async () => {
+  const h = harness([session("a", state(1, "working"))], { notifyWhileVisible: true });
+  h.connect(); await h.settle();
+  const done = session("a", state(2, "idle", "done"));
+  h.setList([done]); h.event("attention", done);
+  h.store.setWatched("a");
+  await h.settle();
+  assert.deepEqual(h.sounds, []);
+  assert.deepEqual(h.notices, []);
+});
+
+test("mobile foreground notification capability recovers after a failed startup probe", async () => {
+  let probes = 0;
+  const h = harness([session("a", state(1, "working"))], {
+    notifyStatus: async () => {
+      if (++probes === 1) throw new Error("local listener is restarting");
+      return { native: true, notifyWhileVisible: true };
+    },
+  });
+  await h.settle(); // failed initial probe
+  h.connect(); await h.settle();
+  const done = session("a", state(2, "idle", "done"));
+  h.setList([done]); h.event("attention", done);
+  await h.settle();
+  assert.equal(probes, 2);
+  assert.equal(h.notices.length, 1);
+});
+
+test("desktop keeps foreground banners quiet; native background delivery wins over Web Push APIs", async () => {
+  const h = harness([session("a", state(1, "working"))], { pushGranted: true });
+  h.connect(); await h.settle();
+  const done = session("a", state(2, "idle", "done"));
+  h.setList([done]); h.event("attention", done);
+  await h.settle();
+  assert.deepEqual(h.notices, []);
+  h.hide(true);
+  const request = session("a", state(3, "blocked", "request"));
+  h.setList([request]); h.event("attention", request);
+  await h.settle();
+  assert.equal(h.notices.length, 1);
 });
 
 test("reconnect and server restart establish silent baselines", async () => {

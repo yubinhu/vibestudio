@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0A6182CEB2D94D86951E42B1 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01EB1A77E89A48E29260F8C1 /* AVFoundation.framework */; };
 		0BCB50C344EAFACDF1649394 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 275876ABE689C9102A890F7A /* CoreGraphics.framework */; };
 		0DC6C2CFA51B37F6FC9A692C /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 60EE1429673EC48F76000734 /* QuartzCore.framework */; };
 		167EF0AF4FCC892BECACFA43 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 76DAAFA4D330502E407E9C8E /* libapp.a */; };
@@ -19,9 +20,11 @@
 		D2D4427F4BDD8B2BFFACE961 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A0D35E92D15914C27359B88F /* Security.framework */; };
 		DCB6E15D8F1321A68438FE4C /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1BD2BFB0B98F1895D297FA38 /* WebKit.framework */; };
 		E062534CD3134963301C2D4E /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 279F51450E2B54830867080D /* UIKit.framework */; };
+		EDE9A21A22A94F24AFB66D33 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE5BB9F799B3443D997A6A13 /* UserNotifications.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		01EB1A77E89A48E29260F8C1 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		04BBC38D4D303E3F243709E3 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 		1BD2BFB0B98F1895D297FA38 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		22F63105E04E3235BF4C6D62 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
@@ -42,6 +45,7 @@
 		D8FC26BF8E3DB4EAA5F70CEC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		EA54D24E26157571E0A572A0 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		EDE7C7E63B6A25F5A786ADA2 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		EE5BB9F799B3443D997A6A13 /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -50,12 +54,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				167EF0AF4FCC892BECACFA43 /* libapp.a in Frameworks */,
+				0A6182CEB2D94D86951E42B1 /* AVFoundation.framework in Frameworks */,
 				0BCB50C344EAFACDF1649394 /* CoreGraphics.framework in Frameworks */,
 				80AA720ECB6169569201222D /* Metal.framework in Frameworks */,
 				5EB8C8FAD279C8CE15C7710B /* MetalKit.framework in Frameworks */,
 				0DC6C2CFA51B37F6FC9A692C /* QuartzCore.framework in Frameworks */,
 				D2D4427F4BDD8B2BFFACE961 /* Security.framework in Frameworks */,
 				E062534CD3134963301C2D4E /* UIKit.framework in Frameworks */,
+				EDE9A21A22A94F24AFB66D33 /* UserNotifications.framework in Frameworks */,
 				DCB6E15D8F1321A68438FE4C /* WebKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -75,6 +81,7 @@
 		42AF2628F6413BC90992DDCF /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				01EB1A77E89A48E29260F8C1 /* AVFoundation.framework */,
 				275876ABE689C9102A890F7A /* CoreGraphics.framework */,
 				76DAAFA4D330502E407E9C8E /* libapp.a */,
 				B0DAEF8B3D90EAE9C08FB4FE /* Metal.framework */,
@@ -82,6 +89,7 @@
 				60EE1429673EC48F76000734 /* QuartzCore.framework */,
 				A0D35E92D15914C27359B88F /* Security.framework */,
 				279F51450E2B54830867080D /* UIKit.framework */,
+				EE5BB9F799B3443D997A6A13 /* UserNotifications.framework */,
 				1BD2BFB0B98F1895D297FA38 /* WebKit.framework */,
 			);
 			name = Frameworks;

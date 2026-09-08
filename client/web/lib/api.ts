@@ -1193,12 +1193,12 @@ export const terminalKill = (id: string) =>
 // (standalone binary, browser mode) 404s them — the notifier falls back to the
 // Web Notification API where the platform has one.
 
-/** Whether this origin's server can show native OS notifications (the desktop
+/** Whether this origin's server can show native OS notifications (the native
  *  shell). 404 = no. */
-export const notifyStatus = () => http<{ native: boolean }>("GET", "notify/status");
+export const notifyStatus = () => http<{ native: boolean; notifyWhileVisible?: boolean }>("GET", "notify/status");
 export const notifyNative = (title: string, body: string) =>
   http<{ ok: boolean }>("POST", "notify", { title, body }).then(() => {});
-/** Ask the OS for notification permission (macOS prompts; elsewhere a no-op). */
+/** Ask the OS for notification permission (macOS and iOS prompt). */
 export const notifyPrime = () => http<{ ok: boolean }>("POST", "notify/prime").then(() => {});
 /** Dock/taskbar unread-count badge; 0 clears. */
 export const notifyBadge = (count: number) =>

@@ -26,7 +26,7 @@ use skill_server::{init_logging, init_logging_to_file, ServerConfig, SshRemoteCo
 
 #[cfg(desktop)]
 mod editor; // ShellEditor: the "Open in VS Code" control (client-side, pinned-local route)
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "ios"))]
 mod sound;
 #[cfg(desktop)]
 mod host;
@@ -111,6 +111,10 @@ struct ShellNotifier {
 
 #[cfg(any(desktop, target_os = "ios"))]
 impl skill_server::NotifyControl for ShellNotifier {
+    fn notify_while_visible(&self) -> bool {
+        cfg!(target_os = "ios")
+    }
+
     fn notify(&self, title: &str, body: &str) -> Result<(), String> {
         self.app
             .notification()
@@ -131,10 +135,8 @@ impl skill_server::NotifyControl for ShellNotifier {
         });
     }
 
-    #[cfg(desktop)]
     fn sound(&self, sound: skill_server::NotificationSound) -> Result<bool, String> {
-        sound::play(sound);
-        Ok(true)
+        sound::play(sound).map(|()| true)
     }
 
     fn set_badge(&self, count: u32) {
@@ -566,6 +568,18 @@ fn setup_mobile(
     remote_slot: &std::sync::Arc<std::sync::OnceLock<std::sync::Arc<SshRemoteControl>>>,
     local_slot: &std::sync::Arc<std::sync::OnceLock<std::sync::Arc<LocalServer>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // The Apple entry point owns the delegate class. Resolve it at runtime:
+    // Rust also emits a cdylib, before Xcode links the entry point's object file.
+    let notification_delegate = objc2::runtime::AnyClass::get(c"VibeStudioNotificationDelegate")
+        .ok_or_else(|| std::io::Error::other("native notification delegate is unavailable"))?;
+    // SAFETY: this class implements +install. Tauri initializes its plugins
+    // before setup, which runs on the main thread during app launch.
+    // Own tap handling so notifications from a previous process cannot trigger
+    // the plugin's in-memory metadata lookup. Scheduling/permissions stay there.
+    unsafe {
+        let _: () = objc2::msg_send![notification_delegate, install];
+    }
+
     // FIRST, before anything reads config: pin skill-core's config dir to the app
     // sandbox. skill-core resolves it from `~/.config` via `dirs::home_dir()`, but
     // an iOS app process has no `HOME` — `home_dir()` returns None there, so the

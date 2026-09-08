@@ -73,14 +73,28 @@ Native iOS suspension and keyboard behavior still require a device validation pa
 + `tauri-plugin-notification` are wired into the iOS shell; `setup_mobile` sets
 `ServerConfig.notifier`. Turn-finish events arrive from the remote hub over SSE,
 the SPA posts the pinned-local `/api/notify*` routes, and the phone shows a
-native local notification. `/api/notify/status` returns `native: true`, so the
-SPA prefers native over the old web-push path automatically.
+native local notification. `/api/notify/status` returns `native: true` and
+`notifyWhileVisible: true`, so iOS also shows banners on Home or while watching
+another session. The watched session stays banner-free. The mobile workspace
+requests permission on connection, including when joining agents created on a
+desktop. Native `AVAudioPlayer` plays the bundled request/done sounds through
+`/api/notify/sound`, without Web Audio's gesture requirement; it respects the
+phone's Silent mode and the app's sound toggle.
+The app owns iOS notification presentation/tap callbacks; it reads OS content
+directly so tapping a notification after relaunch cannot dereference the plugin's
+discarded in-memory metadata. Permission and scheduling still use the plugin.
 
 **Scope limit — this delivers notifications while the app is running or briefly
 backgrounded, NOT when fully suspended/killed.** True closed-app delivery needs
 **APNs**: an app-side device-token registration, and the remote hub (or a small
 relay) sending push payloads to Apple. That's the real "notifications moved to the
 native app" endpoint and the next step here.
+
+Tailscale provides connectivity, but cannot keep the app executing after iOS
+suspends it. No APNs capability, device registration, or provider is configured.
+An APNs signing key must stay on a trusted provider; never bundle it in the app
+or distribute it to users' SSH hosts. Verify locked-phone delivery on a real
+device before claiming background notifications work.
 
 **APNs sketch (future):**
 - iOS: register for remote notifications, capture the APNs device token, hand it

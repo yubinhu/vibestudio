@@ -224,6 +224,11 @@ pub enum NotificationSound {
 /// 404s those routes and the SPA falls back to the Web Notification API where
 /// the platform has one.
 pub trait NotifyControl: Send + Sync {
+    /// Mobile banners can announce other sessions while the app is visible.
+    /// Desktop keeps its existing background-window-only notification policy.
+    fn notify_while_visible(&self) -> bool {
+        false
+    }
     /// Show an OS notification. Must not block the calling worker.
     fn notify(&self, title: &str, body: &str) -> Result<(), String>;
     /// Ask the OS for notification permission at a moment the user expects it
@@ -1719,7 +1724,7 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
         // binary, browser mode) → 404, which the SPA reads as "fall back to the
         // Web Notification API".
         (Method::Get, "/api/notify/status") => match &ctx.notifier {
-            Some(_) => json_reply(Ok(json!({ "native": true }))),
+            Some(n) => json_reply(Ok(json!({ "native": true, "notifyWhileVisible": n.notify_while_visible() }))),
             None => notify_unavailable(),
         },
         (Method::Post, "/api/notify") => match &ctx.notifier {

@@ -1,63 +1,80 @@
 //! Sound notifications for agent state changes.
 //!
-//! Embeds mp3 files in the binary and plays them via system audio tools.
-//! Uses afplay (macOS), Windows MediaPlayer, or decoder-capable Linux audio
-//! players — no Rust audio dependencies.
+//! Embeds MP3 files in the binary. iOS uses AVAudioPlayer; desktops use
+//! afplay (macOS), Windows MediaPlayer, or decoder-capable Linux audio tools.
 //!
 //! Adapted from Herdr (Apache-2.0), commit
 //! 4b5e9bda239a0b6903889062d756424578e94691, src/sound.rs.
 //! See server/skill-core/src/agent_detection/NOTICE.txt for attribution and license.
 
+#[cfg(not(target_os = "ios"))]
 use std::io::Write;
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 use std::io::{Read, Result as IoResult};
+#[cfg(not(target_os = "ios"))]
 use std::path::{Path, PathBuf};
-#[cfg(any(windows, test))]
+#[cfg(any(windows, all(test, not(target_os = "ios"))))]
 use std::process::Command;
+#[cfg(not(target_os = "ios"))]
 use std::process::Output;
+#[cfg(not(target_os = "ios"))]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "ios"))]
 use log::warn;
+#[cfg(not(target_os = "ios"))]
 use skill_core::process::hidden_command;
 use skill_server::NotificationSound as Sound;
 
+#[cfg(any(target_os = "ios", all(test, target_os = "macos")))]
+mod apple;
+
 const DISABLE_SOUND_ENV: &str = "VIBESTUDIO_DISABLE_SOUND";
-#[cfg(any(windows, test))]
+#[cfg(any(windows, all(test, not(target_os = "ios"))))]
 const WINDOWS_SOUND_PATH_ENV: &str = "VIBESTUDIO_SOUND_PATH";
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 const AUDIO_PLAYER_TIMEOUT: Duration = Duration::from_secs(15);
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 const AUDIO_PLAYER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+#[cfg(not(target_os = "ios"))]
 static SOUND_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SOUND_DONE: &[u8] = include_bytes!("../../../public/sounds/done.mp3");
 static SOUND_REQUEST: &[u8] = include_bytes!("../../../public/sounds/request.mp3");
 
-/// Play a notification sound in a background thread.
-/// Silently does nothing if no audio player is available.
-pub fn play(sound: Sound) {
+/// Play a notification sound, retaining the native player until it finishes.
+/// On iOS, report startup failures instead of claiming playback was handled.
+pub fn play(sound: Sound) -> Result<(), String> {
     if sound_playback_disabled_by_env() {
-        return;
+        return Ok(());
     }
 
-    std::thread::spawn(move || {
-        let data = match sound {
-            Sound::Done => SOUND_DONE,
-            Sound::Request => SOUND_REQUEST,
-        };
+    let data = match sound {
+        Sound::Done => SOUND_DONE,
+        Sound::Request => SOUND_REQUEST,
+    };
 
-        if let Err(err) = play_bytes(data) {
-            warn!("{sound:?} sound playback failed: {err}");
-        }
-    });
+    #[cfg(target_os = "ios")]
+    return apple::play(data);
+
+    #[cfg(not(target_os = "ios"))]
+    {
+        std::thread::spawn(move || {
+            if let Err(err) = play_bytes(data) {
+                warn!("{sound:?} sound playback failed: {err}");
+            }
+        });
+        Ok(())
+    }
 }
 
 fn sound_playback_disabled_by_env() -> bool {
     std::env::var_os(DISABLE_SOUND_ENV).is_some() || std::env::var_os("NEXTEST").is_some()
 }
 
+#[cfg(not(target_os = "ios"))]
 fn play_bytes(data: &[u8]) -> Result<(), String> {
     // Write to a temp file because the supported audio players need a file path.
     let tmp = temp_sound_path();
@@ -84,6 +101,7 @@ fn play_bytes(data: &[u8]) -> Result<(), String> {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn playback_error(output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
@@ -94,6 +112,7 @@ fn playback_error(output: &Output) -> String {
     }
 }
 
+#[cfg(not(target_os = "ios"))]
 fn temp_sound_path() -> PathBuf {
     let id = SOUND_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!("vibestudio-sound-{}-{id}.mp3", std::process::id()))
@@ -112,12 +131,12 @@ fn run_player(path: &Path) -> Result<Output, String> {
         .map_err(|e| format!("no audio player available: {e}"))
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 fn run_player(path: &Path) -> Result<Output, String> {
     run_linux_player(path)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, all(test, not(target_os = "ios"))))]
 fn windows_media_player_script() -> &'static str {
     r#"
 $ErrorActionPreference = 'Stop'
@@ -156,7 +175,7 @@ if ($script:timedOut) { throw 'sound playback timed out' }
 "#
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, all(test, not(target_os = "ios"))))]
 fn windows_player_command(path: &Path) -> Command {
     let mut command = hidden_command("powershell.exe");
     command
@@ -180,14 +199,14 @@ fn run_windows_player(path: &Path) -> Result<Output, String> {
         .map_err(|e| format!("Windows MediaPlayer playback failed: {e}"))
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 #[derive(Debug, Clone, Copy)]
 struct AudioPlayer {
     program: &'static str,
     args: &'static [&'static str],
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 impl AudioPlayer {
     fn output(self, path: &Path) -> std::io::Result<Output> {
         self.output_with_timeout(path, AUDIO_PLAYER_TIMEOUT)
@@ -248,7 +267,7 @@ impl AudioPlayer {
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 fn read_output<R>(mut reader: R) -> std::thread::JoinHandle<IoResult<Vec<u8>>>
 where
     R: Read + Send + 'static,
@@ -260,7 +279,7 @@ where
     })
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 fn finish_output(
     stdout_reader: std::thread::JoinHandle<IoResult<Vec<u8>>>,
     stderr_reader: std::thread::JoinHandle<IoResult<Vec<u8>>>,
@@ -274,7 +293,7 @@ fn finish_output(
     Ok((stdout, stderr))
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 fn terminate_and_reap(child: &mut std::process::Child) -> std::io::Result<()> {
     if let Err(kill_err) = child.kill() {
         if child.try_wait()?.is_none() {
@@ -284,7 +303,7 @@ fn terminate_and_reap(child: &mut std::process::Child) -> std::io::Result<()> {
     child.wait().map(|_| ())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 fn linux_audio_players() -> &'static [AudioPlayer] {
     // Do not add bare aplay here. It does not decode MP3 and plays MP3 bytes as raw PCM.
     &[
@@ -311,7 +330,7 @@ fn linux_audio_players() -> &'static [AudioPlayer] {
     ]
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 fn run_linux_player(path: &Path) -> Result<Output, String> {
     let mut errors = Vec::new();
 
@@ -329,7 +348,7 @@ fn run_linux_player(path: &Path) -> Result<Output, String> {
     ))
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 fn player_error(player: AudioPlayer, output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
@@ -345,12 +364,13 @@ fn player_error(player: AudioPlayer, output: &Output) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn temp_sound_paths_are_unique() {
         assert_ne!(temp_sound_path(), temp_sound_path());
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
     #[test]
     fn linux_audio_players_are_mp3_capable() {
         let programs: Vec<&str> = linux_audio_players()
@@ -362,7 +382,7 @@ mod tests {
         assert!(!programs.contains(&"aplay"));
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
     #[test]
     fn linux_audio_player_does_not_wait_forever() {
         let pid_path = temp_sound_path().with_extension("pid");
@@ -392,7 +412,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
     #[test]
     fn linux_audio_player_preserves_completed_output() {
         let player = AudioPlayer {
@@ -415,6 +435,7 @@ mod tests {
         assert!(output.stderr.starts_with(b"fedcba9876543210"));
     }
 
+    #[cfg(not(target_os = "ios"))]
     #[test]
     fn windows_media_player_uses_process_environment_and_dispatcher() {
         let script = windows_media_player_script();

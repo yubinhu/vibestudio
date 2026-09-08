@@ -6,6 +6,8 @@ import SessionsHost from "@/pages/sessions/SessionsHost";
 import UpdateBanner from "@/components/UpdateBanner";
 import RemoteRecovery from "@/components/RemoteRecovery";
 import { useRemote } from "@/lib/remote";
+import { notifyPrime } from "@/lib/api";
+import { log } from "@/lib/log";
 import { useDiscardBlocker } from "./routeGuard";
 
 // Mobile-only landing (the connect screen). Lazy so the desktop bundle never pulls
@@ -28,6 +30,16 @@ export default function AppShell() {
   const onSessions = useLocation().pathname === "/sessions";
   const { mobile, status, workspaceHost, interrupted } = useRemote();
   useDiscardBlocker();
+
+  // A phone often joins agents started on the desktop. Ask when its workspace
+  // connects, rather than requiring the user to create a new session on iOS.
+  useEffect(() => {
+    if (mobile && status.state === "connected") {
+      void notifyPrime().catch((error) => {
+        if (error?.status !== 404) log.warn("notify", "notification permission request failed", String(error));
+      });
+    }
+  }, [mobile, status.state]);
 
   // The tray's "Open on your phone…" item deep-links to `#/?phone=1`. Handled
   // here — mounted exactly once and never display:none-hidden (RemoteMenu isn't:

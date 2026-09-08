@@ -334,8 +334,9 @@ function observeAttention(s: Pick<TermSession, "id" | "label" | "attention">, an
     if (shouldSound(kind, watching())) {
       void playAttentionSound(kind, () => current() && shouldSound(kind, watching()));
     }
-    if (document.hidden || !document.hasFocus()) {
-      void deliver(s.label || s.id, kind === "request" ? "Your input is needed." : "Your turn — the agent finished.", s.id, current);
+    if (shouldNotify(s.id)) {
+      void deliver(s.label || s.id, kind === "request" ? "Your input is needed." : "Your turn — the agent finished.", s.id,
+        () => current() && shouldNotify(s.id));
     }
   }, 120));
 }
@@ -353,8 +354,14 @@ const latestBell = new Map<string, string>();
 const announced = new Map<string, number>();
 
 /** Native-surface capability: null = not probed yet, false = 404 (no shell on
- *  this origin — browser mode), true = the desktop shell answers /api/notify. */
+ *  this origin — browser mode), true = the native shell answers /api/notify. */
 let nativeNotify: boolean | null = null;
+let notifyWhileVisible: boolean | null = null;
+let nativeProbe: Promise<void> | null = null;
+
+function shouldNotify(id: string): boolean {
+  return document.hidden || !document.hasFocus() || (notifyWhileVisible === true && watchedId !== id);
+}
 
 function maybeNotify(e: TermEvent): void {
   if (e.attention || latestAttention.has(e.id)) return; // semantic attention supersedes terminal bells
@@ -376,13 +383,14 @@ function maybeNotify(e: TermEvent): void {
   // One banner per session until it's seen: a toast for an earlier still-unread
   // bell already summoned the user for this session.
   if ((announced.get(e.id) ?? 0) > seenAt) return;
-  // You're looking at the app — the rail dot is enough. Banners are for the
-  // hidden/unfocused window (and, in browser mode, the backgrounded tab).
-  if (!document.hidden && document.hasFocus()) return;
+  // Desktop/browser banners summon a background window. Mobile also announces
+  // other sessions while the app is visible; the watched session stays quiet.
+  if (!shouldNotify(e.id)) return;
   announced.set(e.id, bell);
   // Body = the agent's last line (SSE bell frames carry it); the poll backstop and
   // an empty pane fall back to the fixed summons.
-  void deliver(e.label || e.id, e.last?.trim() || "Your turn — the agent finished.", e.id);
+  void deliver(e.label || e.id, e.last?.trim() || "Your turn — the agent finished.", e.id,
+    () => current() && shouldNotify(e.id));
 }
 
 async function deliver(title: string, body: string, tag: string, current: () => boolean = () => true): Promise<void> {
@@ -390,9 +398,9 @@ async function deliver(title: string, body: string, tag: string, current: () => 
   // A push-capable surface (installed PWA / push-subscribed browser) already gets
   // the server's Web Push for this same bell — raising a local notification too is
   // the "exactly two per turn" double. Web Push is the authoritative channel there,
-  // so defer to it. The desktop shell has no service worker (canPush false), so it
-  // still falls through to its native toast below.
-  if (canPush() && Notification.permission === "granted") return;
+  // so defer to it outside the native shell. Some native webviews expose these
+  // browser APIs without a working push subscription; prefer their OS channel.
+  if (nativeNotify !== true && canPush() && Notification.permission === "granted") return;
   if (nativeNotify !== false) {
     try {
       await api.notifyNative(title, body);
@@ -440,15 +448,25 @@ function syncBadge(): void {
   });
 }
 
-async function probeNative(): Promise<void> {
-  try {
-    nativeNotify = (await api.notifyStatus()).native;
-    syncBadge();
-  } catch (e) {
-    // 404 = no native surface, for good. A transport error leaves it unknown;
-    // the first deliver() re-probes by just trying.
-    if ((e as { status?: number } | undefined)?.status === 404) nativeNotify = false;
-  }
+function probeNative(): Promise<void> {
+  if (notifyWhileVisible !== null) return Promise.resolve();
+  if (nativeProbe) return nativeProbe;
+  nativeProbe = (async () => {
+    try {
+      const status = await api.notifyStatus();
+      nativeNotify = status.native;
+      notifyWhileVisible = status.native && status.notifyWhileVisible === true;
+      syncBadge();
+    } catch (e) {
+      // Retry unknown capabilities on reconnect/resume. A successful toast
+      // alone cannot tell us whether this shell supports foreground banners.
+      if ((e as { status?: number } | undefined)?.status === 404) {
+        nativeNotify = false;
+        notifyWhileVisible = false;
+      }
+    }
+  })().finally(() => { nativeProbe = null; });
+  return nativeProbe;
 }
 
 /** Ask for notification permission at a user-legible moment — call this from
@@ -524,6 +542,7 @@ function connectEvents(): void {
     // Catch up without sounding historical transitions after a network gap.
     () => {
       rebaselineAttention();
+      void probeNative();
       void refresh();
     },
     rebaselineAttention,
@@ -552,12 +571,14 @@ window.addEventListener("blur", () => {
   if (watchedId) markSeen(watchedId);
 });
 window.addEventListener("focus", () => {
+  void probeNative();
   if (watchedId && !document.hidden) markSeen(watchedId);
 });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     if (watchedId) markSeen(watchedId);
   } else {
+    void probeNative();
     void refresh();
   }
 });

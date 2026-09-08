@@ -18,6 +18,9 @@ struct Capture {
 }
 
 impl NotifyControl for Capture {
+    fn notify_while_visible(&self) -> bool {
+        true
+    }
     fn notify(&self, _title: &str, _body: &str) -> Result<(), String> {
         self.shown.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -80,7 +83,9 @@ fn notify_routes_gate_on_notifier_and_locality() {
         .call()
         .expect("status");
     assert_eq!(status.status(), 200);
-    assert!(status.into_string().unwrap_or_default().contains("true"));
+    let status: serde_json::Value = serde_json::from_str(&status.into_string().unwrap()).unwrap();
+    assert_eq!(status["native"], true);
+    assert_eq!(status["notifyWhileVisible"], true);
 
     let post = ureq::post(&format!("{base}/api/notify"))
         .set("Content-Type", "application/json")

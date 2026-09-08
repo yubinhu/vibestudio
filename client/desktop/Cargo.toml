@@ -67,11 +67,24 @@ skill-server = { path = "../../server/skill-server", default-features = false, f
 # ShellNotifier via the pinned-local /api/notify* routes — no JS API.
 tauri-plugin-notification = "2"
 
+# AVAudioPlayer plays the embedded attention sounds without relying on a WebKit
+# audio gesture or attempting to spawn a desktop audio player on iOS.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSString"] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioPlayer", "AVAudioSession", "AVAudioSessionTypes"] }
+
 # Keychain access for the SecureStore (SSH private keys live in the iOS
 # Keychain). Compiled on macOS too — same Security.framework path — so the
 # store is unit-testable on a Mac.
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+
+# Exercise the same native decoder against both embedded MP3s on macOS without
+# playing any audio. These bindings are not included in shipping desktop builds.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSError", "NSString"] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioPlayer"] }
 
 [profile.release]
 panic = "abort"

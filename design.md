@@ -313,6 +313,13 @@ persistent sound toggle. Herdr's request sound also plays for a watched session;
 the done sound is suppressed while that session is being watched. Native audio
 uses pinned-local `/api/notify/sound`, with the same MP3s as a gesture-unlocked Web
 Audio fallback. Startup/reconnect, duplicate and superseded events stay silent.
+iOS uses a retained native audio player, respecting Silent mode. Its notification
+permission is requested when the mobile workspace connects, so joining an agent
+started elsewhere works too. Native capability `notifyWhileVisible` allows iOS
+banners for unwatched sessions while Home or another session is visible; desktop
+banners remain limited to background windows. These are local notifications:
+locked/suspended iOS delivery still requires the APNs path in
+[the mobile plan](plans/mobile-ux.md#2-notifications--native-local-done-closed-app-push-apns--todo).
 
 ## Agent registry (`skill-core/src/agents.rs`)
 
