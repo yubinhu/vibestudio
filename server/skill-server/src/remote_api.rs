@@ -30,6 +30,10 @@ pub fn handle(method: &Method, path: &str, body: &str, ctx: &ServerCtx) -> Reply
             Err(e) => err(400, &e),
         },
         (Method::Get, "/api/remote/status") => ok(&remote.status()),
+        (Method::Post, "/api/remote/retry") => match remote.retry() {
+            Ok(()) => ok(&json!({ "ok": true })),
+            Err(e) => err(400, &e),
+        },
         // The host to auto-reconnect to on launch (VS Code-style). Always handled
         // locally — it's THIS machine's connection memory, not the remote's.
         (Method::Get, "/api/remote/last") => ok(&json!({ "host": remote.last_host() })),
@@ -219,6 +223,9 @@ mod tests {
             examples_base: None,
             token: None,
             remote: None,
+            local_backend: None,
+            #[cfg(feature = "local-backend")]
+            host_service_identity: None,
             phone: None,
             notifier: None,
             editor: None,

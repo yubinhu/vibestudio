@@ -15,9 +15,9 @@ Two parts that can run on **different machines** (the VS Code-remote model):
   branch**. `client/desktop/` is the thin Tauri shell.
 
 **Browser** loads the SPA from skill-server and calls `/api/*` same-origin. **Desktop** brings
-up one local loopback `skill-server` and points the webview at `http://127.0.0.1:<port>`; for
-the remote case that local server is a **switchboard** reverse-proxying `/api/*` to an
-on-demand remote server (the tunnel's local end is also loopback). So **"local" is just
+up an in-process loopback **switchboard** and points the webview at `http://127.0.0.1:<port>`.
+It proxies workspace requests to a detached, per-user local host service, or to a remote
+host service through SSH (the tunnel's local end is also loopback). So **"local" is just
 "remote where the host is localhost"** — identical code both ways, `/api/*` always same-origin
 (the desktop CSP `default-src 'self'` covers it). Any *outbound* network beyond the server must
 originate in **Rust**, never the webview. (We dropped the `invoke` fast path because dual
@@ -166,24 +166,47 @@ conflicts stay rare.
 |------|---------|----------|------|
 | Browser, local backend | `cargo run -p skill-server` (`:8765`) | `npm run dev:vite` (`:1420`) | **`localhost:1420`** — Vite proxies `/api` → 8765 |
 | Browser/desktop, **remote** backend | skill-server on the remote host | `VITE_API_TARGET=http://<remote>:8765 npm run dev:vite` | `localhost:1420` |
-| Native desktop | the shell spawns a loopback `skill-server` | `npm run tauri dev` | the native window |
+| Native desktop | in-process switchboard + detached local host service | `npm run tauri dev` | the native window |
 | Production / remote | `npm run build` then run skill-server | (served by skill-server) | skill-server's port (UI + API, one origin) |
 | **Browser-only / phone** (tailnet) | skill-server on `127.0.0.1:8765` + `tailscale serve --bg 8765` | (served by skill-server) | `https://<machine>.<tailnet>.ts.net` |
 
-The Vite `/api` proxy (`vite.config.ts`, target via `VITE_API_TARGET`) defaults to `:8765`;
-`tauri dev` spawns its own loopback server there. Desktop runs the server in-process via
-`skill_server::spawn(ServerConfig)` (`client/desktop/src/lib.rs`); `ServerConfig` carries the
-bearer `token` + `examples_base`.
+The Vite `/api` proxy (`vite.config.ts`, target via `VITE_API_TARGET`) defaults to `:8765`.
+`tauri dev` starts Vite with `--mode native`, which targets its switchboard on `:8767`,
+and prefers `:8766` for a new host service. This leaves an existing production host on
+`:8765` available while native dev runs. If overriding `VIBESTUDIO_PORT`, set
+`VITE_API_TARGET` to the matching switchboard URL. Browser mobile-dev keeps `:8765`;
+native iOS uses its own ephemeral loopback origin rather than Vite. Production
+prefers `:8765` for the host and uses an ephemeral switchboard port. Existing host records
+take precedence: dev, desktop and SSH accessors share the same per-user service.
 
-## Tray-governed lifecycle + "Open on your phone"
+## Durable host lifecycle + "Open on your phone"
 
-The desktop app is **tray-resident** (`client/desktop/src/lib.rs`): closing the window hides it
-— the in-process server, terminals, and phone access stay up — and the tray's **Quit** is the
-one explicit full teardown: it kills every studio terminal on the machine
-(`skill_term::list_sessions` → `kill_session`), the live SSH session, and the engine, then
-exits. Icon present = reachable; icon gone = nothing of ours running. Every OTHER exit (update
-restart, plain Cmd+Q, crash) still leaves tmux agents running for the next launch to pick up —
-update restarts must never kill a working agent. There is **no separate daemon process**.
+The desktop app is **tray-resident** (`client/desktop/src/lib.rs`): closing the window hides
+it. **Quit** ends the client and its SSH tunnels; the separate host service, agents, phone
+access, and attention watcher continue. **Stop local host service and quit** explicitly
+stops that service; sessions remain in tmux until closed through their session controls.
+
+`server/skill-server/src/host_service.rs` owns discovery and lifecycle. `skill-server --daemon`
+ensures one detached worker and prints its ready record. Desktop uses its own executable's
+`--host-service` entry point before initializing Tauri. Startup and lifetime file locks
+serialize launches; `host-service.json` records protocol, instance ID, PID, port and version.
+Reuse verifies the record against loopback `/api/health`, and never replaces a live worker
+merely because the accessor version changed. The worker has no remote-switching capability.
+Its lifetime is independent of SSH/stdin and the desktop window. `--stop-host-service` or
+`POST /api/host-service/stop` stops an instance after identity verification. This is a detached
+process, not an OS login/boot service: a machine restart requires starting an accessor or
+`skill-server --daemon` again.
+
+An explicit Stop records its intent so other clients' automatic recovery cannot restart
+the service. A new connection, Retry, or explicit daemon launch can start it again.
+Desktop updates download and verify first, then stop the local worker before replacing
+its executable and restart it through the new app. Installation failure restores the
+host; tmux agents are never terminated by the updater.
+
+The native switchboard retains only client capabilities (SSH profiles, updates, notifications,
+external-editor launch). Its `LocalBackendControl` supplies the local worker target, with
+off-thread health/recovery. A selected but unavailable host returns **503**, including on
+writes, instead of falling through to the switchboard's local filesystem.
 
 **"Open on your phone" (`/api/phone/*`, `server/skill-server/src/phone.rs`) — the HUB is the
 server.** Remote dialog → *Open on your phone* → QR (the tray's item deep-links the same modal
@@ -195,13 +218,12 @@ the phone reaches the stable machine directly — the client is an accessor, nev
 can sleep/shut down without costing the phone anything. (The desktop client itself always
 accesses remotes over SSH — reliability — never the tailnet.) Every loopback server carries a
 PhoneControl, provisioned remotes included; remote launches are **tokenless** (a browser can't
-send a bearer; loopback + tailnet is the trust boundary, same as local — the token is still
-recorded/injected for reattach compat with older servers). Guided failures describe the hub's
+send a bearer; loopback + tailnet is the trust boundary, same as local). Guided failures describe the hub's
 machine: `operator` (one-time `tailscale set --operator`), `consent` (tailnet HTTPS approval
-link), `tailscale` missing/stopped. The desktop binds `PHONE_PORT` (8765) by preference — the
+link), `tailscale` missing/stopped. The host service binds `PHONE_PORT` (8765) by preference — the
 serve mapping persists in tailscaled, so a stable port lets it find the app on the next launch
 — with an ephemeral fallback when taken; `enable()` re-runs `serve` against the current port,
-so a version bump's new remote port can't leave a stale mapping (`status()` reports
+so a changed host port can't leave a stale mapping (`status()` reports
 not-serving rather than a dead QR). `embed-ui` builds compile `dist/` into the binary
 (`include_dir`; `build.rs` re-runs on dist changes — without it a rebuild silently ships a
 stale SPA) so the standalone/headless binary serves the UI with no dist on disk. skill-term
@@ -238,9 +260,8 @@ Agent terminals are tmux sessions (`ass-*`); the backend is only a **bridge** (`
 in a PTY).
 
 1. **A terminal outlives everything but an explicit kill** — closing a tab, closing the app
-   window, dropping SSH, or restarting/upgrading a backend never stops the agent inside. The
-   tray's **Quit** is an explicit kill: it ends every studio terminal (see the tray-governed
-   lifecycle section) — that's the desktop's "off switch", not an incidental exit.
+   window, quitting the desktop, dropping SSH, or restarting a backend never stops the agent
+   inside. Killing a session is a separate action in its session controls.
 2. **The `ass-*` namespace is machine-wide, unfiltered:** every backend lists/attaches/kills all
    studio sessions, so any client picks up any agent. The pid in `ass-<pid>-<secs>-<seq>` only
    prevents name collisions; `@ass_owner_pid` is provenance, not a lifecycle key.
@@ -250,6 +271,16 @@ in a PTY).
 Multiple backends per machine are supported (shared namespace); the inference-engine reaper
 kills only *orphaned* engines (reparented to init) — never a sibling's live child **on Unix**
 (the Windows fallback kills by image name and can hit a sibling, accepted for that rare case).
+
+**Each viewer has its own attachment.** `/api/terminal/attach` starts with an SSE `ready`
+event carrying an opaque `attachmentId`; input, resize and detach echo that ID alongside
+the session ID. Tokens belong to one live attachment, so old requests cannot control a
+replacement stream. SSE closure/detach ends only that viewer's tmux client. Legacy callers
+without tokens work only when exactly one viewer exists; the current UI requires `ready`.
+Each viewer tracks its own PTY dimensions. tmux uses manual window sizing, and the viewer
+most recently sending user input owns shared geometry; passive phone/desktop attaches and
+resizes cannot resize a terminal another viewer is using. Ownership lives in tmux so it
+also works across sibling backend processes. Automatic terminal query replies do not claim it.
 
 ## Session attention
 
@@ -316,7 +347,7 @@ Sources, project scopes and scan failures remain visible. See
 
 A **local proxy switchboard**; the webview never changes origin.
 
-- `/api/remote/{list,connect,disconnect,status,last}` is **always local** (`SshRemoteControl`,
+- `/api/remote/{list,connect,retry,disconnect,status,last}` is **always local** (`SshRemoteControl`,
   `server/skill-server/src/sshmgr/`); shells out to `ssh`, or `wsl.exe` for `wsl:<distro>`
   targets. A `Transport` enum abstracts the two (a WSL distro is just Linux).
 - **Mobile is remote-ONLY (iPhone, feature `russh-transport`).** A phone holds no
@@ -344,30 +375,41 @@ A **local proxy switchboard**; the webview never changes origin.
   dedicated full-screen **connect screen** (`pages/MobileConnect.tsx`, Termius-style — big
   saved-connection cards + an on-device key-gen add flow, shared with the top-chrome
   `RemoteMenu` via `components/connections.tsx`) instead of the workspace whenever
-  `mobile && status !== connected`. Connecting reveals the normal remote-backed workspace;
-  disconnecting returns to the connect screen. Desktop is untouched (`mobile` is false). Still
+  no workspace has connected yet. Once connected, interruptions preserve the mounted workspace
+  and selected session under a reconnect overlay with Retry/Disconnect. Explicit disconnect
+  returns to the connect screen. Desktop is untouched (`mobile` is false). Still
   to prove: on-device/TestFlight validation (background→resume, idle SSE over a real network).
 - While connected, **every other `/api/*` (incl. the `/api/terminal/attach` and `/api/events`
   SSE streams and `/api/phone/*` — the phone hub is the remote) is reverse-proxied** to the
-  remote (`proxy.rs`) with the recorded token injected upstream (current servers launch
-  tokenless — see the phone section — but the header keeps reattach compatible with older,
-  token-enforcing servers).
-  Pinned local: `/api/update/*`, `/api/logs/client`, and `/api/notify*` (a toast/dock badge
+  remote (`proxy.rs`). During setup/recovery/error the selected host remains selected, and
+  ordinary API calls return 503 until its verified target is ready. Pinned local:
+  `/api/health`, `/api/update/*`, `/api/logs/client`, and `/api/notify*` (a toast/dock badge
   belongs to the machine whose screen you're looking at — and only to its own webview: a
   tailscale-served phone request gets the 404 and uses the Web Notification API instead).
   `/api/push/*` (Web Push: key, subscribe, attention) is deliberately NOT pinned — with a
   hub connected it proxies, so subscriptions live next to the bell watcher that fires them.
   Non-`/api` GETs serve the local UI.
-- **Connect flow:** list targets (`~/.ssh/config` + WSL distros) → detect arch (`uname`) →
-  ensure a version-pinned static-musl `skill-server` (checksum-verified) → launch loopback-bound
-  (tokenless; the token is generated + recorded for legacy reattach) → one transport child is
-  both tunnel and lifeline. ssh uses `ssh -L`; WSL shares Windows loopback (no `-L`). On
-  "connected" the SPA reloads; tmux terminals survive reconnects.
+- **Connect flow:** list targets (`~/.ssh/config` + WSL distros) → discover the durable
+  service record → attach and verify its identity. If absent, detect arch, ensure a
+  version-pinned static-musl `skill-server` (checksum-verified) and start `--daemon`.
+  Recovery first reuses the installed binary and never repeats provisioning merely because
+  the tunnel dropped. ssh uses `ssh -L`; WSL shares Windows loopback (no `-L`). Closing that
+  tunnel cannot stop the host. Legacy binaries without the service protocol fail with an
+  update message; running agents are left intact.
+- **Recovery:** off-thread identity probes detect stale tunnels, including after iOS resume.
+  Transient failures retry with capped backoff; trust/auth/setup failures stop for explicit
+  Retry. Generation guards cancel obsolete retries on Disconnect or a newer connection.
+  Same-host recovery keeps the SPA mounted: frozen terminals detach, reopen with fresh
+  attachment IDs, reset their parser before fresh output, and resume at current dimensions.
+  Pending keystrokes and clipboard work are discarded, never replayed into a new attachment.
+  Session inventory and attention rebaseline silently; file and discovery stores refresh.
+  Changing hosts still reloads to clear host-specific state. The iOS local listener first
+  rebinds its previous port; the rare origin-change reload preserves the workspace URL.
 - **Resume/recents:** the last host is remembered on the connecting machine (`/api/remote/last`,
   `sshmgr/lastconn.rs`) and auto-reconnected; `disconnect(forget=true)` clears it. Recents
   (`/api/recents/list`) are a *normal proxied* route, so they follow the active server.
-- **Same code everywhere;** two gates keep it from brokering where it shouldn't: a provisioned
-  remote (`--lifeline-stdin`) and a non-loopback bind both leave `ServerConfig::remote = None`.
+- **Same code everywhere;** the durable worker and a non-loopback bind both leave
+  `ServerConfig::remote = None`.
   Provisioning resolves `server-*` filenames from `release-assets.json` and downloads
   them with their required `.sha256` files from the GitHub release matching the app
   version (override via `VIBESTUDIO_SERVER_BASE_URL` / `_VERSION`).

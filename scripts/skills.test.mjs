@@ -194,6 +194,8 @@ test("the adapter accepts legacy arrays and tags Studio skills in both response 
       if (id === "@/lib/skill") return {};
       if (id === "@/lib/agents") return { isBootstrapSkill: (root) => root === "/load-secrets" };
       if (id === "@/lib/log") return { log: { debug: () => {} } };
+      if (id === "./terminalAttachment") return {};
+      if (id === "./workspaceConnection") return { workspaceConnection: () => ({ available: true, epoch: 0 }) };
       throw new Error(`Unexpected import ${id}`);
     },
   }, { filename: "api.ts" });

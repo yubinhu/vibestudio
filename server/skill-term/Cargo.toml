@@ -13,3 +13,6 @@ dirs = "5"
 skill-core = { path = "../skill-core" }
 # Logging facade only (the hosting binary installs the subscriber).
 log = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"

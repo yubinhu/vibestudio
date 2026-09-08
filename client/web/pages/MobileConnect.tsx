@@ -14,7 +14,7 @@ import { useRemote } from "@/lib/remote";
 import { useSshProfiles } from "@/lib/sshProfiles";
 import type { RemoteState } from "@/lib/api";
 
-const CONNECTING = new Set<RemoteState>(["detecting", "installing", "launching", "forwarding"]);
+const CONNECTING = new Set<RemoteState>(["detecting", "installing", "launching", "forwarding", "reconnecting"]);
 
 function Wordmark() {
   return (

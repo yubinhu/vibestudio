@@ -1,14 +1,13 @@
 //! The remote session lifecycle, transport-agnostic. A [`Remote`] (the user's `ssh`/`wsl`
-//! on desktop, or russh on the mobile switchboard) both launches the remote server (holding
-//! its stdin as a lifeline) and reaches a local port on it: the ssh path forwards
+//! on desktop, or russh on the mobile switchboard) attaches a durable host service
+//! and reaches a local port on it: the ssh path forwards
 //! `-L L:127.0.0.1:R` (the client chooses R, sidestepping the "`-L` needs the port before
 //! the server picks it" chicken-and-egg, and retries on a port collision); WSL needs no
 //! forward — its loopback is shared with Windows, so L == R. One session ⇒ one auth; tearing
-//! it down EOFs the remote server's stdin so it self-exits (no orphan), and the forward dies
-//! with it.
+//! it down closes only the forward. The host service outlives every accessor.
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::{RemoteStatus, RemoteTarget};
 
@@ -22,74 +21,103 @@ pub struct Session {
     pub token: String,
     /// The transport-specific handle (an `ssh` child, or the russh forward + lifeline).
     handle: Box<dyn super::conn::SessionHandle>,
+    record: ServiceRecord,
 }
 
 impl Session {
-    /// Kill the tunnel + lifeline → remote stdin EOFs → the remote server exits and the
-    /// forward closes.
+    pub fn health_probe(&self) -> HealthProbe {
+        HealthProbe { local_port: self.local_port, record: self.record.clone() }
+    }
+
+    /// Close the tunnel/keepalive channel, leaving the durable worker and agents running.
     pub fn teardown(&mut self) {
         self.handle.teardown();
     }
 }
 
-/// Run the whole connect flow on a background thread, then store the result — unless a
-/// disconnect or newer connect superseded it (tracked by `generation`). `resume=true`
-/// marks a reconnect the mobile shell fires on app-resume: it must keep the remembered
-/// host on failure (the radio may not be back yet), where a user-driven connect forgets
-/// a genuinely-dead resume host.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ConnectIntent {
+    Setup,
+    Recover,
+    Retry,
+}
+
+/// Connect off-thread unless superseded by a newer generation. Recovery retries
+/// transient failures with capped backoff; setup/trust failures await explicit
+/// Retry. Both retain the selected host, keeping workspace requests off Local.
 pub fn run_connect(
     state: Arc<Mutex<State>>,
     host: String,
     generation: u64,
     app_version: String,
     store: Option<Arc<dyn crate::SecureStore>>,
-    resume: bool,
+    intent: ConnectIntent,
 ) {
-    let result = build_and_connect(&state, &host, generation, &app_version, store.as_deref());
-    let mut s = state.lock().unwrap();
-    if s.generation != generation {
-        // Superseded — discard, tearing down any session we just built.
-        drop(s);
-        if let Ok(mut sess) = result {
-            sess.teardown();
+    let mut attempt = 0u32;
+    loop {
+        if state.lock().unwrap().generation != generation {
+            return;
         }
-        return;
-    }
-    s.busy = false;
-    match result {
-        Ok(sess) => {
-            s.target = Some(RemoteTarget {
-                base_url: format!("http://127.0.0.1:{}", sess.local_port),
-                token: sess.token.clone(),
-            });
-            s.status = RemoteStatus { state: "connected".into(), host: Some(host.clone()), message: None };
-            s.session = Some(sess);
-            // Remember this host so the next launch auto-reconnects (VS Code-style).
-            // Persist UNDER the lock so it's atomic with the generation check above — a
-            // concurrent disconnect can't slip in and have us re-persist a host it just
-            // cleared. Only persisted now that we're fully connected.
-            s.last_host = Some(host.clone());
-            super::lastconn::remember(&host);
+        let result = build_and_connect(&state, &host, generation, &app_version, store.as_deref(), intent);
+        let mut s = state.lock().unwrap();
+        if s.generation != generation {
             drop(s);
-            // Watch the session: if it dies (network loss, remote crash), clear it so the UI
-            // falls back to Local instead of proxying a dead tunnel.
-            spawn_monitor(state.clone(), generation, host);
-        }
-        Err(e) => {
-            s.target = None;
-            s.session = None;
-            // Hybrid resume policy: if the host we just failed to reach IS the remembered
-            // resume host, forget it — a genuinely-dead host auto-clears after one failed
-            // launch attempt, while an unrelated failed connect leaves the memory intact.
-            // EXCEPT on an app-resume reconnect: that attempt routinely races the radio
-            // coming back after a suspend, so a transient failure must not erase the
-            // remembered host (it would disable auto-reconnect until a manual reconnect).
-            if !resume && s.last_host.as_deref() == Some(host.as_str()) {
-                s.last_host = None;
-                super::lastconn::forget();
+            if let Ok(mut sess) = result {
+                sess.teardown();
             }
-            s.status = RemoteStatus { state: "error".into(), host: Some(host), message: Some(e) };
+            return;
         }
+        match result {
+            Ok(sess) => {
+                s.busy = false;
+                s.recovering = false;
+                s.target = Some(RemoteTarget {
+                    base_url: format!("http://127.0.0.1:{}", sess.local_port),
+                    token: sess.token.clone(),
+                });
+                s.status = RemoteStatus { state: "connected".into(), host: Some(host.clone()), message: None };
+                s.session = Some(sess);
+                s.last_host = Some(host.clone());
+                super::lastconn::remember(&host);
+                drop(s);
+                spawn_monitor(state, generation, host, app_version, store);
+                return;
+            }
+            Err(error) => {
+                s.target = None;
+                s.session = None;
+                // A radio outage must not forget the host or rebind requests
+                // to Local. Trust/auth/setup errors remain visible for Retry.
+                let retry = intent != ConnectIntent::Setup && super::reconnect::transient(&error);
+                s.busy = retry;
+                s.recovering = retry;
+                s.status = RemoteStatus {
+                    state: if retry { "reconnecting" } else { "error" }.into(),
+                    host: Some(host.clone()),
+                    message: Some(if retry { format!("Reconnecting to {host}… {error}") } else { error }),
+                };
+                drop(s);
+                if !retry || !wait_current(&state, generation, super::reconnect::delay(attempt)) {
+                    return;
+                }
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// Sleeps in short slices so Disconnect cancels a backoff promptly.
+fn wait_current(state: &Mutex<State>, generation: u64, duration: Duration) -> bool {
+    let deadline = std::time::Instant::now() + duration;
+    loop {
+        if state.lock().unwrap().generation != generation {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(100)));
     }
 }
 
@@ -101,37 +129,77 @@ fn build_and_connect(
     generation: u64,
     app_version: &str,
     store: Option<&dyn crate::SecureStore>,
+    intent: ConnectIntent,
 ) -> Result<Session, String> {
     let remote = conn::build_remote(host, store)?;
-    connect_flow(state, remote.as_ref(), host, generation, app_version)
+    connect_flow(state, remote.as_ref(), host, generation, app_version, intent == ConnectIntent::Recover)
 }
 
-/// Watch the session; once it exits (disconnect, network loss, remote crash) clear the
-/// active session UNLESS a newer connect/disconnect superseded this one (generation guard).
-/// This is what lets the UI recover to Local after a dropped tunnel instead of proxying to a
-/// dead loopback port forever.
-fn spawn_monitor(state: Arc<Mutex<State>>, generation: u64, host: String) {
+/// Detect dead tunnels and recover the same host. Generation guards prevent an
+/// old monitor from replacing a newer connection or reversing Disconnect.
+fn spawn_monitor(state: Arc<Mutex<State>>, generation: u64, host: String, app_version: String, store: Option<Arc<dyn crate::SecureStore>>) {
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(3));
-        let mut s = state.lock().unwrap();
-        if s.generation != generation {
-            return; // superseded by a newer connect/disconnect
+        if !wait_current(&state, generation, Duration::from_secs(3)) {
+            return;
         }
-        // Non-blocking liveness on the handle (an `ssh` child's try_wait, or the russh
-        // connection's keepalive-driven flag). A missing session means it's already gone.
-        if s.session.as_ref().is_some_and(|sess| sess.handle.is_alive()) {
-            drop(s);
+        let (probe, alive) = {
+            let s = state.lock().unwrap();
+            let Some(session) = &s.session else { return };
+            (session.health_probe(), session.handle.is_alive())
+        };
+        // Probe outside the state lock: a hung tunnel must not stall status or
+        // Disconnect. Keepalive flags alone can lag after phone suspension.
+        if alive && probe.alive() {
             continue;
         }
+        let mut s = state.lock().unwrap();
+        if s.generation != generation || s.busy {
+            return;
+        }
+        s.generation += 1;
+        let next = s.generation;
+        s.busy = true;
+        s.recovering = true;
         s.target = None;
-        s.session = None;
+        let dead = s.session.take();
         s.status = RemoteStatus {
-            state: "error".into(),
+            state: "reconnecting".into(),
             host: Some(host.clone()),
-            message: Some(format!("Connection to {host} lost.")),
+            message: Some(format!("Reconnecting to {host}…")),
         };
+        drop(s);
+        if let Some(mut dead) = dead { dead.teardown(); }
+        run_connect(state, host, next, app_version, store, ConnectIntent::Recover);
         return;
     });
+}
+
+/// The same on-wire record is understood by mobile builds without linking the
+/// local worker module. A service protocol version is distinct from app version.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceRecord {
+    protocol: u32,
+    instance_id: String,
+    pid: u32,
+    port: u16,
+    #[serde(skip)]
+    explicitly_stopped: bool,
+}
+
+#[derive(Clone)]
+pub struct HealthProbe {
+    local_port: u16,
+    record: ServiceRecord,
+}
+
+impl HealthProbe {
+    pub fn alive(&self) -> bool { verify_tunnel(self.local_port, &self.record).is_ok() }
+}
+
+fn current(state: &Mutex<State>, generation: u64) -> Result<(), String> {
+    if state.lock().unwrap().generation == generation { Ok(()) }
+    else { Err("Connection attempt cancelled.".into()) }
 }
 
 fn connect_flow(
@@ -140,174 +208,286 @@ fn connect_flow(
     host: &str,
     generation: u64,
     app_version: &str,
+    reuse_installed: bool,
 ) -> Result<Session, String> {
-    set_stage(state, generation, "detecting", host, "Detecting the remote platform…");
-    let platform = provision::detect(remote)?;
-
-    set_stage(state, generation, "installing", host, "Installing skill-server on the remote…");
-    let bin = provision::ensure_installed(remote, &platform, app_version)?;
+    current(state, generation)?;
+    set_stage(state, generation, "launching", host, "Looking for the host service…");
+    // Reconnect/second-client discovery happens BEFORE platform detection or
+    // provisioning. A compatible shared worker is reused across app versions.
+    if let Some(record) = probe_running(remote)? {
+        current(state, generation)?;
+        if record.explicitly_stopped {
+            if reuse_installed { return Err("The host service was explicitly stopped. Choose Retry or reconnect to start it.".into()); }
+            // Explicit setup/Retry goes through ensure: it waits for the old
+            // worker to stop before clearing intent, never returns a doomed port.
+        } else {
+            match reattach(remote, host, record) {
+                Ok(session) => return Ok(session),
+                Err(error) if error.contains("incompatible host service") => return Err(error),
+                Err(error) => log::debug!("Existing host-service endpoint unavailable: {error}"),
+            }
+        }
+    }
+    current(state, generation)?;
+    // During recovery reuse the already installed binary if possible. The
+    // supervisor must not repeatedly download releases while a radio is offline.
     let version = provision::server_version(app_version);
-
-    set_stage(state, generation, "launching", host, "Starting the remote server…");
-    // Keep-alive means a prior connect's server for this version can still be running
-    // (closing the laptop disconnects the client but leaves the remote server up). With a
-    // single client there's never a second user contending for it, so reattach to that warm
-    // server instead of launching a duplicate. ANY miss/failure falls through to a fresh
-    // launch below — so the worst case is exactly the pre-reattach behaviour.
-    if let Some((remote_port, token)) = probe_running(remote, &version) {
-        if let Ok(session) = reattach(remote, host, remote_port, &token) {
-            return Ok(session);
-        }
+    if !version.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)) || version.is_empty() {
+        return Err("Invalid skill-server release version.".into());
     }
-
-    let token = new_token();
-    let mut last_err = String::new();
-    // A few attempts to dodge a remote/local port collision (R is client-chosen).
-    for attempt in 0..4u32 {
-        match launch(remote, host, &bin, &token, &version, attempt) {
-            Ok(session) => return Ok(session),
-            Err(LaunchError::PortConflict(e)) => last_err = e,
-            Err(LaunchError::Fatal(e)) => return Err(e),
+    let installed = format!("$HOME/.vibestudio/server/{version}/skill-server");
+    let bin = if reuse_installed {
+        let output = remote.capture(&format!("[ -x \"{installed}\" ] && \"{installed}\" --version"))?;
+        if !output.contains("host-service=1") {
+            return Err("The installed server does not support the durable host service. Update its skill-server release and reconnect; existing agents were left untouched.".into());
         }
+        installed
+    } else {
+        set_stage(state, generation, "detecting", host, "Detecting the remote platform…");
+        let platform = provision::detect(remote)?;
+        current(state, generation)?;
+        set_stage(state, generation, "installing", host, "Installing skill-server on the remote…");
+        let bin = provision::ensure_installed(remote, &platform, app_version)?;
+        current(state, generation)?;
+        let output = remote.capture(&format!("\"{bin}\" --version"))?;
+        if !output.contains("host-service=1") {
+            return Err("The downloaded server does not support the durable host service. Publish/install a matching skill-server release and reconnect; existing agents were left untouched.".into());
+        }
+        bin
+    };
+    current(state, generation)?;
+    set_stage(state, generation, "launching", host, "Starting the durable host service…");
+    let output = remote.capture(&launch_script(&bin, reuse_installed))?;
+    let record = output.lines().find_map(|line| line.strip_prefix("SKILL_HOST_SERVICE_READY ").and_then(parse_record))
+        .ok_or("The host service did not return a valid ready record.")?;
+    current(state, generation)?;
+    reattach(remote, host, record)
+}
+
+fn parse_record(text: &str) -> Option<ServiceRecord> {
+    if text.len() > 16 * 1024 { return None; }
+    let record: ServiceRecord = serde_json::from_str(text).ok()?;
+    (record.port > 0 && record.pid > 0 && record.instance_id.len() == 32
+        && record.instance_id.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(record)
+}
+
+/// Opening/closing this channel only controls the tunnel. Worker startup already
+/// completed in a separate one-shot command and has no SSH-owned file descriptor.
+fn reattach(remote: &dyn Remote, host: &str, record: ServiceRecord) -> Result<Session, String> {
+    let mut last_error = String::new();
+    for _ in 0..4 {
+        let local_port = if remote.same_port() { record.port } else { free_local_port()? };
+        let handle = match remote.open_session(&reattach_script(record.port), local_port, record.port, host) {
+            Ok(handle) => handle,
+            Err(LaunchError::PortConflict(error)) => { last_error = error; continue; }
+            Err(LaunchError::Fatal(error)) => return Err(error),
+        };
+        let mut session = Session { local_port, token: String::new(), handle, record: record.clone() };
+        if let Err(error) = verify_tunnel(local_port, &record) { session.teardown(); return Err(error); }
+        if record.protocol != 1 {
+            session.teardown();
+            return Err(format!("incompatible host service protocol {} (client supports 1). Update the client or explicitly restart the host service; running agents were left untouched.", record.protocol));
+        }
+        return Ok(session);
     }
-    Err(format!("Could not start the remote server after several attempts. {last_err}"))
+    Err(format!("Could not bind the SSH tunnel after several attempts. {last_error}"))
 }
 
-fn launch(
-    remote: &dyn Remote,
-    host: &str,
-    bin: &str,
-    token: &str,
-    version: &str,
-    attempt: u32,
-) -> Result<Session, LaunchError> {
-    let local_port = free_local_port().map_err(LaunchError::Fatal)?;
-    // WSL shares the loopback with Windows, so the server listens on the same port the
-    // client connects to (no `-L`). Otherwise R is client-chosen and forwarded.
-    let remote_port = if remote.same_port() { local_port } else { pick_remote_port(attempt) };
-    let handle = remote.open_session(&launch_script(version, bin, remote_port, token), local_port, remote_port, host)?;
-    Ok(Session { local_port, token: token.to_string(), handle })
+fn verify_tunnel(local_port: u16, record: &ServiceRecord) -> Result<(), String> {
+    use std::io::Read;
+    let response = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(1)).timeout(Duration::from_secs(3)).build()
+        .get(&format!("http://127.0.0.1:{local_port}/api/health")).call()
+        .map_err(|error| format!("Connection to the host service failed: {error}"))?;
+    let mut body = String::new();
+    response.into_reader().take(16 * 1024).read_to_string(&mut body)
+        .map_err(|error| format!("Connection closed while reading host-service health: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(&body).map_err(|_| "The host service returned an invalid health response.")?;
+    if value["pid"].as_u64() != Some(record.pid as u64)
+        || value["hostService"]["protocol"].as_u64() != Some(record.protocol as u64)
+        || value["hostService"]["instanceId"].as_str() != Some(record.instance_id.as_str()) {
+        return Err("The host service identity changed; reconnect to discover its current endpoint.".into());
+    }
+    Ok(())
 }
 
-/// Reattach to an already-running server (found by [`probe_running`]) instead of starting a
-/// second one: open the tunnel to its port and become the disconnect detector (announce
-/// READY, then hold stdin via `cat`). The warm server keeps running on its own lifeline;
-/// tearing this down only drops our tunnel — consistent with the keep-alive intent.
-fn reattach(remote: &dyn Remote, host: &str, remote_port: u16, token: &str) -> Result<Session, LaunchError> {
-    let local_port = if remote.same_port() { remote_port } else { free_local_port().map_err(LaunchError::Fatal)? };
-    let handle = remote.open_session(&reattach_script(remote_port), local_port, remote_port, host)?;
-    Ok(Session { local_port, token: token.to_string(), handle })
+fn probe_running(remote: &dyn Remote) -> Result<Option<ServiceRecord>, String> {
+    let output = remote.capture(probe_script())?;
+    let (record_text, marker) = match output.split_once("\nHOST_SERVICE_STOPPED ") {
+        Some((record, marker)) => (record, Some(marker)),
+        None => (output.as_str(), None),
+    };
+    let Some(mut record) = parse_record(record_text.trim()) else { return Ok(None); };
+    if let Some(marker) = marker {
+        let identity: serde_json::Value = serde_json::from_str(marker.trim())
+            .map_err(|_| "Could not read the host-service stop intent.")?;
+        record.explicitly_stopped = identity["instanceId"].as_str() == Some(record.instance_id.as_str())
+            && identity["protocol"].as_u64() == Some(record.protocol as u64);
+    }
+    Ok(Some(record))
 }
 
-/// Ask the remote whether a server for this version is already running (kept alive past a
-/// prior disconnect) and, if so, return its `(port, token)` from the record the launch wrote.
-/// Any miss → `None` → the caller launches fresh.
-fn probe_running(remote: &dyn Remote, version: &str) -> Option<(u16, String)> {
-    let out = remote.capture(&probe_script(version)).ok()?;
-    let mut it = out.split_whitespace();
-    let port: u16 = it.next()?.parse().ok()?;
-    let token = it.next()?.to_string();
-    (!token.is_empty()).then_some((port, token))
+fn launch_script(bin: &str, recovery: bool) -> String {
+    let recover = if recovery { " --recover" } else { "" };
+    format!("unset VIBESTUDIO_SERVER_TOKEN; exec \"{bin}\" --daemon{recover} --host 127.0.0.1 --port 8765")
 }
 
-/// Launch remote command: record `pid port token` (so a later connect can REATTACH to this
-/// exact server rather than spawn a duplicate), then `exec` the server. `$$` is the shell
-/// pid, preserved across `exec`, so the record holds the server's real pid. Joined with `;`
-/// (never `&&`) so a record-write hiccup can't stop the server — at worst the record is
-/// missing and the next connect just launches fresh.
-///
-/// TOKENLESS since the phone inversion: the remote server is the hub a phone reaches directly
-/// through the remote's own `tailscale serve`, and a browser can't send a bearer — so the
-/// loopback bind + tailnet is the trust boundary, same as the local server. The token is
-/// still generated and RECORDED: the proxy keeps injecting it (a `None`-token server ignores
-/// it), which keeps reattach compatible with older, token-enforcing servers.
-/// `bin` is remote-`$HOME`-expanded, `remote_port` numeric, `token`/`version` shell-safe.
-fn launch_script(version: &str, bin: &str, remote_port: u16, token: &str) -> String {
-    format!(
-        "d=\"$HOME/.vibestudio/server/{version}\"; mkdir -p \"$d\"; \
-         printf '%s %s %s' \"$$\" {remote_port} {token} > \"$d/running\"; \
-         exec \"{bin}\" --host 127.0.0.1 --port {remote_port} --lifeline-stdin"
-    )
-}
-
-/// Reattach remote command: announce READY (so the client's startup wait succeeds) and hold
-/// stdin via `cat` — this child is purely the tunnel + disconnect detector; it starts no
-/// server.
 fn reattach_script(remote_port: u16) -> String {
     format!("echo SKILL_SERVER_READY port={remote_port}; exec cat")
 }
 
-/// Probe remote command: echo `port token` iff the recorded pid is alive and is actually a
-/// `skill-server` (the comm check rejects a record whose pid was recycled by another
-/// process). Silent (exit 0, no output) on any miss.
-fn probe_script(version: &str) -> String {
-    format!(
-        "f=\"$HOME/.vibestudio/server/{version}/running\"; [ -f \"$f\" ] || exit 0; \
-         read pid port token < \"$f\"; [ -n \"$pid\" ] || exit 0; \
-         ps -p \"$pid\" -o comm= 2>/dev/null | grep -q skill-server || exit 0; \
-         echo \"$port $token\""
-    )
+fn probe_script() -> &'static str {
+    // Do not adopt per-version legacy running files: their processes still
+    // belong to an older client's stdin. Leave them and all tmux agents alone.
+    "d=\"${XDG_CONFIG_HOME:-$HOME/.config}/vibestudio\"; f=\"$d/host-service.json\"; [ -f \"$f\" ] || exit 0; head -c 16384 \"$f\"; if [ -f \"$d/host-service-stopped.json\" ]; then printf '\\nHOST_SERVICE_STOPPED '; head -c 16384 \"$d/host-service-stopped.json\"; fi"
 }
 
-/// Grab an unused local port by binding `:0`, then release it for the transport to reuse.
 fn free_local_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("could not allocate a local port: {e}"))?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    Ok(port) // listener drops here, freeing the port
-}
-
-/// Guess a free remote loopback port. R is loopback-only on the remote, so a clash is rare;
-/// `connect_flow` retries with a fresh guess if `skill-server` can't bind.
-fn pick_remote_port(attempt: u32) -> u16 {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-    let seed = nanos ^ std::process::id().wrapping_mul(2_654_435_761) ^ attempt.wrapping_mul(40_503);
-    20_000 + (seed % 40_000) as u16
-}
-
-/// A per-session token (128 bits, hex). Recorded in the `running` file and injected by the
-/// proxy on upstream requests — new servers launch tokenless and ignore it, but reattach to
-/// an older, token-enforcing server still works.
-fn new_token() -> String {
-    let mut buf = [0u8; 16];
-    getrandom::getrandom(&mut buf).expect("getrandom failed");
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| format!("could not allocate a local port: {error}"))?;
+    listener.local_addr().map(|address| address.port()).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // The launch must persist the (pid, port, token) record so a later connect can find and
-    // reattach to this exact server — and writing that record must never be able to stop the
-    // server from starting.
     #[test]
-    fn launch_script_records_then_execs_server() {
-        let s = launch_script("0.1.4", "$HOME/.vibestudio/server/0.1.4/skill-server", 39544, "abc123");
-        assert!(s.contains("/.vibestudio/server/0.1.4"), "writes under the version dir: {s}");
-        assert!(s.contains("> \"$d/running\""), "persists the running record: {s}");
-        assert!(s.contains("\"$$\""), "records the server's own pid via $$: {s}");
-        assert!(s.contains(" abc123 > "), "token recorded for reattach compat: {s}");
-        assert!(!s.contains("VIBESTUDIO_SERVER_TOKEN"), "tokenless launch — no env token: {s}");
-        assert!(s.contains("--port 39544") && s.contains("--lifeline-stdin"), "still launches the server: {s}");
-        assert!(!s.contains("&&"), "record write joined with ; so it can't block the exec: {s}");
+    fn shared_worker_is_verified_before_any_provisioning_and_incompatible_worker_is_not_replaced() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Handle(Arc<AtomicUsize>);
+        impl conn::SessionHandle for Handle {
+            fn is_alive(&self) -> bool { true }
+            fn teardown(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+        }
+        struct Existing { record: String, closed: Arc<AtomicUsize> }
+        impl Remote for Existing {
+            fn capture(&self, command: &str) -> Result<String, String> {
+                assert_eq!(command, probe_script(), "healthy shared worker must bypass detect/install/launch");
+                Ok(self.record.clone())
+            }
+            fn run(&self, _: &str) -> Result<String, super::super::ssh::RunError> { panic!("must not provision") }
+            fn run_with_stdin(&self, _: &str, _: &[u8]) -> Result<(), super::super::ssh::RunError> { panic!("must not upload") }
+            fn same_port(&self) -> bool { true }
+            fn open_session(&self, command: &str, _: u16, port: u16, _: &str) -> Result<Box<dyn conn::SessionHandle>, LaunchError> {
+                assert_eq!(command, reattach_script(port));
+                Ok(Box::new(Handle(self.closed.clone())))
+            }
+        }
+        for protocol in [1u32, 2] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let port = server.server_addr().to_ip().unwrap().port();
+            let identity = "0123456789abcdef0123456789abcdef";
+            let response = serde_json::json!({"pid":42,"hostService":{"protocol":protocol,"instanceId":identity}}).to_string();
+            let thread = std::thread::spawn(move || {
+                let request = server.recv().unwrap();
+                assert_eq!(request.url(), "/api/health");
+                request.respond(tiny_http::Response::from_string(response)).unwrap();
+            });
+            let closed = Arc::new(AtomicUsize::new(0));
+            let remote = Existing {
+                record: serde_json::json!({"protocol":protocol,"instanceId":identity,"pid":42,"port":port}).to_string(),
+                closed: closed.clone(),
+            };
+            let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
+                session: None, busy: true, generation: 1, last_host: None, recovering: true }));
+            let result = connect_flow(&state, &remote, "fixture", 1, "new-client-version", true);
+            match protocol {
+                1 => { let mut session = result.unwrap_or_else(|error| panic!("{error}")); session.teardown(); }
+                _ => assert!(result.err().unwrap().contains("incompatible host service")),
+            }
+            assert_eq!(closed.load(Ordering::SeqCst), 1);
+            thread.join().unwrap();
+        }
     }
 
-    // Reattach is tunnel-only: it announces READY and holds stdin, but starts NO server.
     #[test]
-    fn reattach_script_tunnels_without_launching() {
-        let s = reattach_script(39544);
-        assert!(s.contains("SKILL_SERVER_READY port=39544"), "satisfies the client's READY wait: {s}");
-        assert!(s.contains("exec cat"), "holds stdin as the disconnect detector: {s}");
-        assert!(!s.contains("skill-server"), "must not launch a second server: {s}");
+    fn explicit_retry_can_provision_even_while_status_is_reconnecting() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Handle;
+        impl conn::SessionHandle for Handle {
+            fn is_alive(&self) -> bool { true }
+            fn teardown(&mut self) {}
+        }
+        struct Setup { ready: String, installed: AtomicBool }
+        impl Remote for Setup {
+            fn capture(&self, command: &str) -> Result<String, String> {
+                if command == probe_script() { return Ok(String::new()); }
+                if command == "uname -sm" { return Ok("Linux x86_64".into()); }
+                assert!(!command.starts_with("[ -x"), "Retry must run setup instead of requiring a cached binary");
+                if command.ends_with("--version") { return Ok("skill-server 1.2.3 host-service=1".into()); }
+                assert!(command.contains("--daemon"));
+                assert!(self.installed.load(Ordering::SeqCst));
+                Ok(self.ready.clone())
+            }
+            fn run(&self, command: &str) -> Result<String, super::super::ssh::RunError> {
+                if command.contains("url=") { self.installed.store(true, Ordering::SeqCst); }
+                Ok("INSTALLED".into())
+            }
+            fn run_with_stdin(&self, _: &str, _: &[u8]) -> Result<(), super::super::ssh::RunError> { panic!("no upload needed") }
+            fn same_port(&self) -> bool { true }
+            fn open_session(&self, _: &str, _: u16, _: u16, _: &str) -> Result<Box<dyn conn::SessionHandle>, LaunchError> { Ok(Box::new(Handle)) }
+        }
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let identity = "0123456789abcdef0123456789abcdef";
+        let response = serde_json::json!({"pid":42,"hostService":{"protocol":1,"instanceId":identity}}).to_string();
+        let thread = std::thread::spawn(move || {
+            server.recv().unwrap().respond(tiny_http::Response::from_string(response)).unwrap();
+        });
+        let remote = Setup { installed: AtomicBool::new(false), ready: format!("SKILL_HOST_SERVICE_READY {}", serde_json::json!({"protocol":1,"instanceId":identity,"pid":42,"port":port})) };
+        let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
+            session: None, busy: true, generation: 1, last_host: None, recovering: true }));
+        let mut session = connect_flow(&state, &remote, "fixture", 1, "1.2.3", false).unwrap_or_else(|error| panic!("{error}"));
+        assert!(remote.installed.load(Ordering::SeqCst));
+        session.teardown();
+        thread.join().unwrap();
     }
 
-    // The probe only reattaches to a LIVE server of the right identity — a recycled pid (now
-    // some other process) must not be mistaken for our server.
     #[test]
-    fn probe_script_checks_liveness_and_identity() {
-        let s = probe_script("0.1.4");
-        assert!(s.contains("/.vibestudio/server/0.1.4/running"), "reads the version's record: {s}");
-        assert!(s.contains("ps -p \"$pid\"") && s.contains("grep -q skill-server"), "pid alive AND is a skill-server: {s}");
-        assert!(s.contains("echo \"$port $token\""), "yields port+token on a hit: {s}");
+    fn remote_recovery_never_reattaches_a_matching_explicit_stop_marker() {
+        struct Stopped;
+        impl Remote for Stopped {
+            fn capture(&self, command: &str) -> Result<String, String> {
+                assert_eq!(command, probe_script());
+                Ok(concat!(r#"{"protocol":1,"instanceId":"0123456789abcdef0123456789abcdef","pid":42,"port":8765}"#,
+                    "\nHOST_SERVICE_STOPPED ", r#"{"protocol":1,"instanceId":"0123456789abcdef0123456789abcdef"}"#).into())
+            }
+            fn run(&self, _: &str) -> Result<String, super::super::ssh::RunError> { panic!("must not provision") }
+            fn run_with_stdin(&self, _: &str, _: &[u8]) -> Result<(), super::super::ssh::RunError> { panic!("must not upload") }
+            fn same_port(&self) -> bool { true }
+            fn open_session(&self, _: &str, _: u16, _: u16, _: &str) -> Result<Box<dyn conn::SessionHandle>, LaunchError> { panic!("must not reattach dying worker") }
+        }
+        let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
+            session: None, busy: true, generation: 1, last_host: None, recovering: true }));
+        let error = connect_flow(&state, &Stopped, "fixture", 1, "1.2.3", true).err().unwrap();
+        assert!(error.contains("explicitly stopped"));
+    }
+
+    #[test]
+    fn launch_uses_detached_host_service_without_lifeline_or_legacy_record() {
+        let script = launch_script("$HOME/.vibestudio/server/1.2.3/skill-server", false);
+        assert!(script.contains("--daemon"));
+        assert!(!script.contains("--lifeline-stdin"));
+        assert!(!script.contains("/running"));
+        assert!(script.contains("unset VIBESTUDIO_SERVER_TOKEN"));
+        assert!(launch_script("$HOME/server", true).contains("--daemon --recover"));
+    }
+
+    #[test]
+    fn reattach_is_tunnel_only_and_record_is_shared_across_versions() {
+        let script = reattach_script(39544);
+        assert!(script.contains("SKILL_SERVER_READY port=39544"));
+        assert!(script.contains("exec cat"));
+        assert!(!script.contains("skill-server"));
+        assert!(probe_script().contains("host-service.json"));
+        assert!(!probe_script().contains("/server/"));
+    }
+
+    #[test]
+    fn records_require_pid_port_and_unambiguous_instance_identity() {
+        let record = r#"{"protocol":1,"instanceId":"0123456789abcdef0123456789abcdef","pid":42,"port":8765}"#;
+        assert!(parse_record(record).is_some());
+        assert!(parse_record(&record.replace("8765", "0")).is_none());
+        assert!(parse_record(&record.replace("0123456789abcdef0123456789abcdef", "oops")).is_none());
+        assert!(parse_record("42 8765 legacytoken").is_none());
     }
 }

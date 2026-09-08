@@ -1,8 +1,7 @@
 // "Open on your phone": front THIS server with `tailscale serve` and hand the
-// UI a QR for the HTTPS tailnet URL. There is no separate daemon — the serving
-// process is whoever answers /api/phone/*: the desktop app's in-process server
-// (tray-resident; quitting the tray ends phone access with everything else) or
-// a standalone `skill-server`.
+// UI a QR for the HTTPS tailnet URL. The answering host owns phone access: the
+// durable local/remote worker (independent of desktop and SSH lifetimes), or a
+// manually started standalone `skill-server`.
 
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
@@ -11,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::tailscale;
 
-/// The port the desktop binds by preference, so the `tailscale serve` mapping
+/// The port the host service binds by preference, so the `tailscale serve` mapping
 /// (which persists in tailscaled across restarts) finds the app again on the
 /// next launch. Not load-bearing for correctness: enable() always maps
 /// whatever port we actually bound.

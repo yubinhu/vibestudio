@@ -4801,6 +4801,7 @@ dependencies = [
  "dirs 5.0.1",
  "env_logger",
  "getrandom 0.2.17",
+ "libc",
  "log",
  "qrcode",
  "ring",
@@ -4822,6 +4823,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
+ "libc",
  "log",
  "portable-pty",
  "serde",

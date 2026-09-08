@@ -1,14 +1,14 @@
 //! The remote connection manager — the `RemoteControl` impl that a `skill-server`
 //! exposes over `/api/remote/*`. It shells out to the system `ssh` (inheriting the
 //! user's keys/config/ProxyJump) or, for a local WSL/WSL2 distro on Windows, to
-//! `wsl.exe`; it provisions a version-pinned `skill-server` on the target, launches it
-//! on a loopback port, and reaches it (`ssh -L` tunnel, or WSL's
+//! `wsl.exe`; it discovers or starts the per-user host service on the target,
+//! provisioning a version-pinned `skill-server` when needed, and reaches it (`ssh -L` tunnel, or WSL's
 //! shared loopback); the local server then proxies `/api/*` to it (see `proxy.rs`).
 //!
 //! Lives server-side so BOTH entry points get it identically: the desktop's
 //! in-process server and the standalone `skill-server` binary (browser-local dev, or
-//! a dev box). A *provisioned remote* server leaves `ServerConfig::remote = None`
-//! (it's launched with `--lifeline-stdin`), so there's no surprise nested onward-ssh.
+//! a dev box). The durable host worker leaves `ServerConfig::remote = None`, so
+//! it cannot switch another client's workspace or broker nested onward-SSH.
 use std::sync::{Arc, Mutex};
 
 use crate::{RemoteControl, RemoteHost, RemoteStatus, RemoteTarget, SecureStore};
@@ -18,6 +18,7 @@ use crate::{RemoteControl, RemoteHost, RemoteStatus, RemoteTarget, SecureStore};
 mod conn;
 mod lastconn;
 mod provision;
+mod reconnect;
 // Pure-Rust SSH transport for the mobile switchboard (iOS can't spawn `ssh`). Desktop
 // keeps `ssh.rs`; these compile only under the `russh-transport` feature.
 #[cfg(feature = "russh-transport")]
@@ -40,6 +41,8 @@ struct State {
     /// on a successful connect, cleared on an explicit disconnect. The client reads it
     /// (`/api/remote/last`) and drives the resume through the normal connect path.
     last_host: Option<String>,
+    /// Keep reconnect progress distinct from first-time setup for the client.
+    recovering: bool,
 }
 
 fn idle_status() -> RemoteStatus {
@@ -52,6 +55,7 @@ fn set_stage(state: &Mutex<State>, generation: u64, stage: &str, host: &str, msg
     if s.generation != generation {
         return; // a newer connect/disconnect won — don't clobber its status
     }
+    let stage = if s.recovering { "reconnecting" } else { stage };
     s.status = RemoteStatus { state: stage.into(), host: Some(host.into()), message: Some(msg.into()) };
 }
 
@@ -83,13 +87,14 @@ impl SshRemoteControl {
                 busy: false,
                 generation: 0,
                 last_host: lastconn::load(),
+                recovering: false,
             })),
             app_version,
             store,
         }
     }
 
-    /// Tear down any live session on app exit (no orphaned remote server / tunnel).
+    /// Drop this client's tunnel on app exit; the host service keeps running.
     /// `forget=false`: keep the remembered host so the next launch resumes it.
     pub fn shutdown(&self) {
         let _ = self.disconnect(false);
@@ -118,25 +123,26 @@ impl SshRemoteControl {
 /// nothing.
 fn resume_reconnect(state: Arc<Mutex<State>>, app_version: String, store: Option<Arc<dyn SecureStore>>) {
     // Snapshot under the lock; probe OFF it so status()/disconnect() stay responsive.
-    let (generation, host, probe_port) = {
+    let (generation, host, probe) = {
         let s = state.lock().unwrap();
-        if s.busy {
-            return; // a connect is already in flight
+        if s.busy || s.status.state != "connected" {
+            // Automatic recovery already owns transient failures. A setup or
+            // trust error awaits Retry; remembered history is not live intent.
+            return;
         }
-        let Some(host) = s.last_host.clone() else { return };
-        (s.generation, host, s.session.as_ref().map(|sess| sess.local_port))
+        let Some(host) = s.status.host.clone() else { return };
+        let Some(session) = &s.session else { return };
+        (s.generation, host, session.health_probe())
     };
 
-    if let Some(port) = probe_port {
-        if tunnel_alive(port) {
-            return; // the tunnel survived the suspend — nothing to do
-        }
+    if probe.alive() {
+        return; // the tunnel survived the suspend — nothing to do
     }
 
     // Reconnect. Re-take the lock and bail if anything moved while we probed (a
     // user connect/disconnect bumps `generation`), so we never stomp a newer intent.
     let mut s = state.lock().unwrap();
-    if s.busy || s.generation != generation || s.last_host.as_deref() != Some(host.as_str()) {
+    if s.busy || s.generation != generation || s.status.host.as_deref() != Some(host.as_str()) {
         return;
     }
     s.busy = true;
@@ -144,8 +150,9 @@ fn resume_reconnect(state: Arc<Mutex<State>>, app_version: String, store: Option
     let generation = s.generation;
     s.target = None;
     let dead = s.session.take();
+    s.recovering = true;
     s.status = RemoteStatus {
-        state: "detecting".into(),
+        state: "reconnecting".into(),
         host: Some(host.clone()),
         message: Some("Reconnecting…".into()),
     };
@@ -153,24 +160,7 @@ fn resume_reconnect(state: Arc<Mutex<State>>, app_version: String, store: Option
     if let Some(mut dead) = dead {
         dead.teardown();
     }
-    // `resume=true`: a reconnect that races the radio coming back must NOT forget
-    // the remembered host on a transient failure (see run_connect), or one offline
-    // moment on resume would permanently disable auto-reconnect.
-    session::run_connect(state, host, generation, app_version, store, true);
-}
-
-/// Actively probe a forwarded tunnel: does the remote server answer `/api/health`
-/// through `local_port`? Short timeouts so a dead tunnel fails fast rather than
-/// stalling until russh's keepalives notice (~45s). Used only by the resume path,
-/// where the cached liveness flag can't yet reflect a tunnel killed during suspend.
-fn tunnel_alive(local_port: u16) -> bool {
-    ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(2))
-        .timeout(std::time::Duration::from_secs(4))
-        .build()
-        .get(&format!("http://127.0.0.1:{local_port}/api/health"))
-        .call()
-        .is_ok()
+    session::run_connect(state, host, generation, app_version, store, session::ConnectIntent::Recover);
 }
 
 impl RemoteControl for SshRemoteControl {
@@ -186,6 +176,37 @@ impl RemoteControl for SshRemoteControl {
         self.state.lock().unwrap().target.clone()
     }
 
+    fn route(&self) -> crate::RemoteRoute {
+        let s = self.state.lock().unwrap();
+        if let Some(target) = &s.target {
+            crate::RemoteRoute::Connected(target.clone())
+        } else if s.status.host.is_some() {
+            crate::RemoteRoute::Unavailable(s.status.message.clone().unwrap_or_else(|| "The selected host is unavailable.".into()))
+        } else {
+            crate::RemoteRoute::Local
+        }
+    }
+
+    fn retry(&self) -> Result<(), String> {
+        let (host, generation) = {
+            let mut s = self.state.lock().unwrap();
+            if s.busy || s.target.is_some() {
+                return Ok(());
+            }
+            let host = s.status.host.clone().ok_or("No remote connection to retry.")?;
+            s.busy = true;
+            s.recovering = true;
+            s.generation += 1;
+            s.status = RemoteStatus { state: "reconnecting".into(), host: Some(host.clone()), message: Some("Reconnecting…".into()) };
+            (host, s.generation)
+        };
+        let state = self.state.clone();
+        let app_version = self.app_version.clone();
+        let store = self.store.clone();
+        std::thread::spawn(move || session::run_connect(state, host, generation, app_version, store, session::ConnectIntent::Retry));
+        Ok(())
+    }
+
     fn last_host(&self) -> Option<String> {
         self.state.lock().unwrap().last_host.clone()
     }
@@ -199,6 +220,7 @@ impl RemoteControl for SshRemoteControl {
             return Err("Already connected — disconnect first.".into());
         }
         s.busy = true;
+        s.recovering = false;
         s.generation += 1;
         let generation = s.generation;
         s.status = RemoteStatus {
@@ -212,7 +234,7 @@ impl RemoteControl for SshRemoteControl {
         let host = host.to_string();
         let app_version = self.app_version.clone();
         let store = self.store.clone();
-        std::thread::spawn(move || session::run_connect(state, host, generation, app_version, store, false));
+        std::thread::spawn(move || session::run_connect(state, host, generation, app_version, store, session::ConnectIntent::Setup));
         Ok(())
     }
 
@@ -223,6 +245,7 @@ impl RemoteControl for SshRemoteControl {
         // closing the race where a connect finishing mid-disconnect resurrects it.
         s.generation += 1;
         s.busy = false;
+        s.recovering = false;
         s.target = None;
         if forget {
             s.last_host = None;
@@ -237,5 +260,69 @@ impl RemoteControl for SshRemoteControl {
             sess.teardown();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn disconnected_controller() -> SshRemoteControl {
+        SshRemoteControl {
+            state: Arc::new(Mutex::new(State {
+                status: RemoteStatus { state: "reconnecting".into(), host: Some("workbox".into()), message: Some("Reconnecting…".into()) },
+                target: None, session: None, busy: true, generation: 10,
+                last_host: Some("workbox".into()), recovering: true,
+            })),
+            app_version: "test".into(), store: None,
+        }
+    }
+
+    #[test]
+    fn disconnect_cancels_recovery_without_erasing_app_exit_resume_memory() {
+        let control = disconnected_controller();
+        assert!(matches!(control.route(), crate::RemoteRoute::Unavailable(_)));
+        control.disconnect(false).unwrap();
+        assert!(matches!(control.route(), crate::RemoteRoute::Local));
+        let state = control.state.lock().unwrap();
+        assert_eq!(state.generation, 11);
+        assert!(!state.busy);
+        assert!(!state.recovering);
+        assert_eq!(state.last_host.as_deref(), Some("workbox"));
+    }
+
+    #[test]
+    fn superseded_connect_progress_cannot_resurrect_remote_selection() {
+        let control = disconnected_controller();
+        control.disconnect(false).unwrap();
+        set_stage(&control.state, 10, "forwarding", "workbox", "Late result");
+        assert_eq!(control.status().state, "idle");
+        assert!(matches!(control.route(), crate::RemoteRoute::Local));
+    }
+
+    #[test]
+    fn foreground_does_not_replace_failed_selection_with_a_previously_used_host() {
+        let control = disconnected_controller();
+        {
+            let mut state = control.state.lock().unwrap();
+            state.busy = false;
+            state.recovering = false;
+            state.status = RemoteStatus { state: "error".into(), host: Some("new-host".into()), message: Some("Host key changed".into()) };
+        }
+        resume_reconnect(control.state.clone(), "test".into(), None);
+        let state = control.state.lock().unwrap();
+        assert_eq!(state.generation, 10);
+        assert_eq!(state.status.host.as_deref(), Some("new-host"));
+        assert_eq!(state.status.state, "error");
+        assert!(!state.busy);
+    }
+
+    #[test]
+    fn foreground_does_not_reverse_an_explicit_disconnect() {
+        let control = disconnected_controller();
+        control.disconnect(false).unwrap();
+        resume_reconnect(control.state.clone(), "test".into(), None);
+        assert_eq!(control.status().state, "idle");
+        assert_eq!(control.state.lock().unwrap().generation, 11);
     }
 }

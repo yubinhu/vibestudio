@@ -163,6 +163,7 @@ impl RusshSession {
         let user = user.to_string();
 
         let handle = rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), async {
             let config = Config {
                 // Never reap an idle connection: an attached terminal or an /api/events SSE
                 // stream can sit silent for minutes and MUST survive (the switchboard's top
@@ -187,6 +188,7 @@ impl RusshSession {
                 ));
             }
             Ok::<_, String>(h)
+            }).await.map_err(|_| "SSH connection timed out".to_string())?
         })?;
 
         Ok(Self { rt, handle: Arc::new(handle) })
@@ -194,13 +196,19 @@ impl RusshSession {
 
     /// Run a command and capture its output (the `ssh::run`/`capture` equivalent).
     pub fn exec(&self, cmd: &str) -> Result<Output, String> {
-        self.rt.block_on(exec_channel(&self.handle, cmd, None))
+        self.rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(120), exec_channel(&self.handle, cmd, None))
+                .await.map_err(|_| "remote command timed out".to_string())?
+        })
     }
 
     /// Run a command, feeding it `stdin`, then capture its output (the `run_with_stdin`
     /// equivalent — used to pipe a downloaded binary to `cat >` on a no-internet remote).
     pub fn exec_with_stdin(&self, cmd: &str, stdin: &[u8]) -> Result<Output, String> {
-        self.rt.block_on(exec_channel(&self.handle, cmd, Some(stdin)))
+        self.rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(180), exec_channel(&self.handle, cmd, Some(stdin)))
+                .await.map_err(|_| "remote command input timed out".to_string())?
+        })
     }
 
     /// Forward `127.0.0.1:local_port` → `remote_host:remote_port` over the session (the

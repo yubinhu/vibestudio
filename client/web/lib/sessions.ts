@@ -11,6 +11,7 @@ import { canPush, enablePushInGesture } from "@/lib/push";
 import { sessionsPath } from "@/lib/routes";
 import { attentionBoot, attentionIsUnread, newerAttention, orderSessions, shouldSound } from "./sessionAttention";
 import { playAttentionSound, unlockAttentionSound } from "./attentionSound";
+import { subscribeWorkspaceConnection, workspaceConnection } from "./workspaceConnection";
 
 /** Per-session "last viewed" marks (id → unix secs) for the unread dot.
  *  Legacy key string — keep the old "terminals" word so existing marks survive the rename. */
@@ -206,6 +207,7 @@ let inflight: Promise<void> | null = null;
 let queued = false;
 
 export function refresh(): Promise<void> {
+  if (!workspaceConnection().available) return Promise.resolve();
   if (inflight) {
     queued = true;
     return inflight;
@@ -480,9 +482,20 @@ export function nativeNotifyState(): boolean | null {
 // ─── the /api/events subscription ───
 
 let esHandle: { close(): void } | null = null;
+let eventRetry: ReturnType<typeof setTimeout> | null = null;
+
+function rebaselineAttention(): void {
+  attentionEpoch++;
+  attentionReady = false;
+  for (const timer of pendingAttention.values()) clearTimeout(timer);
+  pendingAttention.clear();
+}
 
 function connectEvents(): void {
+  if (eventRetry !== null) clearTimeout(eventRetry);
+  eventRetry = null;
   esHandle?.close();
+  if (!workspaceConnection().available) return;
   esHandle = api.terminalEvents(
     (kind, e) => {
       if (kind === "bell") maybeNotify(e);
@@ -503,23 +516,25 @@ function connectEvents(): void {
       void refresh();
     },
     () => {
-      // Fatal close: an older server without /api/events, or a topology change
-      // mid-stream. Retry slowly forever — one cheap request per interval, and a
-      // remote connect/disconnect reloads the whole SPA anyway (lib/remote.ts),
-      // which rebinds this subscription cleanly.
+      // Retry an unavailable events route slowly. A recovered workspace restarts
+      // this subscription immediately without replacing the session cache.
       esHandle = null;
-      setTimeout(connectEvents, 30_000);
+      eventRetry = setTimeout(connectEvents, 30_000);
     },
     // Catch up without sounding historical transitions after a network gap.
     () => {
-      attentionEpoch++;
-      attentionReady = false;
-      for (const timer of pendingAttention.values()) clearTimeout(timer);
-      pendingAttention.clear();
+      rebaselineAttention();
       void refresh();
     },
+    rebaselineAttention,
   );
 }
+
+subscribeWorkspaceConnection(() => {
+  rebaselineAttention();
+  connectEvents();
+  if (workspaceConnection().available) void refresh();
+});
 
 // ─── boot (module side effects, like lib/updates.ts) ───
 

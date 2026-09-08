@@ -53,9 +53,9 @@ export default function PhoneModal({ onClose }: { onClose: () => void }) {
   const autoServed = useRef(false);
   const userDisabled = useRef(false);
   // While SSH-connected, /api/phone/* proxies to the remote server (tailscale runs
-  // THERE), so the copy names the host instead of the local tray lifecycle.
-  const { status: remote } = useRemote();
-  const remoteHost = remote.state === "connected" ? (remote.host ?? null) : null;
+  // THERE), so the copy names the host that owns the durable phone endpoint.
+  const { status: remote, workspaceHost } = useRemote();
+  const remoteHost = workspaceHost ?? (remote.state === "connected" ? (remote.host ?? null) : null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -257,7 +257,7 @@ export default function PhoneModal({ onClose }: { onClose: () => void }) {
                 on port {live.server.port} —{" "}
                 {remoteHost
                   ? "runs on the remote and stays reachable when this computer is off."
-                  : "available while the app is running (closing the window keeps it in your tray)."}
+                  : "keeps running after the desktop quits; this machine must stay awake."}
               </p>
               <button type="button" onClick={() => void doDisable()} disabled={busy} className={`${btnGhost} shrink-0`}>
                 {busy ? "Turning off…" : "Turn off"}

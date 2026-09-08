@@ -19,7 +19,10 @@ const INSTALL_SCRIPT: &str = r#"set -e
 ver="__VERSION__"
 dir="$HOME/.vibestudio/server/$ver"
 bin="$dir/skill-server"
-if [ -x "$bin" ] && "$bin" --version >/dev/null 2>&1; then echo INSTALLED; exit 0; fi
+if [ -x "$bin" ]; then
+  installed=$("$bin" --version 2>/dev/null) || installed=""
+  case "$installed" in *" host-service=1"*) echo INSTALLED; exit 0 ;; esac
+fi
 mkdir -p "$dir"
 url="__URL__"
 tmp="$bin.tmp.$$"
@@ -477,7 +480,7 @@ mod tests {
         use super::*;
 
         static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
-        const PAYLOAD: &[u8] = b"#!/bin/sh\necho 'skill-server 1.2.1'\n";
+        const PAYLOAD: &[u8] = b"#!/bin/sh\necho 'skill-server 1.2.1 host-service=1'\n";
         const URL: &str = "https://mirror.example/server-macos-arm64";
 
         struct Fixture {

@@ -2,15 +2,18 @@
 // reached over an `ssh -L` tunnel (provisioned by the desktop's connection manager),
 // or for browser-local dev (`cargo run -p skill-server`). The serve loop lives in the
 // library (src/lib.rs); this only parses argv, prints a machine-readable ready line,
-// and optionally ties its own lifetime to the SSH session. The desktop shell embeds
-// the same library in-process instead of spawning this.
+// or starts/attaches the detached per-user host service. Desktop uses the same
+// worker API through a headless flag on its own executable.
 //
-// Usage: skill-server [--host H] [--port N] [--dist PATH] [--token T] [--lifeline-stdin]
+// Usage: skill-server [--daemon] [--host H] [--port N] [--dist PATH] [--token T]
+//   --daemon        ensure the durable per-user worker, print its record, then exit
+//   --host-service  run the detached worker (internal; shared with desktop)
+//   --stop-host-service  explicitly stop the worker; tmux agents keep running
 //   --port 0        bind an ephemeral port (the chosen port is printed in the ready line)
 //   --token T       require `Authorization: Bearer T` on every request (the SSH case).
 //                   Prefer the VIBESTUDIO_SERVER_TOKEN env var (keeps the token off
 //                   the process command line); `--token` overrides it for manual use.
-//   --lifeline-stdin  exit when stdin hits EOF — the desktop holds the SSH channel's
+//   --lifeline-stdin  legacy compatibility only: exit when stdin hits EOF — old clients hold the channel's
 //                     stdin open, so the server dies the instant that session drops
 //                     (orphan prevention; pairs with ssh ServerAlive + the held pipe)
 //   --mobile-dev    serve the PHONE experience in a desktop browser: wire a
@@ -27,7 +30,9 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use skill_server::{init_logging, spawn, PhoneControl, RemoteControl, ServerConfig, SshRemoteControl};
+use skill_server::{
+    init_logging, spawn, PhoneControl, RemoteControl, ServerConfig, SshRemoteControl,
+};
 use std::sync::Arc;
 
 fn main() {
@@ -37,7 +42,19 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
+        #[cfg(feature = "local-backend")]
+        println!("skill-server {} host-service=1", env!("CARGO_PKG_VERSION"));
+        #[cfg(not(feature = "local-backend"))]
         println!("skill-server {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    #[cfg(feature = "local-backend")]
+    if let Some(result) = skill_server::host_service::run_from_args(&args) {
+        if let Err(error) = result {
+            log::error!("{error}");
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -47,24 +64,96 @@ fn main() {
     // Prefer the token from the env (VIBESTUDIO_SERVER_TOKEN) — the desktop delivers
     // it that way so it stays off the world-readable command line; `--token` still
     // works for manual/standalone use and overrides the env.
-    let mut token: Option<String> =
-        std::env::var("VIBESTUDIO_SERVER_TOKEN").ok().filter(|t| !t.is_empty());
+    let mut token: Option<String> = std::env::var("VIBESTUDIO_SERVER_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
     let mut lifeline_stdin = false;
     let mut mobile_dev = false;
+    let mut daemon = false;
+    #[cfg(feature = "local-backend")]
+    let mut recovery = false;
+    let mut startup_maintenance = true;
+    let mut bundled_skills: Option<PathBuf> = None;
+    let mut examples_base: Option<PathBuf> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--host" => { i += 1; host = args.get(i).cloned().unwrap_or(host); }
-            "--port" => { i += 1; port = args.get(i).and_then(|p| p.parse().ok()).unwrap_or(port); }
-            "--dist" => { i += 1; dist = args.get(i).cloned().unwrap_or(dist); }
-            "--token" => { i += 1; token = args.get(i).cloned().filter(|t| !t.is_empty()); }
+            "--host" => {
+                i += 1;
+                host = args.get(i).cloned().unwrap_or(host);
+            }
+            "--port" => {
+                i += 1;
+                port = args.get(i).and_then(|p| p.parse().ok()).unwrap_or(port);
+            }
+            "--dist" => {
+                i += 1;
+                dist = args.get(i).cloned().unwrap_or(dist);
+            }
+            "--token" => {
+                i += 1;
+                token = args.get(i).cloned().filter(|t| !t.is_empty());
+            }
             "--lifeline-stdin" => lifeline_stdin = true,
             "--mobile-dev" => mobile_dev = true,
+            "--daemon" => daemon = true,
+            #[cfg(feature = "local-backend")]
+            "--recover" => recovery = true,
+            "--no-startup-maintenance" => startup_maintenance = false,
+            "--bundled-skills" => {
+                i += 1;
+                bundled_skills = args.get(i).map(PathBuf::from);
+            }
+            "--examples-base" => {
+                i += 1;
+                examples_base = args.get(i).map(PathBuf::from);
+            }
             _ => {}
         }
         i += 1;
     }
     let dist = PathBuf::from(dist);
+    if daemon {
+        #[cfg(feature = "local-backend")]
+        {
+            if !matches!(host.as_str(), "127.0.0.1" | "localhost")
+                || token.is_some()
+                || lifeline_stdin
+                || mobile_dev
+            {
+                log::error!("--daemon runs a tokenless loopback host service; it cannot be combined with a non-loopback host, token, lifeline or mobile switchboard.");
+                std::process::exit(1);
+            }
+            let options = skill_server::host_service::HostServiceOptions {
+                dist,
+                bundled_skills,
+                examples_base,
+                preferred_port: port,
+                startup_maintenance,
+                recovery,
+                ..Default::default()
+            };
+            match skill_server::host_service::ensure(&options) {
+                Ok(record) => {
+                    println!(
+                        "SKILL_HOST_SERVICE_READY {}",
+                        serde_json::to_string(&record).expect("host service record")
+                    );
+                    println!("SKILL_SERVER_READY port={}", record.port);
+                }
+                Err(error) => {
+                    log::error!("{error}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        #[cfg(not(feature = "local-backend"))]
+        {
+            log::error!("This build has no local backend and cannot run a host service.");
+            std::process::exit(1);
+        }
+    }
     let bind = format!("{host}:{port}");
 
     // Expose the SSH connection manager (so `/api/remote/*` works and the UI shows the
@@ -105,7 +194,9 @@ fn main() {
     // directly, so a sleeping client machine costs nothing. (The desktop client
     // itself still connects over SSH, never the tailnet.)
     let phone = if is_loopback {
-        Some(std::sync::Arc::new(PhoneControl::new(env!("CARGO_PKG_VERSION").to_string())))
+        Some(std::sync::Arc::new(PhoneControl::new(
+            env!("CARGO_PKG_VERSION").to_string(),
+        )))
     } else {
         None
     };
@@ -115,7 +206,9 @@ fn main() {
         port,
         dist: dist.clone(),
         token: token.clone(),
-        startup_maintenance: true,
+        startup_maintenance,
+        bundled_skills,
+        examples_base,
         remote,
         phone: phone.clone(),
         secure_store,
@@ -142,11 +235,18 @@ fn main() {
         let _ = writeln!(out, "SKILL_SERVER_READY port={}", handle.addr.port());
         let _ = out.flush();
     }
-    println!("skill-server listening on {}  (dist: {})", handle.url(), dist.display());
+    println!(
+        "skill-server listening on {}  (dist: {})",
+        handle.url(),
+        dist.display()
+    );
     if !dist.join("index.html").is_file() {
         // Remote installs serve no UI (the desktop's local server does), so this is
         // expected there; it only matters for a standalone browser-local run.
-        println!("  note: {} has no index.html — the UI is served by the client.", dist.display());
+        println!(
+            "  note: {} has no index.html — the UI is served by the client.",
+            dist.display()
+        );
     }
 
     // Tie our lifetime to the SSH session: the desktop launches us as `ssh … 'exec

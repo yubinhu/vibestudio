@@ -292,6 +292,7 @@ export function Component() {
 
   const needsReauth = connectors?.filter((c) => c.availability.some((a) => a.state === "needs_auth")).length ?? 0;
   const remoteConnected = remote.status.state === "connected";
+  const workspaceHost = remote.workspaceHost ?? (remoteConnected ? remote.status.host : null);
   const connectorTotal = connectors && secretCount != null ? connectors.length + secretCount : null;
   const connectorLoadError = !!connectorStore.error || !!secretError;
   const serviceSummary = connectors ? `${connectors.length} ${connectors.length === 1 ? "service" : "services"}${connectorStore.error ? " (last result)" : ""}` : connectorStore.error ? "Services unavailable" : "Services loading…";
@@ -396,18 +397,14 @@ export function Component() {
               icon={<ServerIcon />}
               label="Server"
               value={
-                remoteConnected ? (
-                  remote.status.host ? (
-                    <span title={remote.status.host}>{hostLabel(remote.status.host)}</span>
-                  ) : (
-                    "Remote"
-                  )
+                workspaceHost ? (
+                  <span title={workspaceHost}>{hostLabel(workspaceHost)}</span>
                 ) : (
                   "Local"
                 )
               }
-              sub={remoteConnected ? "connected over SSH" : "running on this machine"}
-              subTone={remoteConnected ? "ok" : "muted"}
+              sub={remote.interrupted ? "connection interrupted" : remoteConnected ? "connected over SSH" : "running on this machine"}
+              subTone={remote.interrupted ? "warn" : remoteConnected ? "ok" : "muted"}
               onClick={remote.available ? () => setRemoteOpen(true) : undefined}
             />
           </div>

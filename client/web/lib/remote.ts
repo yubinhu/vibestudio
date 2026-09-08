@@ -1,23 +1,23 @@
-// Remote-SSH connection state, shared app-wide (NavBar pill + the connect dialog).
-// A module-level store so status survives per-page NavBar remounts and one poller
-// serves everyone. The key behaviour: a user-initiated connect that reaches
-// "connected" RELOADS the SPA, so the ENTIRE window re-binds to the remote — skills,
-// files, git, secrets, terminals all re-fetch through the now-proxying local server.
-// It also polls while connected, so if the tunnel drops (the desktop's liveness
-// monitor flips status to "error"/idle) the window rebinds back to Local on its own.
+// Same-host recovery preserves the mounted workspace and its selected session.
+// Changing hosts or explicitly disconnecting still reloads to bind every cache.
 import { useSyncExternalStore } from "react";
 import * as api from "./api";
 import { flushEditor } from "./editorState";
+import { setWorkspaceAvailable } from "./workspaceConnection";
 
 const CONNECTING: ReadonlySet<api.RemoteState> = new Set([
   "detecting",
   "installing",
   "launching",
   "forwarding",
+  "reconnecting",
 ]);
 
 export interface RemoteSnapshot {
   status: api.RemoteStatus;
+  /** The host whose data the mounted workspace owns, even during an outage. */
+  workspaceHost: string | null;
+  interrupted: boolean;
   /** Whether the remote control is shown. False ONLY when the server explicitly has no
    *  remoting (`/api/remote/*` 404s — a network-exposed server / the remote binary).
    *  A transport error (the local server is down/unreachable) keeps this true, so the
@@ -31,7 +31,7 @@ export interface RemoteSnapshot {
   mobile: boolean | undefined;
 }
 
-let snapshot: RemoteSnapshot = { status: { state: "idle" }, available: false, mobile: undefined };
+let snapshot: RemoteSnapshot = { status: { state: "idle" }, workspaceHost: null, interrupted: false, available: false, mobile: undefined };
 let pendingConnect = false; // a user-initiated connect is awaiting "connected"
 const listeners = new Set<() => void>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -86,64 +86,78 @@ function setPoll(ms: number) {
 // (every fetch it ever made was proxied; reloading would loop forever).
 let observed = false;
 
+let refreshSequence = 0;
 export async function refresh(): Promise<void> {
-  const prev = snapshot.status.state;
-  const prevObserved = observed;
+  const sequence = ++refreshSequence;
   let status: api.RemoteStatus;
   try {
     status = await api.remoteStatus();
   } catch (e) {
-    // A true 404 means this server has no remoting (network-exposed server / the remote
-    // binary) → hide the control for good. Any other failure — a transport error (the
-    // local server is down/unreachable, so `fetch` threw with no `status`) or a 5xx —
-    // keeps the control visible so the user can still open the connect dialog, and we
-    // keep polling slowly to recover once the server returns.
+    if (sequence !== refreshSequence) return;
+    observed = true;
     const noRemoting = (e as { status?: number } | undefined)?.status === 404;
-    setPoll(noRemoting ? 0 : 5000);
-    pendingConnect = false;
-    update({ status: { state: "idle" }, available: !noRemoting });
-    if (prev === "connected") window.location.reload();
+    const host = snapshot.workspaceHost;
+    setPoll(noRemoting && !host ? 0 : 3000);
+    if (host) {
+      setWorkspaceAvailable(false);
+      update({
+        status: { state: noRemoting ? "error" : "reconnecting", host, message: "Waiting for the connection to return…" },
+        interrupted: true, available: true,
+      });
+    } else {
+      update({ status: { state: "idle" }, available: !noRemoting });
+    }
     return;
   }
+  if (sequence !== refreshSequence) return;
+  const wasObserved = observed;
   observed = true;
-  update({ status, available: true });
-  if (CONNECTING.has(status.state)) setPoll(1200);
-  else if (status.state === "connected") setPoll(5000);
-  else setPoll(0);
-
-  if (status.state === "connected" && pendingConnect) {
+  const boundHost = snapshot.workspaceHost;
+  const host = status.host ?? null;
+  if (status.state === "connected") {
+    // A page loaded already connected has never read another machine's data.
+    // Any later host change must invalidate all host-owned caches together.
+    if ((boundHost && host !== boundHost) || (!boundHost && (wasObserved || pendingConnect))) {
+      setWorkspaceAvailable(false);
+      window.location.reload();
+      return;
+    }
     pendingConnect = false;
-    window.location.reload(); // user-initiated connect succeeded → rebind to the remote
+    update({ status, workspaceHost: host, interrupted: false, available: true });
+    setWorkspaceAvailable(true);
+    setPoll(3000);
     return;
   }
-  // A connect THIS PAGE didn't initiate reached "connected" — the mobile shell's
-  // resume reconnect (RunEvent::Resumed → resume_check), or another viewer driving
-  // the switchboard. Same rebind as the pendingConnect reload above; without it the
-  // window keeps showing the pre-connect (local) data under a connected pill. Only
-  // on an observed transition: a page that LOADED already-connected was proxying
-  // from its first fetch and must not reload.
-  if (status.state === "connected" && prevObserved && prev !== "connected") {
+  if (boundHost && status.state === "idle") {
+    // An explicit disconnect from another viewer also changes the environment.
+    setWorkspaceAvailable(false);
     window.location.reload();
     return;
   }
-  // Only a TERMINAL outcome cancels the pending reload: a failed/aborted connect
-  // ("error"/"idle"). The transient CONNECTING states (detecting/installing/launching/
-  // forwarding) are normal progress — clearing pendingConnect on those (as `!== connected`
-  // did) defeats the reload that rebinds the whole window (discovered skills, files, git,
-  // secrets, terminals) to the remote once it reaches "connected".
+  const interrupted = boundHost !== null;
+  setWorkspaceAvailable(!interrupted && status.state === "idle");
+  update({ status, interrupted, available: true });
+  setPoll(CONNECTING.has(status.state) ? 1200 : interrupted ? 3000 : 0);
   if (status.state === "error" || status.state === "idle") pendingConnect = false;
+}
 
-  // The tunnel dropped out from under a live session (network loss / remote crash):
-  // rebind to Local rather than leaving the window pointed at a dead remote.
-  if (prev === "connected" && status.state !== "connected") window.location.reload();
+export async function retry(): Promise<void> {
+  ++refreshSequence;
+  setWorkspaceAvailable(false);
+  await api.remoteRetry();
+  await refresh();
 }
 
 export async function connect(host: string): Promise<void> {
+  if (host === snapshot.workspaceHost) return retry();
+  ++refreshSequence;
   pendingConnect = true;
+  setWorkspaceAvailable(false);
   try {
     await api.remoteConnect(host);
   } catch (e) {
     pendingConnect = false;
+    await refresh();
     throw e;
   }
   await refresh(); // picks up "detecting" and starts polling
@@ -153,6 +167,8 @@ export async function connect(host: string): Promise<void> {
  *  WITHOUT a reload. A failed/aborted connect never set a target (we were never
  *  proxying), so there's nothing to rebind; just reset the backend status to idle. */
 export async function cancel(): Promise<void> {
+  if (snapshot.workspaceHost) return disconnect();
+  ++refreshSequence;
   pendingConnect = false;
   try {
     await api.remoteDisconnect();
@@ -165,8 +181,9 @@ export async function cancel(): Promise<void> {
 export async function disconnect(): Promise<void> {
   // Flush any pending editor buffer to the REMOTE before we tear the tunnel down (we're
   // still connected here), then reload so the window re-binds to the local host.
+  ++refreshSequence;
   try {
-    await flushEditor();
+    if (snapshot.status.state === "connected") await flushEditor();
   } catch {
     /* best-effort — don't block disconnect on a flush failure */
   }
@@ -178,6 +195,7 @@ export function useRemote(): RemoteSnapshot & {
   connect: typeof connect;
   disconnect: typeof disconnect;
   cancel: typeof cancel;
+  retry: typeof retry;
 } {
   const snap = useSyncExternalStore(
     (cb) => {
@@ -187,7 +205,7 @@ export function useRemote(): RemoteSnapshot & {
     () => snapshot,
     () => snapshot,
   );
-  return { ...snap, connect, disconnect, cancel };
+  return { ...snap, connect, disconnect, cancel, retry };
 }
 
 // Auto-reconnect on launch (VS Code-style). The server remembers the host we last

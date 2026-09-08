@@ -30,6 +30,7 @@ const session = (id, a, created = "1") => ({
 });
 
 function harness(initial) {
+  const workspace = load("workspaceConnection", { window: { dispatchEvent() {} }, Event: class {} });
   let list = initial;
   let focused = true;
   let hidden = false;
@@ -43,7 +44,7 @@ function harness(initial) {
       nextList = undefined;
       return next ?? Promise.resolve(list);
     },
-    terminalEvents: (event, down, open) => { events = { event, down, open }; return { close() {} }; },
+    terminalEvents: (event, down, open, gap) => { events = { event, down, open, gap }; return { close() {} }; },
     notifyStatus: async () => ({ native: true }),
     notifyBadge: async () => {},
     notifyNative: async (title, body) => { notices.push({ title, body }); },
@@ -60,6 +61,7 @@ function harness(initial) {
     "@/lib/push": { canPush: () => false },
     "@/lib/routes": { sessionsPath: (id) => `/sessions?id=${id}` },
     "./sessionAttention": attention,
+    "./workspaceConnection": workspace,
     "./attentionSound": {
       playAttentionSound: async (kind, current) => { if (current()) sounds.push(kind); },
       unlockAttentionSound() {},
@@ -67,6 +69,9 @@ function harness(initial) {
   });
   return {
     store, sounds, notices,
+    outage: () => workspace.setWorkspaceAvailable(false),
+    restore: () => workspace.setWorkspaceAvailable(true),
+    gap: () => events.gap(),
     setList: (next) => { list = next; },
     deferList: (promise) => { nextList = promise; },
     focus: (value) => { focused = value; },
@@ -277,4 +282,26 @@ test("muting suppresses native playback and persists the preference", async () =
   assert.equal(sound.useAttentionSound(), false);
   assert.equal(values.get("vibestudio-attention-sound"), "off");
   assert.deepEqual(calls, []);
+});
+
+
+test("remote outage keeps sessions and watched selection, then rebaselines silently", async () => {
+  const a = session("a", state(1, "working"));
+  const b = session("b", state(2, "working"));
+  const h = harness([a, b]);
+  h.connect(); await h.settle();
+  h.store.setWatched("a");
+  h.focus(false);
+  h.event("attention", { ...b, attention: state(3, "blocked", "request") });
+  h.outage();
+  const preserved = h.store.useSessions().sessions;
+  h.setList([{ ...a, attention: state(4, "idle", "done") }, { ...b, attention: state(5, "idle", "done") }]);
+  await h.store.refresh(); await h.settle();
+  assert.equal(h.store.useSessions().sessions, preserved);
+  assert.deepEqual(h.sounds, []);
+  h.restore(); h.connect(); await h.settle();
+  assert.deepEqual([...h.store.useSessions().sessions].map((s) => s.id), ["a", "b"]);
+  assert.equal(h.store.isUnread(h.store.useSessions().sessions[0], {}, "a"), false);
+  assert.deepEqual(h.sounds, []);
+  assert.deepEqual(h.notices, []);
 });

@@ -1,5 +1,5 @@
 //! The transport seam. [`Remote`] is "a way to reach the target: run one-shot commands and
-//! open the tunnelled, lifelined session on it." Two impls, chosen by [`build_remote`]:
+//! open a tunnel/keepalive session to its durable host service." Two impls, chosen by [`build_remote`]:
 //!
 //! - [`SshRemote`] (desktop) shells out to the user's `ssh` / `wsl.exe` — it inherits their
 //!   keys, `~/.ssh/config`, agent, and ProxyJump ("any host you can already ssh to").
@@ -28,8 +28,8 @@ pub trait Remote: Send + Sync {
     fn run_with_stdin(&self, cmd: &str, stdin: &[u8]) -> Result<(), RunError>;
     /// WSL shares Windows loopback (local port == remote, no `-L`); everything else forwards.
     fn same_port(&self) -> bool;
-    /// Launch (or reattach to) the remote server, forward `local_port → 127.0.0.1:remote_port`,
-    /// hold the lifeline, and block until the server prints its READY line. `host` is only for
+    /// Forward `local_port → 127.0.0.1:remote_port`, hold a tunnel-only keepalive
+    /// channel, and wait for its READY line. The worker was started separately. `host` is only for
     /// error messages.
     fn open_session(
         &self,
@@ -40,11 +40,11 @@ pub trait Remote: Send + Sync {
     ) -> Result<Box<dyn SessionHandle>, LaunchError>;
 }
 
-/// A live tunnelled session (the tunnel plus the remote server's stdin lifeline).
+/// A live tunnel and keepalive channel, independent from the worker process.
 pub trait SessionHandle: Send {
     /// Non-blocking: is the tunnel/connection still up? (drives the disconnect monitor.)
     fn is_alive(&self) -> bool;
-    /// Kill the tunnel + lifeline → the remote server's stdin EOFs and it exits.
+    /// Close this accessor's tunnel; the host service and its agents keep running.
     fn teardown(&mut self);
 }
 
@@ -117,7 +117,7 @@ impl Remote for SshRemote {
 struct ProcSession {
     /// Shared so the monitor can `try_wait` it while `teardown` can kill it.
     child: Arc<Mutex<Child>>,
-    _stdin: ChildStdin, // held open = the remote server's lifeline
+    _stdin: ChildStdin, // held open = the tunnel-only `cat` keepalive
 }
 
 impl SessionHandle for ProcSession {
@@ -130,8 +130,8 @@ impl SessionHandle for ProcSession {
         }
     }
     fn teardown(&mut self) {
-        // Kill the ssh child → remote stdin EOFs → the remote server exits and the forward
-        // closes. (`_stdin` also closes as the struct drops.)
+        // Kill only the ssh/WSL tunnel child. The detached host service owns no
+        // descriptor from this channel. (`_stdin` also closes as the struct drops.)
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
             let _ = child.wait();
@@ -160,7 +160,7 @@ fn spawn_session(
         .spawn()
         .map_err(|e| LaunchError::Fatal(format!("failed to start the remote connection: {e}")))?;
 
-    let stdin = child.stdin.take().unwrap(); // HOLD = lifeline
+    let stdin = child.stdin.take().unwrap(); // HOLD = tunnel-only keepalive
     let stdout = child.stdout.take().unwrap();
 
     // Drain stdout on a thread, forwarding lines until the READY line (or the child dies).

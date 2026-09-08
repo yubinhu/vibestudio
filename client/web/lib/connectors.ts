@@ -150,3 +150,10 @@ export function useConnectors(project?: string): ConnectorsSnapshot {
   const snapshot = useCallback(() => store.snapshot, [store]);
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
+
+if (typeof window !== "undefined") window.addEventListener("vibestudio:workspace-restored", () => {
+  for (const [project, store] of stores) {
+    store.fetchedAt = 0;
+    if (store.listeners.size) void refreshConnectors(project || undefined);
+  }
+});

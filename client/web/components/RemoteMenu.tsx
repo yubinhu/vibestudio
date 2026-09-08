@@ -9,7 +9,7 @@ import * as api from "@/lib/api";
 import { useRemote } from "@/lib/remote";
 import { useSshProfiles } from "@/lib/sshProfiles";
 
-const CONNECTING = new Set<api.RemoteState>(["detecting", "installing", "launching", "forwarding"]);
+const CONNECTING = new Set<api.RemoteState>(["detecting", "installing", "launching", "forwarding", "reconnecting"]);
 
 /**
  * The connection control in the top chrome: a status pill ("Local" / "⟳ Connecting…"
@@ -30,7 +30,7 @@ export default function RemoteMenu() {
   const connecting = CONNECTING.has(status.state);
   const connected = status.state === "connected";
   const errored = status.state === "error";
-  const label = connected ? status.host || "Remote" : connecting ? "Connecting…" : errored ? "Connection lost" : "Local";
+  const label = connected ? status.host || "Remote" : status.state === "reconnecting" ? "Reconnecting…" : connecting ? "Connecting…" : errored ? "Connection lost" : "Local";
 
   return (
     <>

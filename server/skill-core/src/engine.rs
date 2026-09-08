@@ -18,7 +18,8 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -251,9 +252,53 @@ impl Drop for Engine {
     }
 }
 
-fn engine() -> &'static Mutex<Option<Engine>> {
-    static ENGINE: OnceLock<Mutex<Option<Engine>>> = OnceLock::new();
-    ENGINE.get_or_init(|| Mutex::new(None))
+#[derive(Default)]
+struct EngineLifecycle {
+    current: Mutex<Option<Engine>>,
+    stopping: AtomicBool,
+}
+
+impl EngineLifecycle {
+    fn for_chat(&self) -> Result<MutexGuard<'_, Option<Engine>>, String> {
+        let guard = self.current.lock().map_err(|_| "AI engine state is unavailable.".to_string())?;
+        if self.stopping.load(Ordering::Acquire) {
+            return Err("The local AI engine is stopping.".into());
+        }
+        Ok(guard)
+    }
+
+    fn prepare_shutdown(&self) -> Result<ShutdownReservation<'_>, String> {
+        let guard = self.current.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => "Offline generation is in progress. Retry after it finishes.".to_string(),
+            TryLockError::Poisoned(_) => "AI engine state is unavailable.".to_string(),
+        })?;
+        Ok(ShutdownReservation { _engine: guard, stopping: &self.stopping })
+    }
+}
+
+fn engine() -> &'static EngineLifecycle {
+    static ENGINE: OnceLock<EngineLifecycle> = OnceLock::new();
+    ENGINE.get_or_init(EngineLifecycle::default)
+}
+
+/// Hold the idle engine's lifecycle lock while a host Stop is being prepared.
+/// Dropping without committing leaves generation available. After commit, no
+/// request can start an engine or inference during the HTTP shutdown grace period.
+pub struct ShutdownReservation<'a> {
+    _engine: MutexGuard<'a, Option<Engine>>,
+    stopping: &'a AtomicBool,
+}
+
+impl ShutdownReservation<'_> {
+    pub fn commit(self) {
+        self.stopping.store(true, Ordering::Release);
+    }
+}
+
+/// Reject a busy Stop synchronously instead of queueing a shutdown behind a
+/// potentially long model load or inference. Commit only after persisting Stop.
+pub fn prepare_shutdown() -> Result<ShutdownReservation<'static>, String> {
+    engine().prepare_shutdown()
 }
 
 /// Resolve the `llama-server` executable, in priority order:
@@ -492,7 +537,7 @@ pub fn chat(
     let model = ensure_model()?;
     let ctx = active_spec().ctx;
 
-    let mut guard = engine().lock().map_err(|_| "AI engine state is unavailable.".to_string())?;
+    let mut guard = engine().for_chat()?;
     if guard.as_mut().map(|e| e.exited()).unwrap_or(true) {
         *guard = Some(spawn_engine(&model, ctx)?);
     }
@@ -561,7 +606,7 @@ pub fn chat(
 
 /// Reap the engine child (call on app/server exit so nothing is orphaned).
 pub fn shutdown() {
-    if let Ok(mut guard) = engine().lock() {
+    if let Ok(mut guard) = engine().current.lock() {
         *guard = None; // Drop kills + waits the child
     }
 }
@@ -619,5 +664,38 @@ pub fn reap_orphans() {
         // cheap parent check here, so this CAN hit a sibling backend's engine —
         // acceptable for the rare run-two-backends-on-Windows case.
         let _ = hidden_command("taskkill").args(["/F", "/IM", "llama-server.exe"]).output();
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn busy_stop_is_rejected_without_queueing_shutdown() {
+        let lifecycle = EngineLifecycle::default();
+        let generation = lifecycle.for_chat().unwrap();
+        let started = Instant::now();
+        let error = lifecycle.prepare_shutdown().err().expect("busy Stop must fail immediately");
+        assert!(error.contains("Offline generation is in progress"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(generation);
+        assert!(lifecycle.for_chat().is_ok(), "a rejected Stop must leave generation available");
+    }
+
+    #[test]
+    fn reservation_rolls_back_on_failure_and_commit_blocks_waiting_generation() {
+        let lifecycle = EngineLifecycle::default();
+        let reservation = lifecycle.prepare_shutdown().unwrap();
+        drop(reservation); // Stop intent could not be persisted.
+        assert!(lifecycle.for_chat().is_ok());
+
+        let reservation = lifecycle.prepare_shutdown().unwrap();
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| lifecycle.for_chat().is_err());
+            reservation.commit();
+            assert!(waiting.join().unwrap(), "a waiting request must not start after Stop commits");
+        });
+        assert!(lifecycle.for_chat().is_err());
     }
 }

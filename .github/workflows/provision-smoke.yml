@@ -6,9 +6,8 @@ name: provision-smoke
 # app version) and expects them to boot. A binary that won't start, has a bad
 # checksum, or a wrong asset name silently breaks Remote-SSH for everyone on that
 # version. This job downloads each asset the way the desktop does, verifies its
-# .sha256, boots it loopback-bound with a token, and exercises the /api HTTP face
-# + the auth choke point on the SHIPPED artifact — so a release can't go out with
-# a skill-server that doesn't run.
+# .sha256, checks foreground API authentication, and proves the detached host
+# shares persistent sessions across launchers/restarts on the SHIPPED artifact.
 on:
   workflow_call:
     inputs:
@@ -30,6 +29,7 @@ permissions:
 jobs:
   smoke:
     name: ${{ matrix.target }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -63,6 +63,17 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - name: Install tmux for persistent-session smoke test
+        shell: bash
+        run: |
+          if ! command -v tmux >/dev/null 2>&1; then
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              sudo apt-get update
+              sudo apt-get install -y tmux
+            else
+              brew install tmux
+            fi
+          fi
       - name: Resolve server asset name
         env:
           TARGET: ${{ matrix.target }}
@@ -103,30 +114,34 @@ jobs:
 
           # --version must work and exit 0 (the desktop reads this to verify the install).
           version=$("$bin" --version)
-          if [ "$version" != "skill-server ${TAG#v}" ]; then
-            echo "::error::Expected skill-server ${TAG#v}, got $version"
+          if [ "$version" != "skill-server ${TAG#v} host-service=1" ]; then
+            echo "::error::Expected skill-server ${TAG#v} host-service=1, got $version"
             exit 1
           fi
 
-          # Boot loopback on an ephemeral port, token-guarded (the SSH case). The binary
+          # Retain coverage of token-guarded foreground mode. The binary
           # prints `SKILL_SERVER_READY port=<port>` to stdout once listening.
+          fixture=$(mktemp -d /tmp/vs-release-auth.XXXXXX)
+          export XDG_CONFIG_HOME="$fixture/config" TMUX_TMPDIR="$fixture/tmux"
+          mkdir -p "$XDG_CONFIG_HOME" "$TMUX_TMPDIR"
           token="ci-smoke-token"
           "$bin" --host 127.0.0.1 --port 0 --token "$token" --dist /tmp/skill-no-dist \
-            > server.log 2>&1 &
+            --no-startup-maintenance \
+            > "$fixture/server.log" 2>&1 &
           pid=$!
-          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; rm -rf "$fixture"' EXIT
 
           # Wait (up to ~10s) for the ready line, then extract the chosen port.
           port=""
           for _ in $(seq 1 50); do
-            if port=$(grep -oE 'SKILL_SERVER_READY port=[0-9]+' server.log 2>/dev/null | head -1 | cut -d= -f2); then
+            if port=$(grep -oE 'SKILL_SERVER_READY port=[0-9]+' "$fixture/server.log" 2>/dev/null | head -1 | cut -d= -f2); then
               [ -n "$port" ] && break
             fi
             sleep 0.2
           done
           if [ -z "$port" ]; then
             echo "::error::skill-server never printed a ready line"
-            cat server.log
+            cat "$fixture/server.log"
             exit 1
           fi
           echo "skill-server up on port $port"
@@ -134,21 +149,114 @@ jobs:
           base="http://127.0.0.1:$port"
 
           # /api/* must reject a request with no bearer (auth choke point, design.md).
-          code=$(curl -s -o /dev/null -w '%{http_code}' "$base/api/remote/status")
+          code=$(curl --max-time 5 -s -o /dev/null -w '%{http_code}' "$base/api/remote/status")
           if [ "$code" != "401" ]; then
             echo "::error::expected 401 without token, got $code"
-            cat server.log
+            cat "$fixture/server.log"
             exit 1
           fi
 
           # With the bearer, the locally-handled connection manager answers 200 — proving
           # the HTTP face serves /api/* on the shipped binary.
-          code=$(curl -s -o /dev/null -w '%{http_code}' \
+          code=$(curl --max-time 5 -s -o /dev/null -w '%{http_code}' \
             -H "Authorization: Bearer $token" "$base/api/remote/status")
           if [ "$code" != "200" ]; then
             echo "::error::expected 200 with token, got $code"
-            cat server.log
+            cat "$fixture/server.log"
             exit 1
           fi
 
           echo "smoke OK: $TARGET boots, checksum matches, /api auth enforced"
+
+      - name: Verify detached host and shared session persistence
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFile } from 'node:child_process';
+          import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+          import { join, resolve } from 'node:path';
+          import { promisify } from 'node:util';
+
+          const execute = promisify(execFile);
+          // Keep tmux's Unix socket path short on macOS as well as Linux. Never
+          // touch the runner's normal config or default tmux server.
+          const fixture = mkdtempSync('/tmp/vs-release-');
+          for (const dir of ['config', 'tmux', 'project']) mkdirSync(join(fixture, dir));
+          const env = {
+            ...process.env,
+            XDG_CONFIG_HOME: join(fixture, 'config'),
+            TMUX_TMPDIR: join(fixture, 'tmux'),
+            SHELL: '/bin/sh',
+          };
+          delete env.TMUX;
+          delete env.TMUX_PANE;
+          delete env.VIBESTUDIO_SERVER_TOKEN;
+          const bin = resolve(process.env.SERVER_ASSET);
+          const run = args => execute(bin, args, { env, timeout: 35_000 });
+          const args = ['--daemon', '--port', '0', '--dist', join(fixture, 'no-dist'), '--no-startup-maintenance'];
+          const launch = async (extra = []) => {
+            const { stdout } = await run([...args, ...extra]);
+            const line = stdout.split('\n').find(line => line.startsWith('SKILL_HOST_SERVICE_READY '));
+            assert.ok(line, `Missing daemon record: ${stdout}`);
+            return JSON.parse(line.slice('SKILL_HOST_SERVICE_READY '.length));
+          };
+          const request = async (record, path, body) => {
+            const response = await fetch(`http://127.0.0.1:${record.port}${path}`, {
+              signal: AbortSignal.timeout(5_000),
+              ...(body === undefined ? {} : {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+              }),
+            });
+            assert.equal(response.status, 200, `${path}: ${await response.clone().text()}`);
+            return response;
+          };
+          const verifyHealth = async record => {
+            const health = await (await request(record, '/api/health')).json();
+            assert.equal(health.pid, record.pid);
+            assert.equal(health.version, process.env.TAG.slice(1));
+            assert.deepEqual(health.hostService, { protocol: 1, instanceId: record.instanceId });
+          };
+          const stop = () => run(['--stop-host-service']);
+          try {
+            // Both launching processes exit. Their EOF must not kill the host,
+            // and racing launchers must discover exactly the same generation.
+            const [first, other] = await Promise.all([launch(), launch()]);
+            assert.deepEqual(first, other);
+            await verifyHealth(first);
+            assert.match(await (await request(first, '/')).text(), /<html[\s>]/i, 'Shipped daemon must serve its embedded phone UI');
+            const session = await (await request(first, '/api/terminal/create', {
+              agent: 'shell', cwd: join(fixture, 'project'), cols: 100, rows: 30,
+            })).json();
+            assert.ok(session.id);
+            const accessor = await launch();
+            assert.deepEqual(accessor, first);
+            const visible = await (await request(accessor, '/api/terminal/list')).json();
+            assert.deepEqual(visible.map(session => session.id), [session.id], 'A new accessor must find the existing session');
+
+            // Explicit Stop closes the service while preserving tmux. Automatic
+            // repair must respect Stop; an explicit launch starts a new generation.
+            await stop();
+            await assert.rejects(launch(['--recover']), error => /explicitly stopped/.test(error.stderr));
+            const second = await launch();
+            assert.notEqual(second.instanceId, first.instanceId);
+            assert.equal(second.port, first.port, 'Restart must preserve phone and gateway URLs');
+            await verifyHealth(second);
+            const restored = await (await request(second, '/api/terminal/list')).json();
+            assert.deepEqual(restored.map(session => session.id), [session.id], 'Host restart must preserve the agent session');
+            await request(second, '/api/terminal/kill', { id: session.id });
+            console.log(`daemon smoke OK: ${process.env.TARGET} shares one persistent host/session, respects Stop and serves the phone UI`);
+          } catch (error) {
+            try { console.error(readFileSync(join(fixture, 'config/vibestudio/host-service.log'), 'utf8')); } catch {}
+            throw error;
+          } finally {
+            // Stop only this fixture's verified worker, then its private tmux.
+            // Retain state if Stop fails so cleanup never orphans an untracked host.
+            await stop();
+            await execute('tmux', ['kill-server'], { env, timeout: 5_000 }).catch(() => {});
+            rmSync(fixture, { recursive: true, force: true });
+          }
+          NODE

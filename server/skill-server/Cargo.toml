@@ -66,3 +66,7 @@ include_dir = { version = "0.7", optional = true }
 # runtime the otherwise-sync switchboard blocks on.
 russh = { version = "0.62", optional = true, default-features = false, features = ["ring", "flate2", "rsa"] }
 tokio = { version = "1", optional = true, default-features = false, features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+
+[target.'cfg(unix)'.dependencies]
+# setsid detaches the durable host worker from its launching SSH/desktop session.
+libc = "0.2"

@@ -4,7 +4,7 @@
   "identifier": "one.vibestudio.app",
   "build": {
     "beforeDevCommand": {
-      "script": "npm run dev:vite",
+      "script": "npm run dev:vite -- --mode native",
       "cwd": "../.."
     },
     "devUrl": "http://localhost:1420",

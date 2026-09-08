@@ -79,11 +79,13 @@ export function useExternalFileSync(
       if (!stopped) void poll();
     }, POLL_MS);
     window.addEventListener("focus", onFocus);
+    window.addEventListener("vibestudio:workspace-restored", onFocus);
     document.addEventListener("visibilitychange", onFocus);
     return () => {
       stopped = true;
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("vibestudio:workspace-restored", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
   }, [enabled, root, rel]);

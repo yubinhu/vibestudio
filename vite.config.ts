@@ -5,7 +5,7 @@ import { fileURLToPath, URL } from "node:url";
 // Vite config for the React SPA (client/web). `@` -> ./client/web.
 // index.html + this config stay at the repo root (the Vite root); only the
 // source tree moved to client/web/.
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./client/web", import.meta.url)) },
@@ -20,7 +20,9 @@ export default defineConfig({
     // backend on another machine for the VS Code-remote-style split.
     proxy: {
       "/api": {
-        target: process.env.VITE_API_TARGET ?? "http://127.0.0.1:8765",
+        // Native dev has a separate client switchboard: a durable host may
+        // already own 8765. Plain browser/mobile-dev still reaches that host.
+        target: process.env.VITE_API_TARGET ?? `http://127.0.0.1:${mode === "native" ? 8767 : 8765}`,
         changeOrigin: true,
       },
     },
@@ -34,4 +36,4 @@ export default defineConfig({
     target: ["es2022", "chrome110", "safari15"],
     sourcemap: false,
   },
-});
+}));

@@ -50,6 +50,21 @@ Keychain won't open (no more setup crash). Android is intentionally unwired
 (keyring v3 has no Android backend); when Android lands it'll use the **native
 app** flow like iOS, not the browser/tailscale path.
 
+### Shared host and reconnect (done)
+
+Desktop and native phone attach the same detached per-user host service. The worker
+survives client/tunnel exit and owns phone serving, gateway configuration and attention
+watching. Each terminal viewer has an independent attachment ID and PTY; the viewer
+sending user input controls shared terminal geometry.
+
+Same-host recovery preserves the mounted workspace and session selection. A reconnect
+overlay pauses input while the tunnel recovers with capped backoff; trust/auth errors
+await Retry. Streams reattach with fresh IDs and discard queued input/clipboard results.
+Lists refresh and attention rebaselines silently. The iOS shell retains its foreground
+listener-heal path, preserving the route if a new origin is unavoidable. See
+[design.md](../design.md#connection-manager-vs-code-remote---ssh) for the lifecycle contract.
+Native iOS suspension and keyboard behavior still require a device validation pass.
+
 ---
 
 ## 2. Notifications — native local DONE; closed-app push (APNs) = TODO

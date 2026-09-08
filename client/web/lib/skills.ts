@@ -165,3 +165,7 @@ function subscribe(fn: () => void): () => void {
 export function useSkills(): SkillsSnap {
   return useSyncExternalStore(subscribe, () => snap, () => snap);
 }
+
+if (typeof window !== "undefined") window.addEventListener("vibestudio:workspace-restored", () => {
+  if (listeners.size) void refreshSkills(false);
+});

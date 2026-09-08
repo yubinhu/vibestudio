@@ -13,6 +13,8 @@ import {
 import type { SkillData, FileData, TreeNode } from "@/lib/types";
 import { isBootstrapSkill } from "@/lib/agents";
 import { log } from "@/lib/log";
+import { createTerminalAttachment } from "./terminalAttachment";
+import { workspaceConnection, workspaceUnavailable } from "./workspaceConnection";
 
 // Same-origin by default (server serves the UI + /api). Override for dev with
 // VITE_API_BASE (e.g. point a Vite dev server at a remote skill-server).
@@ -25,6 +27,9 @@ const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 const RETRYABLE_POST = /^(remote|ssh)\//;
 
 async function http<T>(method: "GET" | "POST", path: string, args?: Record<string, unknown>, retried = false): Promise<T> {
+  const local = /^(remote|ssh|update|notify|editor|reveal)(?:\/|$)|^logs\/client$/.test(path);
+  const connection = workspaceConnection();
+  if (!local && !connection.available) throw workspaceUnavailable();
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/api/${path}`, {
@@ -48,6 +53,7 @@ async function http<T>(method: "GET" | "POST", path: string, args?: Record<strin
     throw e;
   }
   const json = await res.json().catch(() => ({}));
+  if (!local && connection.epoch !== workspaceConnection().epoch) throw workspaceUnavailable();
   if (!res.ok) {
     // Console-only (debug): the server already logs its own 4xx/5xx, so forwarding
     // would be redundant networking.
@@ -169,6 +175,7 @@ export type RemoteState =
   | "launching"
   | "forwarding"
   | "connected"
+  | "reconnecting"
   | "error";
 export interface RemoteStatus {
   state: RemoteState;
@@ -181,6 +188,7 @@ export const remoteStatus = () => http<RemoteStatus>("GET", "remote/status");
  *  or null to start Local. THIS machine's connection memory — never proxied. */
 export const remoteLast = () => http<{ host: string | null }>("GET", "remote/last");
 export const remoteConnect = (host: string) => http<{ ok: boolean }>("POST", "remote/connect", { host });
+export const remoteRetry = () => http<{ ok: boolean }>("POST", "remote/retry");
 export const remoteDisconnect = () => http<{ ok: boolean }>("POST", "remote/disconnect");
 
 // --- Saved SSH connections (mobile only) ---
@@ -1251,6 +1259,7 @@ export function terminalEvents(
   onEvent: (kind: "bell" | "opened" | "closed" | "attention", e: TermEvent) => void,
   onDown: () => void,
   onOpen?: () => void,
+  onGap?: () => void,
 ): { close(): void } {
   const es = new EventSource(`${API_BASE}/api/events`);
   es.onopen = () => onOpen?.();
@@ -1267,6 +1276,7 @@ export function terminalEvents(
   es.addEventListener("closed", forward("closed"));
   es.addEventListener("attention", forward("attention"));
   es.onerror = () => {
+    onGap?.();
     log.debug("sse", `events readyState=${es.readyState}`);
     if (es.readyState === EventSource.CLOSED && !done) {
       done = true;
@@ -1297,125 +1307,17 @@ function b64ToBytes(b64: string): Uint8Array {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
-const strToB64 = (s: string) => bytesToB64(new TextEncoder().encode(s));
+export type { TerminalHandle, TerminalConnectionState } from "./terminalAttachment";
 
-/** A bidirectional attachment to a live terminal; detaching keeps the session alive. */
-export interface TerminalHandle {
-  write(data: string): void;
-  resize(cols: number, rows: number): void;
-  detach(): void;
-}
-
-/**
- * Attach to a session and stream its output: SSE for output (auto-reconnecting)
- * + POST for input. Detaching keeps the (tmux-backed) session alive.
- */
+/** A fresh ready token gates every viewer's input and geometry changes. */
 export function attachTerminal(
   id: string,
-  opts: {
-    cols: number;
-    rows: number;
-    onData: (bytes: Uint8Array) => void;
-    /** Fired when the stream ends fatally (e.g. the session is gone). */
-    onClose?: () => void;
-  },
-): TerminalHandle {
-  const q = new URLSearchParams({ id, cols: String(opts.cols), rows: String(opts.rows) });
-  const es = new EventSource(`${API_BASE}/api/terminal/attach?${q.toString()}`);
-  let closed = false;
-  // Keystrokes ride individual POSTs, which carry no ordering guarantee once two
-  // are in flight at the same time (each is its own request — and over a remote,
-  // its own proxy thread), so fast typing could land out of order in the pty.
-  // Send strictly one batch at a time, coalescing whatever arrives meanwhile —
-  // ordered input, and far fewer round trips on a high-latency link.
-  let pendingInput = "";
-  let sendingInput = false;
-  const pumpInput = async () => {
-    if (sendingInput) return;
-    sendingInput = true;
-    while (pendingInput) {
-      const batch = pendingInput;
-      pendingInput = "";
-      try {
-        await http("POST", "terminal/input", { id, data: strToB64(batch) });
-      } catch {
-        // Drop the batch on a transport blip: losing keystrokes beats replaying
-        // them late, out of order with whatever the user typed next.
-      }
-    }
-    sendingInput = false;
-  };
-  // Resizes need the same one-in-flight discipline as input — the pane fires one
-  // per animation frame while a window is dragged, far faster than a remote
-  // round-trip, so parallel POSTs could otherwise reorder and leave the pty at a
-  // stale size (a wrapped TUI that never self-corrects). Last-wins: only the
-  // newest pending (cols,rows) survives, sent after the in-flight resize resolves.
-  // Resizes only land while the stream is attached (the server 400s otherwise —
-  // the pane's ResizeObserver fires before the SSE attach registers, and during
-  // reconnect gaps), so they're gated on `streamOpen`; the latest size is kept
-  // and re-asserted from es.onopen after every (re)connect — which also corrects
-  // the PTY when EventSource auto-reconnects with the stale mount-time URL size.
-  let streamOpen = false;
-  let latestSize: { cols: number; rows: number } | null = null;
-  let pendingResize: { cols: number; rows: number } | null = null;
-  let sendingResize = false;
-  const pumpResize = async () => {
-    if (sendingResize) return;
-    sendingResize = true;
-    while (pendingResize && streamOpen && !closed) {
-      const { cols, rows } = pendingResize;
-      pendingResize = null;
-      try {
-        await http("POST", "terminal/resize", { id, cols, rows });
-      } catch {
-        /* transient blip — the next resize event will re-assert the size */
-      }
-    }
-    sendingResize = false;
-  };
-  es.onopen = () => {
-    streamOpen = true;
-    if (latestSize) {
-      pendingResize = latestSize;
-      void pumpResize();
-    }
-  };
-  es.onmessage = (e) => {
-    if (e.data) opts.onData(b64ToBytes(e.data));
-  };
-  es.onerror = () => {
-    // CLOSED ⇒ the browser gave up (e.g. a 4xx because the session is gone) and
-    // won't reconnect; surface it once. CONNECTING ⇒ a transient blip, let it retry.
-    log.debug("sse", `terminal/attach id=${id} readyState=${es.readyState}`);
-    streamOpen = false;
-    if (es.readyState === EventSource.CLOSED && !closed) {
-      closed = true;
-      opts.onClose?.();
-    }
-  };
-  return {
-    write: (data) => {
-      // Once the stream is fatally closed we no longer render output; keep
-      // feeding input and it would execute invisibly in a still-live session.
-      if (closed) return;
-      pendingInput += data;
-      void pumpInput();
-    },
-    resize: (cols, rows) => {
-      latestSize = { cols, rows };
-      if (closed || !streamOpen) return; // re-asserted from es.onopen
-      pendingResize = latestSize;
-      void pumpResize();
-    },
-    detach: () => {
-      closed = true;
-      es.close();
-    },
-  };
+  opts: Parameters<typeof createTerminalAttachment>[1],
+): ReturnType<typeof createTerminalAttachment> {
+  return createTerminalAttachment(id, opts, {
+    url: (cols, rows) => `${API_BASE}/api/terminal/attach?${new URLSearchParams({ id, cols: String(cols), rows: String(rows) })}`,
+    send: (path, args) => http("POST", path, args),
+    encode: bytesToB64,
+    decode: b64ToBytes,
+  });
 }
-
-/** Ship a pasted clipboard image to the backend — the machine the agent actually
- *  runs on (possibly remote) — and get back an absolute temp-file path there,
- *  ready to paste into the prompt the way drag-and-drop pastes a path. */
-export const terminalPasteImage = (bytes: Uint8Array, mime: string) =>
-  http<{ path: string }>("POST", "terminal/paste-image", { data: bytesToB64(bytes), mime });

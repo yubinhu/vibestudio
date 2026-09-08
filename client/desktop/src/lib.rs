@@ -4,14 +4,10 @@
 // every capability is reached over `/api` (see `server/skill-server`). Two
 // shapes from one crate (split by the target tables in Cargo.toml):
 //
-//   * **Desktop** — the full local backend. The shell hosts the window, seeds
-//     the bundled-engine path, owns the engine + terminal lifecycle (the
-//     in-process server runs with `startup_maintenance:false`, so these fire
-//     exactly once), and reaps on exit. Lifecycle is TRAY-governed: closing the
-//     window hides it (server + phone access stay up); the tray's Quit is the
-//     one explicit full-teardown — terminals included. Every other exit (update
-//     restart, crash, plain Cmd+Q) leaves tmux agents running for the next
-//     launch to pick up.
+//   * **Desktop** — an in-process HTTP switchboard owns the UI and native
+//     capabilities. A detached per-user host service owns the local backend,
+//     agents, connector gateway and phone access. Closing or quitting the client
+//     drops only its SSH tunnels; the host service and tmux sessions survive.
 //   * **Mobile (iOS)** — a pure switchboard: the same loopback server, but with
 //     no local backend; everything happens on the SSH remote it connects to via
 //     the in-process russh transport, with credentials from the Keychain-backed
@@ -26,14 +22,14 @@ use tauri_plugin_notification::NotificationExt;
 #[cfg(desktop)]
 use tauri_plugin_updater::UpdaterExt;
 
-#[cfg(desktop)]
-use skill_core::engine;
 use skill_server::{init_logging, init_logging_to_file, ServerConfig, SshRemoteControl};
 
 #[cfg(desktop)]
 mod editor; // ShellEditor: the "Open in VS Code" control (client-side, pinned-local route)
 #[cfg(desktop)]
 mod sound;
+#[cfg(desktop)]
+mod host;
 // KeychainStore: the mobile switchboard's SSH credential store. Compiled on
 // macOS too (same Security.framework path) so its tests run on a Mac; only the
 // iOS setup path actually wires it in, hence the desktop dead_code allowance.
@@ -81,6 +77,7 @@ fn find_bundled_engine(app: &tauri::App) -> Option<std::path::PathBuf> {
 struct ShellUpdater {
     app: tauri::AppHandle,
     remote_slot: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<SshRemoteControl>>>,
+    local_host: std::sync::Arc<host::LocalHost>,
 }
 
 #[cfg(desktop)]
@@ -94,8 +91,9 @@ impl skill_core::update::UpdateControl for ShellUpdater {
     fn begin_install(&self) {
         let app = self.app.clone();
         let remote_slot = self.remote_slot.clone();
+        let local_host = self.local_host.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(msg) = install_update(app, remote_slot).await {
+            if let Err(msg) = install_update(app, remote_slot, local_host).await {
                 skill_core::update::report_error(msg);
             }
         });
@@ -156,12 +154,14 @@ impl skill_server::NotifyControl for ShellNotifier {
 
 /// Download → install → relaunch. On Windows the plugin hands off to the NSIS
 /// installer and exits this process itself — `RunEvent::Exit` never fires — so
-/// `on_before_exit` must repeat the Exit handler's teardown. macOS/Linux installs
-/// return, and we restart explicitly.
+/// `on_before_exit` must repeat tunnel teardown. Stop the host only after a verified
+/// download, before replacing its executable/resources (required on Windows).
+/// macOS/Linux installs return, and we restart explicitly. tmux agents survive.
 #[cfg(desktop)]
 async fn install_update(
     app: tauri::AppHandle,
     remote_slot: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<SshRemoteControl>>>,
+    local_host: std::sync::Arc<host::LocalHost>,
 ) -> Result<(), String> {
     let updater = app
         .updater_builder()
@@ -169,7 +169,6 @@ async fn install_update(
             if let Some(r) = remote_slot.get() {
                 r.shutdown();
             }
-            engine::shutdown();
         })
         .build()
         .map_err(|e| format!("The updater could not start: {e}"))?;
@@ -179,8 +178,8 @@ async fn install_update(
         .map_err(|e| format!("Couldn't check for the update: {e}"))?
         .ok_or_else(|| "The update is no longer available.".to_string())?;
     let mut received: u64 = 0;
-    update
-        .download_and_install(
+    let bytes = update
+        .download(
             move |chunk, total| {
                 received += chunk as u64;
                 let pct = total.filter(|t| *t > 0).map(|t| (received * 100 / t).min(100) as u8);
@@ -189,15 +188,47 @@ async fn install_update(
             || skill_core::update::report_ready(),
         )
         .await
-        .map_err(|e| format!("Couldn't install the update: {e}"))?;
+        .map_err(|e| format!("Couldn't download the update: {e}"))?;
+    let stopping = local_host.clone();
+    let stopped = tauri::async_runtime::spawn_blocking(move || stopping.stop())
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|result| result);
+    if let Err(error) = stopped {
+        // Stop may have succeeded before its acknowledgement was lost. Clear
+        // any durable stop intent and restore the host when aborting installation.
+        return Err(restore_after_failed_update(local_host, format!("Couldn't stop the host for the update: {error}")).await);
+    }
+    if let Err(error) = update.install(bytes) {
+        return Err(restore_after_failed_update(local_host, format!("Couldn't install the update: {error}")).await);
+    }
     app.restart() // macOS/Linux: relaunch into the new build (Windows exited above)
+}
+
+#[cfg(desktop)]
+async fn restore_after_failed_update(local_host: std::sync::Arc<host::LocalHost>, message: String) -> String {
+    match tauri::async_runtime::spawn_blocking(move || local_host.resume_after_failed_update()).await {
+        Ok(Ok(())) => message,
+        Ok(Err(error)) => format!("{message} The host could not restart: {error}"),
+        Err(error) => format!("{message} The host restart task failed: {error}"),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The same shipped executable also hosts the background worker. Handle
+    // this before initializing Tauri, its single-instance plugin or any window.
+    #[cfg(desktop)]
+    if let Some(result) = skill_server::host_service::run_from_args(&std::env::args().collect::<Vec<_>>()) {
+        if let Err(error) = result {
+            eprintln!("host service: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // The SSH connection manager is created in `setup` (it needs the app version to
     // provision the matching remote `skill-server`); this slot hands it to the exit
-    // handler so a live session is torn down on quit (no orphaned remote/tunnel).
+    // handler so this client's tunnels are closed on quit.
     let remote_slot: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<SshRemoteControl>>> =
         std::sync::Arc::new(std::sync::OnceLock::new());
     let remote_slot_setup = remote_slot.clone();
@@ -215,7 +246,7 @@ pub fn run() {
     // destroy) before exec, so the new build acquires it cleanly — but if the old
     // process lingers (a slow-exiting tray, or a manual relaunch of a hidden
     // window), the newcomer forwards its argv here and exits instead of adding a
-    // SECOND tray and stealing 8765 (which is what strands the phone mapping).
+    // second tray. The detached host service has its own singleton lock.
     // Release-only: dev shares the bundle id, so the guard would otherwise send
     // `npm run dev` straight to the installed tray app.
     #[cfg(all(desktop, not(debug_assertions)))]
@@ -261,17 +292,12 @@ pub fn run() {
         // warning-free on the other platforms where that arm is compiled out.
         .run(move |_app, event| {
             match event {
-                // Any non-tray exit (update restart, Cmd+Q, OS shutdown) tears down
-                // what only THIS process can use — the inference engine child and any
-                // live SSH session — but leaves the tmux terminals running: agents
-                // keep working and are picked up by the next launch (or any other
-                // client). Only the tray's Quit also ends the terminals.
+                // Client exit drops this accessor's tunnels. Local and remote
+                // host services, their gateways and agents remain available.
                 tauri::RunEvent::Exit => {
                     if let Some(r) = remote_slot.get() {
                         r.shutdown();
                     }
-                    #[cfg(desktop)]
-                    engine::shutdown(); // reap the inference engine child
                 }
                 // macOS: clicking the dock icon with the window hidden re-shows it.
                 #[cfg(target_os = "macos")]
@@ -305,8 +331,7 @@ pub fn run() {
         });
 }
 
-/// Desktop setup: full local backend + tray-governed lifecycle (see the module
-/// docs). This is the pre-split `setup` body, unchanged in behaviour.
+/// Desktop setup: durable local backend + thin tray-resident client.
 #[cfg(desktop)]
 fn setup_desktop(
     app: &tauri::App,
@@ -326,19 +351,14 @@ fn setup_desktop(
         log::info!("on-disk log: {}", p.display());
     }
 
-    // ── lifecycle this process owns (the in-process server is spawned with
-    //    startup_maintenance:false, so these run exactly once) ──
-    skill_term::sweep_stale(); // GC terminals whose agent finished long ago (live ones persist)
     // Point the on-device generator at the bundled/vendored llama-server so
     // it works with no config; an explicit env override still wins. The
-    // in-process server shares this process, so it sees the env var.
+    // detached worker inherits the env var.
     if std::env::var_os("VIBESTUDIO_LLAMA_SERVER").is_none() {
         if let Some(p) = find_bundled_engine(app) {
             std::env::set_var("VIBESTUDIO_LLAMA_SERVER", p);
         }
     }
-    engine::reap_orphans(); // kill any engine orphaned by a previous hard-kill
-    engine::prefetch_model(); // start the one-time model download now, not on first Generate
 
     // SSH connection manager: provisions the release-matching `skill-server`
     // onto remotes, using the app's Cargo package version stamped from the release tag.
@@ -353,11 +373,22 @@ fn setup_desktop(
         .clone()
         .map(|r| r.join("dist"))
         .unwrap_or_else(|| std::path::PathBuf::from("dist"));
-    let phone =
-        std::sync::Arc::new(skill_server::PhoneControl::new(app.package_info().version.to_string()));
+    let dist = if dist.is_absolute() { dist } else { std::env::current_dir()?.join(dist) };
+    // The worker outlives this process, serves the phone directly, and owns
+    // terminals, discovery, attention watching, connectors and engine upkeep.
+    let local_host = host::LocalHost::start(skill_server::host_service::HostServiceOptions {
+        executable: std::env::current_exe()?,
+        dist: dist.clone(),
+        bundled_skills: resource_dir.clone().map(|r| r.join("skills")),
+        examples_base: resource_dir.clone(),
+        preferred_port: if tauri::is_dev() { 8766 } else { skill_server::PHONE_PORT },
+        version: app.package_info().version.to_string(),
+        ..Default::default()
+    }).map_err(std::io::Error::other)?;
     let updater = std::sync::Arc::new(ShellUpdater {
         app: app.handle().clone(),
         remote_slot: remote_slot.clone(),
+        local_host: local_host.clone(),
     }) as std::sync::Arc<dyn skill_core::update::UpdateControl>;
     let notifier = std::sync::Arc::new(ShellNotifier { app: app.handle().clone() })
         as std::sync::Arc<dyn skill_server::NotifyControl>;
@@ -374,51 +405,27 @@ fn setup_desktop(
         startup_maintenance: false,
         // Plug the SSH connection manager into the local switchboard.
         remote: Some(remote.clone() as std::sync::Arc<dyn skill_server::RemoteControl>),
+        local_backend: Some(local_host.clone() as std::sync::Arc<dyn skill_server::LocalBackendControl>),
         // Hand the server's update module its installer (see ShellUpdater).
         updater: Some(updater.clone()),
-        phone: Some(phone.clone()),
         // OS toasts + dock badge for the SPA's turn-finish notifier.
         notifier: Some(notifier.clone()),
         // "Open in VS Code" on this machine (or the remote over Remote-SSH).
         editor: Some(editor.clone()),
         ..Default::default()
     };
-    // Bind the stable phone port first (it's also dev's Vite proxy target),
-    // so a persisted `tailscale serve` mapping finds the app again on the
-    // next launch. Prod falls back to an ephemeral port when it's taken
-    // (the phone mapping goes stale until re-enabled, the app still works);
-    // dev tolerates the failure outright — an external skill-server may
-    // already hold 8765 and back the Vite proxy.
+    // Only the dev proxy needs a fixed client port. The phone uses the worker's
+    // persistent port; production webviews get their own ephemeral switchboard.
     let preferred = std::env::var("VIBESTUDIO_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(skill_server::PHONE_PORT);
-    let port = match skill_server::spawn(make_cfg(preferred)) {
-        Ok(h) => {
-            phone.set_port(h.addr.port());
-            h.addr.port()
-        }
-        Err(e) if !tauri::is_dev() => {
-            log::warn!("port {preferred} taken ({e}); falling back to an ephemeral port");
-            let h = skill_server::spawn(make_cfg(0))?;
-            phone.set_port(h.addr.port());
-            h.addr.port()
-        }
-        Err(e) => {
-            log::error!("in-process server did not start: {e}");
-            preferred
-        }
-    };
-    // If we bound an ephemeral port because the exiting process still held
-    // 8765 (an update restart racing shutdown), a persisted `tailscale serve`
-    // mapping now points at a dead port — re-point it so the phone reconnects
-    // without re-enabling. No-op when phone mode was never turned on.
-    phone.clone().resync_on_start();
+        .unwrap_or(if tauri::is_dev() { 8767 } else { 0 });
+    let port = skill_server::spawn(make_cfg(preferred))?.addr.port();
 
     // Same-origin model: the webview's origin IS the server, so api.ts's
     // relative `/api` calls + the SSE EventSource pass CSP `default-src 'self'`.
     let url = if tauri::is_dev() {
-        "http://localhost:1420".to_string() // Vite serves the UI + proxies /api → 8765
+        "http://localhost:1420".to_string() // native-mode Vite proxies /api → 8767
     } else {
         format!("http://127.0.0.1:{port}") // the in-process server serves UI + /api
     };
@@ -442,18 +449,16 @@ fn setup_desktop(
         })
         .build()?;
 
-    // ── tray: the lifecycle owner. Closing the window only hides it (the
-    // server, terminals, and phone access stay up); Quit here is the ONE
-    // explicit full teardown — every studio terminal on this machine, the
-    // live SSH session, and the engine end with it. Update restarts and
-    // plain window closes never touch the terminals.
+    // Closing or quitting the client leaves the host and agents available.
     let open_item = MenuItemBuilder::with_id("open", "Open VibeStudio").build(app)?;
     let phone_item = MenuItemBuilder::with_id("phone", "Open on your phone…").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit VibeStudio").build(app)?;
+    let stop_item = MenuItemBuilder::with_id("stop-host", "Stop local host service and quit").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&open_item)
         .item(&phone_item)
         .separator()
+        .item(&stop_item)
         .item(&quit_item)
         .build()?;
     let remote_for_tray = remote.clone();
@@ -471,14 +476,16 @@ fn setup_desktop(
                 }
             }
             "quit" => {
-                if let Ok(sessions) = skill_term::list_sessions() {
-                    for s in sessions {
-                        let _ = skill_term::kill_session(&s.id);
-                    }
-                }
                 remote_for_tray.shutdown();
-                engine::shutdown();
                 app.exit(0);
+            }
+            "stop-host" => {
+                let host = local_host.clone();
+                let app = app.clone();
+                std::thread::spawn(move || match host.stop() {
+                    Ok(()) => app.exit(0),
+                    Err(error) => log::error!("could not stop local host service: {error}"),
+                });
             }
             _ => {}
         });
@@ -526,12 +533,15 @@ impl LocalServer {
                     Ok(p) => {
                         me.port.store(p, Ordering::SeqCst);
                         log::warn!("loopback server moved to {p}; reloading the webview");
-                        let url = format!("http://127.0.0.1:{p}");
                         let on_main = app.clone();
                         let _ = app.run_on_main_thread(move || {
                             if let Some(w) = on_main.get_webview_window("main") {
-                                if let Ok(u) = url.parse() {
-                                    let _ = w.navigate(u);
+                                // A changed origin requires navigation, but keep
+                                // the current workspace route and session query.
+                                if let Ok(mut url) = w.url() {
+                                    if url.set_port(Some(p)).is_ok() {
+                                        let _ = w.navigate(url);
+                                    }
                                 }
                             }
                         });

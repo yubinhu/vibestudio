@@ -30,6 +30,8 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 #[cfg(feature = "local-backend")]
 mod events;
 mod gateway;
+#[cfg(feature = "local-backend")]
+pub mod host_service;
 mod phone;
 mod proxy;
 #[cfg(feature = "local-backend")]
@@ -170,12 +172,42 @@ pub trait RemoteControl: Send + Sync {
     fn disconnect(&self, forget: bool) -> Result<(), String>;
     fn status(&self) -> RemoteStatus;
     fn active_target(&self) -> Option<RemoteTarget>;
+    /// Resolve routing atomically: an unavailable selected remote must never
+    /// fall through to local filesystem or terminal handlers.
+    fn route(&self) -> RemoteRoute {
+        match self.active_target() {
+            Some(target) => RemoteRoute::Connected(target),
+            None => {
+                let status = self.status();
+                if status.host.is_some() {
+                    RemoteRoute::Unavailable(status.message.unwrap_or_else(|| "The selected host is unavailable.".into()))
+                } else {
+                    RemoteRoute::Local
+                }
+            }
+        }
+    }
+    fn retry(&self) -> Result<(), String> {
+        Err("Retry is not supported by this connection manager.".into())
+    }
     /// The host to auto-reconnect to on launch (the last one we connected to and never
     /// explicitly disconnected from), or `None` to start Local. The client reads this
     /// (`GET /api/remote/last`) and drives the resume through the normal connect path.
     fn last_host(&self) -> Option<String> {
         None
     }
+}
+
+pub enum RemoteRoute {
+    Local,
+    Connected(RemoteTarget),
+    Unavailable(String),
+}
+
+/// The desktop's durable local worker. Resolution is non-blocking; a watchdog
+/// handles startup and recovery independently from HTTP request workers.
+pub trait LocalBackendControl: Send + Sync {
+    fn target(&self) -> Result<RemoteTarget, String>;
 }
 
 /// Built-in attention audio. Callers choose an event, never a file or command.
@@ -261,6 +293,11 @@ pub struct ServerConfig {
     /// remoting (the standalone binary, or browser-local dev). When set, the server
     /// serves `/api/remote/*` and proxies the rest of `/api/*` to the connected remote.
     pub remote: Option<Arc<dyn RemoteControl>>,
+    /// Ordinary local workspace requests go to this durable host service.
+    /// The in-process server retains only client capabilities and UI delivery.
+    pub local_backend: Option<Arc<dyn LocalBackendControl>>,
+    #[cfg(feature = "local-backend")]
+    pub host_service_identity: Option<host_service::HostServiceIdentity>,
     /// The app's installer (desktop only) — `spawn` hands it to
     /// `skill_core::update::init`, which runs the background release check.
     /// `None` (standalone/dev) = `/api/update/status` reports `canAuto: false`.
@@ -295,6 +332,9 @@ impl Default for ServerConfig {
             workers: 4,
             startup_maintenance: true,
             remote: None,
+            local_backend: None,
+            #[cfg(feature = "local-backend")]
+            host_service_identity: None,
             updater: None,
             phone: None,
             notifier: None,
@@ -394,6 +434,9 @@ pub fn spawn(cfg: ServerConfig) -> std::io::Result<ServerHandle> {
         examples_base: cfg.examples_base,
         token: cfg.token,
         remote: cfg.remote,
+        local_backend: cfg.local_backend,
+        #[cfg(feature = "local-backend")]
+        host_service_identity: cfg.host_service_identity,
         phone: cfg.phone,
         notifier: cfg.notifier,
         editor: cfg.editor,
@@ -417,6 +460,9 @@ struct ServerCtx {
     examples_base: Option<PathBuf>,
     token: Option<String>,
     remote: Option<Arc<dyn RemoteControl>>,
+    local_backend: Option<Arc<dyn LocalBackendControl>>,
+    #[cfg(feature = "local-backend")]
+    host_service_identity: Option<host_service::HostServiceIdentity>,
     phone: Option<Arc<PhoneControl>>,
     notifier: Option<Arc<dyn NotifyControl>>,
     editor: Option<Arc<dyn EditorControl>>,
@@ -469,6 +515,13 @@ fn worker_loop(server: &Server, ctx: &ServerCtx) {
         // Writes get the cross-site origin check at the same choke point.
         if method == Method::Post && !origin_allowed(&request) {
             reply_status(request, 403, "Cross-origin request rejected");
+            continue;
+        }
+
+        // Health describes this listener, not the selected workspace. In
+        // particular iOS must not respawn its healthy switchboard when SSH is down.
+        if method == Method::Get && path == "/api/health" {
+            send_reply(request, handle(&method, &url, "", ctx));
             continue;
         }
 
@@ -575,7 +628,7 @@ fn worker_loop(server: &Server, ctx: &ServerCtx) {
         // remote, whose bytes reach the local webview via the proxied blob GET
         // instead. Otherwise 404 → the SPA falls back to that blob download.
         if path == "/api/download/skill/save" {
-            let remote_active = ctx.remote.as_ref().and_then(|r| r.active_target()).is_some();
+            let remote_active = ctx.remote.as_ref().is_some_and(|r| !matches!(r.route(), RemoteRoute::Local));
             if !from_this_machine(&request) || remote_active {
                 send_reply(request, save_unavailable());
                 continue;
@@ -593,7 +646,19 @@ fn worker_loop(server: &Server, ctx: &ServerCtx) {
         // pooled worker — keeping the locally-handled connection manager (status,
         // disconnect) responsive even when every request is being proxied.
         if path.starts_with("/api/") {
-            if let Some(target) = ctx.remote.as_ref().and_then(|r| r.active_target()) {
+            let target = match workspace_target(ctx) {
+                Ok(target) => target,
+                Err(message) => {
+                    send_reply(request, Reply {
+                        status: 503,
+                        body: serde_json::to_vec(&json!({ "error": message })).unwrap_or_default(),
+                        content_type: "application/json".into(),
+                        extra: vec![],
+                    });
+                    continue;
+                }
+            };
+            if let Some(target) = target {
                 let url = url.clone();
                 // Both SSE routes must stream, not buffer — `proxy_buffered` would
                 // block forever collecting an unending body.
@@ -629,6 +694,17 @@ fn worker_loop(server: &Server, ctx: &ServerCtx) {
             let _ = request.as_reader().read_to_string(&mut body);
         }
         send_reply(request, handle(&method, &url, &body, ctx));
+    }
+}
+
+fn workspace_target(ctx: &ServerCtx) -> Result<Option<RemoteTarget>, String> {
+    match ctx.remote.as_ref().map(|r| r.route()).unwrap_or(RemoteRoute::Local) {
+        RemoteRoute::Connected(target) => Ok(Some(target)),
+        RemoteRoute::Unavailable(message) => Err(message),
+        RemoteRoute::Local => match &ctx.local_backend {
+            Some(backend) => backend.target().map(Some),
+            None => Ok(None),
+        },
     }
 }
 
@@ -1230,14 +1306,26 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
         #[cfg(feature = "local-backend")]
         (Method::Post, "/api/terminal/input") => {
             let data = skill_term::b64_decode(&s("data"));
-            json_reply(skill_term::write(&s("id"), &data).map(|_| json!({ "ok": true })))
+            // Only an absent field enables legacy single-viewer resolution;
+            // a malformed/empty token must not silently target another viewer.
+            let attachment_id = v.get("attachmentId").map(|value| value.as_str().unwrap_or(""));
+            let claim = v.get("claimGeometry").and_then(|value| value.as_bool()).unwrap_or(true);
+            json_reply(skill_term::write_attachment(&s("id"), attachment_id, &data, claim).map(|_| json!({ "ok": true })))
         }
         #[cfg(feature = "local-backend")]
         (Method::Post, "/api/terminal/resize") => {
             let u16f = |k: &str, d: u16| v.get(k).and_then(|x| x.as_u64()).map(|n| n as u16).unwrap_or(d);
             json_reply(
-                skill_term::resize(&s("id"), u16f("cols", 80), u16f("rows", 24)).map(|_| json!({ "ok": true })),
+                skill_term::resize_attachment(
+                    &s("id"), v.get("attachmentId").map(|value| value.as_str().unwrap_or("")),
+                    u16f("cols", 80), u16f("rows", 24),
+                    v.get("claimGeometry").and_then(|value| value.as_bool()).unwrap_or(false),
+                ).map(|_| json!({ "ok": true })),
             )
+        }
+        #[cfg(feature = "local-backend")]
+        (Method::Post, "/api/terminal/detach") => {
+            json_reply(skill_term::detach(&s("id"), &s("attachmentId")).map(|_| json!({ "ok": true })))
         }
         #[cfg(feature = "local-backend")]
         (Method::Post, "/api/terminal/paste-image") => {
@@ -1557,12 +1645,32 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
                     .map(|p| json!({ "path": p.to_string_lossy() })),
             )
         }
-        // The answering server's identity (informational; proxies like any route,
-        // so a connected switchboard reports the hub's version, not its own).
-        (Method::Get, "/api/health") => json_reply(Ok(json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "pid": std::process::id(),
-        }))),
+        // Listener identity stays local so a dead SSH tunnel cannot masquerade
+        // as a dead iOS/desktop switchboard.
+        (Method::Get, "/api/health") => {
+            let value = json!({ "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id() });
+            #[cfg(feature = "local-backend")]
+            let value = {
+                let mut value = value;
+                value["hostService"] = json!(ctx.host_service_identity);
+                value
+            };
+            json_reply(Ok(value))
+        },
+        #[cfg(feature = "local-backend")]
+        (Method::Post, "/api/host-service/stop") => {
+            match &ctx.host_service_identity {
+                Some(identity) if s("instanceId") == identity.instance_id => {
+                    json_reply(host_service::schedule_stop(identity).map(|_| json!({ "ok": true })))
+                }
+                Some(_) => Reply {
+                    status: 409,
+                    body: serde_json::to_vec(&json!({ "error": "The host service changed; refresh before stopping it." })).unwrap_or_default(),
+                    content_type: "application/json".into(), extra: vec![],
+                },
+                None => Reply { status: 404, body: b"{\"error\":\"This listener is not a host service.\"}".to_vec(), content_type: "application/json".into(), extra: vec![] },
+            }
+        },
         // "Open on your phone" — answered by the HUB: proxied to the connected
         // remote (whose PhoneControl runs tailscale on ITS machine and serves
         // ITS port), or handled here when Local. The stable server is what the
@@ -1664,11 +1772,15 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
                 // rather than on this machine. The ssh destination comes from the
                 // switchboard (authoritative + already validated), NEVER the request
                 // body, so a caller can't smuggle ssh options in via a fake host.
-                let host = ctx
-                    .remote
-                    .as_ref()
-                    .filter(|r| r.active_target().is_some())
-                    .and_then(|r| r.status().host);
+                let status = ctx.remote.as_ref().map(|remote| remote.status());
+                if status.as_ref().is_some_and(|status| !matches!(status.state.as_str(), "connected" | "idle")) {
+                    return Reply {
+                        status: 503,
+                        body: b"{\"error\":\"The selected host is unavailable. Reconnect before opening its folder.\"}".to_vec(),
+                        content_type: "application/json".into(), extra: vec![],
+                    };
+                }
+                let host = status.and_then(|status| status.host);
                 json_reply(ed.open(&s("path"), host.as_deref()).map(|()| json!({ "ok": true })))
             }
             None => editor_unavailable(),
@@ -1805,8 +1917,14 @@ fn stream_terminal(request: Request, url: &str) {
         return; // drops `att` → detaches
     }
 
+    // The viewer identity is established before any PTY output. A reconnect
+    // always gets a fresh token; stale writes can never target its replacement.
+    let ready = format!("event: ready\ndata: {}\n\n", json!({ "attachmentId": att.attachment_id() }));
+    if write_chunk(w.as_mut(), ready.as_bytes()).is_err() { return; }
+
     use std::sync::mpsc::RecvTimeoutError;
     loop {
+        if att.is_closed() { break; }
         // The 15s keepalive comment doubles as a disconnect probe: the write
         // fails once the client is gone, so we stop and detach.
         let frame = match rx.recv_timeout(std::time::Duration::from_secs(15)) {

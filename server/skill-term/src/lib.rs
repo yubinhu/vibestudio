@@ -24,19 +24,17 @@
 //!     live agent (or any non-shell foreground process) is never reaped.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
 
 use skill_core::process::hidden_command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 
 /// Bounded, attachment-independent tmux observations for agent state detection.
@@ -52,7 +50,7 @@ const SEP: char = '\t';
 
 /// Floor for client-reported terminal sizes — below it is a browser layout
 /// glitch, never a real pane. Honoring one is destructive: tmux
-/// (`window-size latest`) clamps the whole window to our pty, a TUI repaints
+/// clamps the whole window to the geometry owner's PTY, a TUI repaints
 /// at that width, and the repaint is baked into scrollback for every viewer.
 /// Resizes below the floor are rejected (the window keeps its last good
 /// size); create/attach are clamped up (a wrong-sized viewer beats none).
@@ -67,7 +65,6 @@ fn size_floor(what: &str, id: &str, cols: u16, rows: u16) -> (u16, u16) {
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
-static ATTACH_SEQ: AtomicU64 = AtomicU64::new(0);
 static UUID_SEQ: AtomicU64 = AtomicU64::new(0);
 
 // ───────────────────────────── public types ─────────────────────────────
@@ -301,6 +298,8 @@ apt install tmux on Debian/Ubuntu), then try again."
 /// pane (`-d` creates are fine within tmux; we only must not inherit `$TMUX`).
 fn tmux() -> Command {
     let mut c = hidden_command(tmux_bin());
+    #[cfg(target_os = "macos")]
+    macos_fds::isolate(&mut c);
     // `-u` forces UTF-8 regardless of locale: a GUI-launched app has no LANG/
     // LC_*, and a locale-less tmux ASCII-sanitizes client output — the literal
     // tabs in our list-sessions format came back as `_`, corrupting every
@@ -310,6 +309,9 @@ fn tmux() -> Command {
     c.env_remove("TMUX");
     c
 }
+
+#[cfg(target_os = "macos")]
+mod macos_fds;
 
 /// Strip characters that would corrupt our tab-separated `list-sessions` parse.
 /// Tabs/newlines are legal in Unix paths but must never leak into metadata.
@@ -1030,178 +1032,8 @@ fn create_session_inner(
 
 // ──────────────────────────── attach / stream I/O ────────────────────────────
 
-/// A live PTY attachment to a session — a running `tmux attach` client. Holding
-/// the `Arc` keeps the client alive; dropping it detaches (the session survives).
-pub struct Attachment {
-    id: String,
-    /// Unique per attachment, so a session that is detached and re-attached gets
-    /// a distinct entry — Drop then only removes *its own* registry slot.
-    seq: u64,
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
-    writer: Mutex<Box<dyn Write + Send>>,
-}
-
-impl Attachment {
-    fn write_bytes(&self, data: &[u8]) -> Result<(), String> {
-        let mut w = self.writer.lock().map_err(|_| "terminal writer is unavailable".to_string())?;
-        w.write_all(data).and_then(|_| w.flush()).map_err(|e| e.to_string())
-    }
-    fn resize_to(&self, cols: u16, rows: u16) -> Result<(), String> {
-        if cols < MIN_COLS || rows < MIN_ROWS {
-            log::warn!("refused implausible resize {cols}x{rows} (id={})", self.id);
-            return Err(format!("implausible terminal size {cols}x{rows} — refused"));
-        }
-        let m = self.master.lock().map_err(|_| "terminal is unavailable".to_string())?;
-        m.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())
-    }
-}
-
-impl Drop for Attachment {
-    fn drop(&mut self) {
-        if let Ok(mut c) = self.child.lock() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        if let Ok(mut reg) = registry().lock() {
-            // Remove only if we're still the registered entry (identity by seq),
-            // so a newer attachment that replaced us is never clobbered.
-            if reg.get(&self.id).map(|(seq, _)| *seq == self.seq).unwrap_or(false) {
-                reg.remove(&self.id);
-            }
-        }
-    }
-}
-
-/// Live attachments keyed by session id; the `u64` is the attachment seq (identity
-/// for the replace-vs-clobber check), the `Weak` lets a dropped owner expire the entry.
-type Registry = Mutex<HashMap<String, (u64, Weak<Attachment>)>>;
-
-fn registry() -> &'static Registry {
-    static REG: OnceLock<Registry> = OnceLock::new();
-    REG.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Attach to a session: spawn `tmux attach` in a PTY sized `cols`×`rows`, start a
-/// reader thread, and return the keep-alive handle plus a channel of raw output.
-pub fn attach(id: &str, cols: u16, rows: u16) -> Result<(Arc<Attachment>, Receiver<Vec<u8>>), String> {
-    if !id.starts_with(PREFIX) || !session_exists(id) {
-        return Err("That terminal session no longer exists.".into());
-    }
-
-    let (cols, rows) = size_floor("attach", id, cols, rows);
-    let pty = native_pty_system();
-    let pair = pty
-        .openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("openpty failed: {e}"))?;
-
-    let mut cmd = CommandBuilder::new(tmux_bin());
-    cmd.arg("-u"); // force UTF-8 — no locale in a GUI-launched env (see tmux())
-    cmd.arg("attach-session");
-    cmd.arg("-t");
-    cmd.arg(id);
-    // Build a clean env: a real terminal, no inherited $TMUX (would refuse to
-    // nest), but keep PATH/HOME so tmux finds its socket and the login shell.
-    cmd.env("TERM", "xterm-256color");
-    cmd.env_remove("TMUX");
-    cmd.env_remove("TMUX_PANE");
-    if let Ok(p) = std::env::var("PATH") {
-        cmd.env("PATH", p);
-    }
-    if let Some(h) = dirs::home_dir() {
-        cmd.env("HOME", h.to_string_lossy().into_owned());
-    }
-    if let Ok(t) = std::env::var("TMUX_TMPDIR") {
-        cmd.env("TMUX_TMPDIR", t);
-    }
-
-    let mut child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("Couldn't attach: {e}"))?;
-    drop(pair.slave);
-
-    // If we fail to wire up I/O after the client spawned, reap it — otherwise the
-    // `tmux attach` child would be orphaned (a zombie).
-    let reap = |child: &mut Box<dyn Child + Send + Sync>| {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
-    let reader = match pair.master.try_clone_reader() {
-        Ok(r) => r,
-        Err(e) => {
-            reap(&mut child);
-            return Err(e.to_string());
-        }
-    };
-    let writer = match pair.master.take_writer() {
-        Ok(w) => w,
-        Err(e) => {
-            reap(&mut child);
-            return Err(e.to_string());
-        }
-    };
-
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    thread::spawn(move || {
-        let mut reader = reader;
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if tx.send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    let seq = ATTACH_SEQ.fetch_add(1, Ordering::Relaxed);
-    let att = Arc::new(Attachment {
-        id: id.to_string(),
-        seq,
-        master: Mutex::new(pair.master),
-        child: Mutex::new(child),
-        writer: Mutex::new(writer),
-    });
-    if let Ok(mut reg) = registry().lock() {
-        reg.insert(id.to_string(), (seq, Arc::downgrade(&att)));
-    }
-    Ok((att, rx))
-}
-
-fn current(id: &str) -> Option<Arc<Attachment>> {
-    registry().lock().ok()?.get(id).and_then(|(_, w)| w.upgrade())
-}
-
-/// Send keystroke bytes to a session's current attachment.
-pub fn write(id: &str, data: &[u8]) -> Result<(), String> {
-    match current(id) {
-        Some(a) => a.write_bytes(data),
-        None => Err("Terminal is not attached.".into()),
-    }
-}
-
-/// Resize a session's current attachment (the tmux client follows the PTY).
-pub fn resize(id: &str, cols: u16, rows: u16) -> Result<(), String> {
-    match current(id) {
-        Some(a) => a.resize_to(cols, rows),
-        None => Err("Terminal is not attached.".into()),
-    }
-}
+mod attachments;
+pub use attachments::{attach, detach, resize, resize_attachment, write, write_attachment, Attachment};
 
 // ───────────────────────────── pasted images ─────────────────────────────
 
@@ -1671,8 +1503,8 @@ mod tests {
         let tmpdir = std::env::temp_dir().join(format!("ass-u-test-{}", std::process::id()));
         std::fs::create_dir_all(&tmpdir).unwrap();
         let run = |args: &[&str]| {
-            let mut c = hidden_command(tmux_bin());
-            c.arg("-u").args(args);
+            let mut c = tmux();
+            c.args(args);
             c.env_remove("TMUX").env_remove("LANG").env_remove("LC_ALL").env_remove("LC_CTYPE");
             c.env("TMUX_TMPDIR", &tmpdir);
             c.output().expect("tmux runs")

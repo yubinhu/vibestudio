@@ -90,6 +90,8 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
   // Refreshed on each (re)attach; invoked when the pane becomes visible again.
   const refitRef = useRef<() => void>(() => {});
   const termRef = useRef<Terminal | null>(null);
+  const [connectionState, setConnectionState] = useState<api.TerminalConnectionState>("connecting");
+  const inputTokenRef = useRef<() => string | null>(() => null);
 
   // Select mode: while on, a plain drag makes a NATIVE xterm selection instead of
   // being forwarded to the agent's own mouse handling — the only way to drag-copy a
@@ -149,7 +151,9 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
   const tapPaste = useCallback(() => {
     const term = termRef.current;
     const ops = tapOpsRef.current;
-    if (!term || !ops) return;
+    const token = inputTokenRef.current();
+    if (!term || !ops || !token) return;
+    const current = () => inputTokenRef.current() === token;
     void (async () => {
       try {
         if (navigator.clipboard?.read) {
@@ -158,20 +162,22 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
           // Text wins when both are present, matching the paste-event path.
           if (item?.types.includes("text/plain")) {
             const text = await (await item.getType("text/plain")).text();
-            if (text) term.paste(text);
+            if (text && current()) term.paste(text);
           } else if (item && imgType) {
-            await ops.pasteImage(await item.getType(imgType), imgType);
+            const image = await item.getType(imgType);
+            if (current()) await ops.pasteImage(image, imgType);
           }
-          term.focus();
+          if (current()) term.focus();
           return;
         }
       } catch {
         // read() denied or exotic types — fall through to the text-only API.
       }
+      if (!current()) return;
       try {
         const text = await navigator.clipboard.readText();
-        if (text) term.paste(text);
-        term.focus();
+        if (text && current()) term.paste(text);
+        if (current()) term.focus();
       } catch {
         ops.note("clipboard read blocked — allow clipboard access for this site and retry");
       }
@@ -184,6 +190,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
 
     const term = new Terminal({
       cursorBlink: true,
+      disableStdin: true,
       fontSize: 13,
       fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       scrollback: 8000,
@@ -291,13 +298,21 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
     // The single gate for every size reported to the backend (attach + resize).
-    // tmux sizes the whole window to our pty (`window-size latest`) and a TUI
+    // The active geometry owner sizes the shared tmux window and a TUI
     // repaints on SIGWINCH, so one transient postage-stamp measurement (a side
     // panel mid-layout, a display:none flip) gets baked into the scrollback for
     // every viewer. Refuse implausible sizes; log every attempt (refusals at
     // warn → forwarded to the server log).
     let handle: api.TerminalHandle | null = null;
     let dataSub: { dispose: () => void } | null = null;
+    let userInput = false;
+    // xterm distinguishes user bytes from automatic terminal-query responses.
+    // The guarded fallback keeps keyboard/paste usable if its internals change.
+    const coreInput = (term as unknown as {
+      _core?: { coreService?: { onUserInput?: (cb: () => void) => { dispose(): void } } };
+    })._core?.coreService;
+    const userSub = coreInput?.onUserInput?.(() => { userInput = true; }) ??
+      term.onKey(() => { userInput = true; });
     let sent = { cols: 0, rows: 0 };
     // Ctrl+W is readline delete-word but also the browser's tab-close chord,
     // which no key handler can intercept — make the close ask first. Safe to
@@ -328,9 +343,17 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
           cols: term.cols,
           rows: term.rows,
           onData: (bytes) => term.write(bytes),
-          onClose: () => term.write("\r\n\x1b[2m[disconnected — the session may have ended]\x1b[0m\r\n"),
+          onReady: () => new Promise<void>((resolve) => {
+            term.write("", () => { if (!gone) term.reset(); resolve(); });
+          }),
+          onState: (state) => {
+            term.options.disableStdin = state !== "ready";
+            userInput = false;
+            setConnectionState(state);
+          },
         });
-        dataSub = term.onData((d) => handle!.write(d));
+        inputTokenRef.current = () => handle?.inputToken() ?? null;
+        dataSub = term.onData((d) => { handle!.write(d, userInput); userInput = false; });
         window.addEventListener("beforeunload", guardUnload);
         log.debug("term-size", `attach ${term.cols}×${term.rows} (${why}), id=${id}`);
       } else if (term.cols !== sent.cols || term.rows !== sent.rows) {
@@ -353,6 +376,8 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
       if (!gone) term.write(`\r\n\x1b[2m[${msg}]\x1b[0m\r\n`);
     };
     const pasteImage = async (blob: Blob, mime: string) => {
+      const attachmentId = handle?.inputToken();
+      if (!handle || !attachmentId) return;
       // Reject oversized images here, before encoding ~1.33× their bytes into a
       // JSON body and shipping it through the SSH tunnel only for the server's
       // identical cap to 400 it. Keep the limit in sync with save_pasted_image.
@@ -361,9 +386,8 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
         return;
       }
       try {
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const { path } = await api.terminalPasteImage(bytes, mime);
-        if (!gone) term.paste(path);
+        const path = await handle.pasteImage(blob, mime);
+        if (!gone && handle.inputToken() === attachmentId) term.paste(path);
       } catch (err) {
         note(`couldn't paste image: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -371,6 +395,11 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     // When the clipboard carries both text and an image (e.g. spreadsheet
     // cells), text wins and xterm's own paste handler takes it.
     const onPaste = (e: ClipboardEvent) => {
+      if (!handle?.inputToken()) { e.preventDefault(); e.stopPropagation(); return; }
+      if (!coreInput?.onUserInput) {
+        userInput = true;
+        queueMicrotask(() => { userInput = false; });
+      }
       const dt = e.clipboardData;
       const img = dt && Array.from(dt.items).find((it) => it.kind === "file" && it.type.startsWith("image/"));
       if (!img || dt.getData("text/plain")) return;
@@ -607,9 +636,11 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
       themeObs.disconnect();
       ro.disconnect();
       dataSub?.dispose();
+      userSub.dispose();
       handle?.detach();
       term.dispose();
       termRef.current = null;
+      inputTokenRef.current = () => null;
       refitRef.current = () => {};
       tapOpsRef.current = null;
       setCanCopy(false);
@@ -624,6 +655,13 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
 
   return (
     <div className="group relative h-full w-full">
+      {connectionState !== "ready" && (
+        <div role="status" className="pointer-events-none absolute inset-x-0 bottom-2 z-20 mx-auto w-fit max-w-[90%] rounded-md border border-border bg-surface/95 px-3 py-2 text-center text-xs text-muted shadow-sm">
+          {connectionState === "incompatible"
+            ? "Update the server to reconnect this terminal safely. Input is paused."
+            : connectionState === "reconnecting" ? "Reconnecting terminal… Input is paused." : "Connecting terminal…"}
+        </div>
+      )}
       {/* pointer-events-none on the row (the property inherits) so the overlay
           never blocks the terminal; each button opts back in. Copy/Paste are
           coarse-pointer only — mouse-and-keyboard users have the chords. */}
@@ -643,6 +681,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
           type="button"
           onMouseDown={(e) => e.preventDefault()}
           onClick={tapPaste}
+          disabled={connectionState !== "ready"}
           title="Paste from the clipboard"
           className="pointer-events-auto hidden rounded-md border border-border bg-surface/85 px-2 py-0.5 text-xs font-medium text-muted shadow-sm backdrop-blur pointer-coarse:block"
         >

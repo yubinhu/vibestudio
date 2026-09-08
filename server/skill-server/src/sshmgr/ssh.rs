@@ -7,7 +7,9 @@
 //! Auth on the ssh path is key-based (`BatchMode=yes`): a host that needs an interactive
 //! password fails fast with a hint rather than hanging the GUI.
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use skill_core::process::hidden_command;
 
@@ -15,25 +17,38 @@ use crate::RemoteHost;
 
 /// Options for a one-shot remote command over ssh.
 const COMMON_OPTS: &[&str] = &[
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=15",
-    "-o", "StrictHostKeyChecking=accept-new",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=15",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=3",
 ];
 
 /// Extra options for the long-lived launch+tunnel ssh: fail loudly if the `-L` forward
 /// can't be set up, and keepalive so a dead tunnel is noticed (not unique to launch, but
 /// only the persistent connection benefits).
 const LAUNCH_OPTS: &[&str] = &[
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=15",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=15",
     // accept-new = trust-on-first-use: a host not yet in known_hosts is auto-pinned
     // (no prompt under BatchMode), but a CHANGED key is still rejected. Matches VS Code
     // Remote-SSH's first-contact behaviour; hosts you've ssh'd to before are already
     // pinned and get full strict checking.
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "ExitOnForwardFailure=yes",
-    "-o", "ServerAliveInterval=15",
-    "-o", "ServerAliveCountMax=3",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "ExitOnForwardFailure=yes",
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=3",
 ];
 
 /// How we reach a target. The connection id the UI passes is `wsl:<distro>` for a WSL
@@ -48,8 +63,12 @@ impl Transport {
     /// ssh destination (the host-validation in `remote_api` has already vetted the chars).
     pub fn parse(host: &str) -> Transport {
         match host.strip_prefix("wsl:") {
-            Some(distro) => Transport::Wsl { distro: distro.to_string() },
-            None => Transport::Ssh { host: host.to_string() },
+            Some(distro) => Transport::Wsl {
+                distro: distro.to_string(),
+            },
+            None => Transport::Ssh {
+                host: host.to_string(),
+            },
         }
     }
 
@@ -58,14 +77,6 @@ impl Transport {
     /// the local and remote port must match.
     pub fn same_port(&self) -> bool {
         matches!(self, Transport::Wsl { .. })
-    }
-
-    /// The program we shell out to (for error messages).
-    fn program(&self) -> &'static str {
-        match self {
-            Transport::Ssh { .. } => "ssh",
-            Transport::Wsl { .. } => "wsl.exe",
-        }
     }
 
     /// Build a command that runs `remote_cmd` (a shell script) on the target.
@@ -119,7 +130,12 @@ fn wsl_command(distro: &str, remote_cmd: &str) -> Command {
     let b64 = base64(remote_cmd.as_bytes());
     let wrapper = format!("bash <(echo {b64}|base64 -d)");
     let mut c = hidden_command("wsl.exe");
-    c.arg("-d").arg(distro).arg("--").arg("bash").arg("-lc").arg(wrapper);
+    c.arg("-d")
+        .arg(distro)
+        .arg("--")
+        .arg("bash")
+        .arg("-lc")
+        .arg(wrapper);
     c
 }
 
@@ -135,8 +151,16 @@ fn base64(data: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[((n >> 18) & 63) as usize] as char);
         out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -157,63 +181,124 @@ impl std::fmt::Display for RunError {
 /// Run a remote command and return its stdout. Err carries the exit code plus a
 /// friendly hint derived from stderr.
 pub fn run(t: &Transport, remote_cmd: &str) -> Result<String, RunError> {
-    let out = t
-        .run_command(remote_cmd)
-        .output()
-        .map_err(|e| RunError { code: None, message: format!("failed to run {}: {e}", t.program()) })?;
+    let out = bounded_command(t.run_command(remote_cmd), None, Duration::from_secs(120))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        Err(RunError { code: out.status.code(), message: hint(t, &String::from_utf8_lossy(&out.stderr)) })
+        Err(RunError {
+            code: out.status.code(),
+            message: hint(t, &String::from_utf8_lossy(&out.stderr)),
+        })
     }
 }
 
-/// Like [`run`], but maps any failure to a plain message (detection paths where the
-/// exit code is irrelevant).
 pub fn capture(t: &Transport, remote_cmd: &str) -> Result<String, String> {
-    run(t, remote_cmd).map_err(|e| e.message)
+    run(t, remote_cmd).map_err(|error| error.message)
 }
 
-/// Run a remote command feeding it `stdin` bytes (used to pipe a downloaded binary to
-/// `cat > …` on a no-internet remote). Drains stdout/stderr on their own threads while
-/// writing, so a chatty remote (e.g. a verbose shell rc) can't fill a pipe and deadlock
-/// the multi-MB write; then closes stdin so the remote `cat` sees EOF.
 pub fn run_with_stdin(t: &Transport, remote_cmd: &str, stdin: &[u8]) -> Result<(), RunError> {
-    let mut child = t
-        .run_command(remote_cmd)
+    let out = bounded_command(
+        t.run_command(remote_cmd),
+        Some(stdin),
+        Duration::from_secs(180),
+    )?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(RunError {
+            code: out.status.code(),
+            message: hint(t, &String::from_utf8_lossy(&out.stderr)),
+        })
+    }
+}
+
+// A transport keepalive cannot bound an alive remote shell that never finishes
+// its command. Drain concurrently, limit retained output, and impose a wall clock
+// deadline on one-shot provisioning/discovery as well as long-lived tunnels.
+fn bounded_command(
+    mut command: Command,
+    input: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<Output, RunError> {
+    const OUTPUT_LIMIT: u64 = 4 * 1024 * 1024;
+    let fail = |message: String| RunError {
+        code: None,
+        message,
+    };
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| RunError { code: None, message: format!("failed to run {}: {e}", t.program()) })?;
-
-    let mut sin = child.stdin.take().unwrap();
-    let mut out = child.stdout.take().unwrap();
-    let mut err = child.stderr.take().unwrap();
-    // Concurrent drains so the write below never blocks on a full output pipe.
-    let out_t = std::thread::spawn(move || {
-        let _ = std::io::copy(&mut out, &mut std::io::sink());
-    });
-    let err_t = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = err.read_to_end(&mut s);
-        s
-    });
-
-    let write_res = sin.write_all(stdin);
-    drop(sin); // EOF → the remote `cat` finishes and the command exits
-    let _ = out_t.join();
-    let err_bytes = err_t.join().unwrap_or_default();
-    let status = child.wait().map_err(|e| RunError { code: None, message: e.to_string() })?;
-
-    if let Err(e) = write_res {
-        return Err(RunError { code: None, message: format!("writing to {} failed: {e}", t.program()) });
+        .map_err(|error| fail(format!("failed to run remote command: {error}")))?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let drain = |mut reader: Box<dyn Read + Send>| {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = (&mut reader)
+                .take(OUTPUT_LIMIT + 1)
+                .read_to_end(&mut bytes)
+                .and_then(|_| std::io::copy(&mut reader, &mut std::io::sink()).map(|_| ()));
+            let _ = tx.send(result.map(|_| bytes));
+        });
+        rx
+    };
+    let out = drain(Box::new(stdout));
+    let err = drain(Box::new(stderr));
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let (write_tx, written) = mpsc::channel();
+    match input {
+        Some(input) => {
+            let input = input.to_vec();
+            std::thread::spawn(move || {
+                let result = stdin.write_all(&input);
+                drop(stdin);
+                let _ = write_tx.send(result);
+            });
+        }
+        None => {
+            drop(stdin);
+            let _ = write_tx.send(Ok(()));
+        }
     }
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(fail(match result {
+                    Err(error) => format!("remote command failed: {error}"),
+                    _ => "remote command timed out".into(),
+                }));
+            }
+        }
+    };
+    let write_result = written.recv_timeout(Duration::from_secs(1));
     if status.success() {
-        Ok(())
-    } else {
-        Err(RunError { code: status.code(), message: hint(t, &String::from_utf8_lossy(&err_bytes)) })
+        write_result
+            .map_err(|_| fail("remote command input timed out".into()))?
+            .map_err(|error| fail(format!("remote command input failed: {error}")))?;
     }
+    let output = |rx: mpsc::Receiver<std::io::Result<Vec<u8>>>| -> Result<Vec<u8>, RunError> {
+        let bytes = rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| fail("remote command output timed out".into()))?
+            .map_err(|error| fail(format!("remote command output failed: {error}")))?;
+        if bytes.len() > OUTPUT_LIMIT as usize {
+            return Err(fail("remote command output exceeded capture limit".into()));
+        }
+        Ok(bytes)
+    };
+    Ok(Output {
+        status,
+        stdout: output(out)?,
+        stderr: output(err)?,
+    })
 }
 
 /// All targets the user can pick from: WSL/WSL2 distros (Windows only) first, then the
@@ -229,7 +314,9 @@ pub fn list_targets() -> Result<Vec<RemoteHost>, String> {
 fn list_ssh_hosts() -> Result<Vec<RemoteHost>, String> {
     let mut hosts = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let Some(home) = dirs::home_dir() else { return Ok(hosts) };
+    let Some(home) = dirs::home_dir() else {
+        return Ok(hosts);
+    };
     let Ok(text) = std::fs::read_to_string(home.join(".ssh").join("config")) else {
         return Ok(hosts); // no config = no aliases; free-form entry still works
     };
@@ -249,7 +336,10 @@ fn list_ssh_hosts() -> Result<Vec<RemoteHost>, String> {
                 continue;
             }
             if seen.insert(alias.to_string()) {
-                hosts.push(RemoteHost { name: alias.to_string(), detail: None });
+                hosts.push(RemoteHost {
+                    name: alias.to_string(),
+                    detail: None,
+                });
             }
         }
     }
@@ -273,13 +363,19 @@ fn list_wsl_distros() -> Vec<RemoteHost> {
 /// Run `wsl.exe <args>` and decode its UTF-16LE stdout (wsl emits wide chars).
 fn wsl_output(args: &[&str]) -> Option<String> {
     let o = hidden_command("wsl.exe").args(args).output().ok()?;
-    let wide: Vec<u16> = o.stdout.chunks(2).filter_map(|c| c.try_into().ok().map(u16::from_le_bytes)).collect();
+    let wide: Vec<u16> = o
+        .stdout
+        .chunks(2)
+        .filter_map(|c| c.try_into().ok().map(u16::from_le_bytes))
+        .collect();
     Some(String::from_utf16_lossy(&wide))
 }
 
 /// Parse `wsl --list --verbose` (NAME / STATE / VERSION columns, a `*` marks the default).
 fn parse_wsl_verbose() -> Vec<RemoteHost> {
-    let Some(text) = wsl_output(&["--list", "--verbose"]) else { return Vec::new() };
+    let Some(text) = wsl_output(&["--list", "--verbose"]) else {
+        return Vec::new();
+    };
     let mut hosts = Vec::new();
     for line in text.lines() {
         let line = line.trim().trim_start_matches('*').trim();
@@ -287,7 +383,9 @@ fn parse_wsl_verbose() -> Vec<RemoteHost> {
             continue;
         }
         let cols: Vec<&str> = line.split_whitespace().collect();
-        let (Some(name), Some(ver)) = (cols.first(), cols.last()) else { continue };
+        let (Some(name), Some(ver)) = (cols.first(), cols.last()) else {
+            continue;
+        };
         // The VERSION column is `1` or `2`; this also skips the header row (`…VERSION`).
         if *ver != "1" && *ver != "2" {
             continue;
@@ -295,18 +393,26 @@ fn parse_wsl_verbose() -> Vec<RemoteHost> {
         if !connectable_distro(name) {
             continue;
         }
-        hosts.push(RemoteHost { name: format!("wsl:{name}"), detail: Some(format!("WSL{ver}")) });
+        hosts.push(RemoteHost {
+            name: format!("wsl:{name}"),
+            detail: Some(format!("WSL{ver}")),
+        });
     }
     hosts
 }
 
 /// Fallback for WSL builds without `--verbose`: `--list --quiet` (names only).
 fn parse_wsl_quiet() -> Vec<RemoteHost> {
-    let Some(text) = wsl_output(&["--list", "--quiet"]) else { return Vec::new() };
+    let Some(text) = wsl_output(&["--list", "--quiet"]) else {
+        return Vec::new();
+    };
     text.lines()
         .map(|l| l.trim())
         .filter(|name| connectable_distro(name))
-        .map(|name| RemoteHost { name: format!("wsl:{name}"), detail: Some("WSL".into()) })
+        .map(|name| RemoteHost {
+            name: format!("wsl:{name}"),
+            detail: Some("WSL".into()),
+        })
         .collect()
 }
 
@@ -315,7 +421,9 @@ fn parse_wsl_quiet() -> Vec<RemoteHost> {
 fn connectable_distro(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with("docker-desktop")
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 /// Turn the transport's stderr into an actionable message.
@@ -329,7 +437,10 @@ fn hint(t: &Transport, stderr: &str) -> String {
         format!("authentication to {host} failed — ensure key-based SSH access (e.g. your key is loaded in ssh-agent). ssh said: {s}")
     } else if s.contains("Could not resolve") || s.contains("Name or service not known") {
         format!("could not resolve host {host}. ssh said: {s}")
-    } else if s.contains("Connection refused") || s.contains("timed out") || s.contains("Operation timed out") {
+    } else if s.contains("Connection refused")
+        || s.contains("timed out")
+        || s.contains("Operation timed out")
+    {
         format!("could not connect to {host}. ssh said: {s}")
     } else if s.is_empty() {
         format!("connecting to {host} failed")
@@ -342,6 +453,23 @@ fn hint(t: &Transport, stderr: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn one_shot_command_timeout_is_bounded_and_stdin_still_reaches_remote() {
+        let mut slow = hidden_command("/bin/sh");
+        slow.args(["-c", "exec sleep 30"]);
+        let start = Instant::now();
+        let error = bounded_command(slow, None, Duration::from_millis(100))
+            .err()
+            .unwrap();
+        assert!(error.message.contains("timed out"));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let mut echo = hidden_command("/bin/sh");
+        echo.args(["-c", "cat"]);
+        let out = bounded_command(echo, Some(b"binary payload"), Duration::from_secs(2)).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(out.stdout, b"binary payload");
+    }
+
     // The `wsl.exe` wrapper is parsed by an extra interop shell before our `bash -lc`
     // sees it, so it must contain NO char that an outer double-quote pass would touch
     // (`$`, backtick, backslash, `"`) — otherwise `$(…)`/`$var` expand a round early and
@@ -351,12 +479,24 @@ mod tests {
         let c = wsl_command("Ubuntu", "uname -sm");
         let wrapper = c.get_args().last().unwrap().to_string_lossy().into_owned();
         for bad in ['$', '`', '\\', '"'] {
-            assert!(!wrapper.contains(bad), "wrapper must not contain {bad:?}: {wrapper}");
+            assert!(
+                !wrapper.contains(bad),
+                "wrapper must not contain {bad:?}: {wrapper}"
+            );
         }
         // Still decodes the script and runs it with stdin intact (process substitution,
         // not a stdin pipe), and the body is carried as opaque base64.
-        assert!(wrapper.contains("base64 -d"), "decodes the payload: {wrapper}");
-        assert!(wrapper.contains("bash <("), "runs via process substitution: {wrapper}");
-        assert!(wrapper.contains(&base64(b"uname -sm")), "carries the b64 body: {wrapper}");
+        assert!(
+            wrapper.contains("base64 -d"),
+            "decodes the payload: {wrapper}"
+        );
+        assert!(
+            wrapper.contains("bash <("),
+            "runs via process substitution: {wrapper}"
+        );
+        assert!(
+            wrapper.contains(&base64(b"uname -sm")),
+            "carries the b64 body: {wrapper}"
+        );
     }
 }

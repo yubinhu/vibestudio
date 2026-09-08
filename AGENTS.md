@@ -9,11 +9,13 @@ running [Agent Skills](https://agentskills.io/home). The repo is laid out by the
   secrets, terminals, the on-device LLM) lives in `server/skill-core`;
   `server/skill-term` handles tmux-backed terminals; `server/skill-server` is the
   HTTP face — it exposes them over `/api/*` (+ SSE) and serves the built UI. It
-  runs **in-process inside the desktop** (loopback) or **standalone on a remote host**.
+  runs as a **detached per-user host service**, locally or on a remote host;
+  standalone foreground mode remains available for development.
 - **`client/` — what connects to a server.** `client/web` is the React 19 + TS SPA
   (Vite; CodeMirror, react-router v7, xterm) that talks to the backend through
   `client/web/lib/api.ts`. `client/desktop` is the thin Tauri shell: it spawns a
-  loopback `skill-server` and points its webview at that origin.
+  loopback switchboard and points its webview at that origin. Workspace requests
+  proxy to the local host service or an SSH-connected remote service.
 
 ## The one rule that matters most
 
@@ -29,8 +31,9 @@ table, and the on-device commit-message reference example).
 
 ## Commands
 
-- `npm run dev` — native desktop (`tauri dev`); the shell spawns its own loopback
-  `skill-server`, so no separate backend is needed.
+- `npm run dev` — native desktop (`tauri dev`); the shell ensures the detached
+  host and starts its switchboard on `:8767` (Vite native mode), so no separate
+  backend is needed. Quitting the desktop leaves the host and agents running.
 - `npm run dev:vite` — the SPA only, in a browser (`:1420`); pair with
   `cargo run -p skill-server` (`:8765`), which the Vite `/api` proxy targets.
 - `npm run build` — `tsc --noEmit && vite build` (the SPA lives in `client/web`,

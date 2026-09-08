@@ -100,7 +100,11 @@ export function useRecents(): Recent[] {
     // cannot remove the navbar/gallery's focus refresh registration.
     const onFocus = () => refreshRecents();
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    window.addEventListener("vibestudio:workspace-restored", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("vibestudio:workspace-restored", onFocus);
+    };
   }, []);
   return useSyncExternalStore(subscribe, () => cache, () => cache);
 }

@@ -4,6 +4,7 @@ import { Spinner } from "@/components/ui";
 import PhoneModal from "@/components/PhoneModal";
 import SessionsHost from "@/pages/sessions/SessionsHost";
 import UpdateBanner from "@/components/UpdateBanner";
+import RemoteRecovery from "@/components/RemoteRecovery";
 import { useRemote } from "@/lib/remote";
 import { useDiscardBlocker } from "./routeGuard";
 
@@ -25,7 +26,7 @@ const MobileConnect = lazy(() => import("@/pages/MobileConnect"));
  */
 export default function AppShell() {
   const onSessions = useLocation().pathname === "/sessions";
-  const { mobile, status } = useRemote();
+  const { mobile, status, workspaceHost, interrupted } = useRemote();
   useDiscardBlocker();
 
   // The tray's "Open on your phone…" item deep-links to `#/?phone=1`. Handled
@@ -59,7 +60,7 @@ export default function AppShell() {
     return <div className="grid h-dvh place-items-center"><Spinner /></div>;
   }
   // Mobile, not connected → the connect screen is the entire app.
-  if (mobile && status.state !== "connected") {
+  if (mobile && status.state !== "connected" && !workspaceHost) {
     return (
       <Suspense fallback={<div className="grid h-dvh place-items-center"><Spinner /></div>}>
         <MobileConnect />
@@ -69,6 +70,7 @@ export default function AppShell() {
 
   return (
     <>
+      <div className="contents" inert={interrupted}>
       <div style={{ display: onSessions ? "none" : "contents" }}>
         <Suspense fallback={<div className="grid h-dvh place-items-center"><Spinner /></div>}>
           <Outlet />
@@ -77,6 +79,8 @@ export default function AppShell() {
       <SessionsHost active={onSessions} />
       <UpdateBanner />
       {phoneOpen && <PhoneModal onClose={() => setPhoneOpen(false)} />}
+      </div>
+      {interrupted && <RemoteRecovery />}
     </>
   );
 }
