@@ -259,6 +259,13 @@ shortcut; browser-P2P (WebRTC) only if relay bandwidth ever forces it.
 Agent terminals are tmux sessions (`ass-*`); the backend is only a **bridge** (`tmux attach`
 in a PTY).
 
+The server raises its Unix open-file **soft** limit at startup toward 8192,
+bounded by the inherited hard limit and macOS's `kern.maxfilesperproc` ceiling.
+New agent panes also raise their own soft limit after login-shell startup: an
+already-running tmux server retains its original allowance across backend
+restarts. Neither path raises the hard limit or changes running agents. The
+allowance does not reserve descriptors; the server logs a failure to raise it.
+
 1. **A terminal outlives everything but an explicit kill** — closing a tab, closing the app
    window, quitting the desktop, dropping SSH, or restarting a backend never stops the agent
    inside. Killing a session is a separate action in its session controls.

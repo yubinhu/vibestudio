@@ -334,6 +334,29 @@ fn shell_quote(s: &str) -> String {
     out
 }
 
+/// A new pane inherits the long-lived tmux server's limits, even if the host
+/// service was restarted with a higher allowance. Raise the pane's soft limit
+/// after login rc files run, before the agent starts, without changing its hard
+/// cap. The function keeps its temporary variables out of the agent environment.
+fn shell_open_file_limit() -> String {
+    format!(
+        r#"_vibestudio_open_file_limit() {{
+    local soft hard target={target};
+    soft=$(builtin ulimit -Sn) || return;
+    hard=$(builtin ulimit -Hn) || return;
+    [ "$soft" = unlimited ] && return;
+    [ "$soft" -ge "$target" ] && return;
+    if [ "$hard" != unlimited ] && [ "$hard" -lt "$target" ]; then target=$hard; fi;
+    if [ "$soft" -lt "$target" ]; then
+        builtin ulimit -Sn "$target" 2>/dev/null || builtin printf 'VibeStudio: could not raise the open-file soft limit from %s to %s (hard: %s).\n' "$soft" "$target" "$hard" >&2;
+    fi;
+}};
+_vibestudio_open_file_limit || :; unset -f _vibestudio_open_file_limit;
+"#,
+        target = skill_core::process::open_file_limit_target(),
+    )
+}
+
 fn basename(p: &str) -> String {
     p.trim_end_matches('/')
         .rsplit('/')
@@ -918,6 +941,7 @@ fn create_session_inner(
     } else {
         format!("{env_source}{agent_cmd}; exec bash -l")
     };
+    let line = format!("{}{line}", shell_open_file_limit());
 
     let (cols, rows) = size_floor("create", &name, cols, rows);
     let cols_s = cols.to_string();
@@ -1352,6 +1376,100 @@ mod tests {
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
         assert_eq!(shell_quote("plain"), "'plain'");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_open_file_limit_preserves_the_hard_cap_and_higher_allowances() {
+        // Each shell changes only its own limits, never the test runner's.
+        for (soft, hard, expected) in [(256, 8192, 8192), (256, 512, 512), (256, 256, 256), (9000, 9000, 9000)] {
+            let script = format!(
+                "set -eu; builtin ulimit -Sn {soft} && builtin ulimit -Hn {hard} || exit 77; {}builtin ulimit -Sn; builtin ulimit -Hn",
+                shell_open_file_limit()
+            );
+            let out = hidden_command("bash")
+                .args(["--noprofile", "--norc", "-c", &script])
+                .env_remove("BASH_ENV")
+                .output().unwrap();
+            if out.status.code() == Some(77) {
+                continue; // This host's inherited hard limit is more restrictive.
+            }
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let wanted = soft.max(expected.min(skill_core::process::open_file_limit_target()));
+            assert_eq!(String::from_utf8_lossy(&out.stdout), format!("{wanted}\n{hard}\n"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_open_file_limit_is_best_effort_with_custom_shell_settings() {
+        for setup in [
+            // A login rc can define a ulimit wrapper. Query/change the actual
+            // process limit, without invoking user wrappers or their output.
+            "ulimit() { printf 'custom wrapper\\n'; return 1; };",
+            // Even a shell that disables the builtin must still start its agent.
+            "enable -n ulimit;",
+        ] {
+            let script = format!("set -eu; {setup} {}printf 'agent started\\n'", shell_open_file_limit());
+            let out = hidden_command("bash")
+                .args(["--noprofile", "--norc", "-c", &script])
+                .env_remove("BASH_ENV")
+                .output().unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(out.stdout, b"agent started\n");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_pane_raises_limit_in_an_existing_low_limit_tmux_server() {
+        if hidden_command("tmux").arg("-V").output().is_err() {
+            return;
+        }
+        struct PrivateTmux(std::path::PathBuf);
+        impl Drop for PrivateTmux {
+            fn drop(&mut self) {
+                let _ = hidden_command("tmux").arg("-S").arg(self.0.join("socket"))
+                    .arg("kill-server").output();
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        // macOS's default temp directory is already long; keep the socket path
+        // comfortably below sockaddr_un's 104-byte limit there.
+        let dir = std::env::temp_dir().join(format!("vsfd-{}-{}", std::process::id(), &new_uuid()[..8]));
+        std::fs::create_dir(&dir).unwrap();
+        let _guard = PrivateTmux(dir.clone());
+        let socket = dir.join("socket");
+        let output_path = dir.join("limits");
+        // The first command starts a separate tmux server with the problematic
+        // inherited allowance. A later, unrestricted client cannot repair it.
+        let start = hidden_command("bash")
+            .args(["--noprofile", "--norc", "-c", "ulimit -Sn 256 && exec \"$@\"", "bash", "tmux", "-S"])
+            .arg(&socket)
+            .args(["-f", "/dev/null", "new-session", "-d", "-s", "probe", "sleep", "60"])
+            .env_remove("BASH_ENV").env_remove("TMUX")
+            .output().unwrap();
+        assert!(start.status.success(), "{}", String::from_utf8_lossy(&start.stderr));
+        let script = format!(
+            "before=$(ulimit -Sn); {}printf '%s\\n' \"$before\" \"$(ulimit -Sn)\" \"$(ulimit -Hn)\" > \"$1\"",
+            shell_open_file_limit()
+        );
+        let pane = hidden_command("tmux")
+            .arg("-S").arg(&socket)
+            .args(["new-window", "-d", "-t", "probe", "bash", "--noprofile", "--norc", "-c", &script, "bash"])
+            .arg(&output_path).env_remove("TMUX").output().unwrap();
+        assert!(pane.status.success(), "{}", String::from_utf8_lossy(&pane.stderr));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let fields = loop {
+            let text = std::fs::read_to_string(&output_path).unwrap_or_default();
+            let fields: Vec<_> = text.lines().map(str::to_string).collect();
+            if fields.len() == 3 { break fields; }
+            assert!(std::time::Instant::now() < deadline, "pane did not report its limits");
+            thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(fields[0], "256");
+        let hard = fields[2].parse::<u64>().unwrap_or(u64::MAX);
+        assert_eq!(fields[1].parse::<u64>().unwrap(), skill_core::process::open_file_limit_target().min(hard).max(256));
     }
 
     #[test]

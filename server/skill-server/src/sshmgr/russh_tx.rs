@@ -172,6 +172,9 @@ impl RusshSession {
                 inactivity_timeout: None,
                 keepalive_interval: Some(Duration::from_secs(15)),
                 keepalive_max: 3,
+                // Interactive terminal traffic shares this SSH connection.
+                // russh defaults to Nagle, unlike an interactive OpenSSH PTY.
+                nodelay: true,
                 ..Config::default()
             };
             let policy = HostKeyPolicy { host: format!("{host}:{port}") };
@@ -235,6 +238,9 @@ impl RusshSession {
                     a = listener.accept() => a,
                 };
                 let Ok((mut socket, _)) = accepted else { break };
+                if let Err(error) = socket.set_nodelay(true) {
+                    log::warn!("could not configure SSH forward socket: {error}");
+                }
                 let handle = handle.clone();
                 let remote_host = remote_host.clone();
                 tokio::spawn(async move {

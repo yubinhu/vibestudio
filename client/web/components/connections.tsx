@@ -9,6 +9,8 @@ import { useState } from "react";
 import { btnGhost, btnPrimary } from "@/components/ui";
 import { useConfirm } from "@/components/useConfirm";
 import * as api from "@/lib/api";
+import { sshKeyInstallCommands } from "@/lib/sshKeyCommands";
+import { copyText } from "@/lib/copyText";
 
 export function ServerIcon({ className = "", size = 14 }: { className?: string; size?: number }) {
   return (
@@ -127,7 +129,11 @@ export function AddConnection({
     setError(null);
     try {
       const label = user.trim() && host.trim() ? `vibestudio-${user.trim()}@${host.trim()}` : "vibestudio";
-      setKey(await api.sshKeygen(label));
+      const generated = await api.sshKeygen(label);
+      // Validate before rendering/copying a response; malformed key data belongs
+      // in the existing error state, not in the user's terminal command.
+      sshKeyInstallCommands(generated.publicKey);
+      setKey({ ...generated, publicKey: generated.publicKey.trim() });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't generate a key.");
     } finally {
@@ -183,15 +189,24 @@ export function AddConnection({
       {key ? (
         <div className="space-y-2">
           <p className="text-xs text-muted">
-            On the server, add this line to <span className="font-mono">~/.ssh/authorized_keys</span>, then save:
+            On <span className="break-all font-mono">{host.trim() || "your server"}</span>, open a terminal
+            as <span className="break-all font-mono">{user.trim() || "your SSH login user"}</span> and paste
+            these commands. Then save this connection below.
           </p>
-          <div className="break-all rounded-md border border-border bg-panel px-2.5 py-1.5 font-mono text-[11px] text-fg">{key.publicKey}</div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="truncate text-[11px] text-faint" title={key.fingerprint}>
-              {key.fingerprint}
-            </span>
-            <CopyButton text={key.publicKey} />
+          <pre className="max-h-56 select-text overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-panel px-2.5 py-2 font-mono text-[11px] text-fg">{sshKeyInstallCommands(key.publicKey)}</pre>
+          <p className="text-xs text-faint">
+            Adds the key to <span className="font-mono">~/.ssh/authorized_keys</span> and sets its permissions.
+            Existing keys are kept; running it again won’t add a duplicate.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <CopyButton text={sshKeyInstallCommands(key.publicKey)} label="Copy commands" />
+            <CopyButton text={key.publicKey} label="Copy public key" />
           </div>
+          <details className="text-xs text-muted">
+            <summary className="cursor-pointer py-1">Show public key</summary>
+            <div className="mt-1 select-text break-all rounded-md border border-border bg-panel px-2.5 py-1.5 font-mono text-[11px] text-fg">{key.publicKey}</div>
+            <p className="mt-1 select-text break-all text-[11px] text-faint">{key.fingerprint}</p>
+          </details>
         </div>
       ) : (
         <p className="text-xs text-faint">The key is created on this device; only its public half ever leaves it.</p>
@@ -212,23 +227,29 @@ export function AddConnection({
   );
 }
 
-export function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
+export function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   const copy = async () => {
     // Only assert "Copied" once the write actually resolves — in a WKWebview the
     // Clipboard API can be absent or reject (NotAllowedError), and this is the
     // load-bearing paste-into-authorized_keys step, so a false "Copied" is a trap.
     try {
-      if (!navigator.clipboard) throw new Error("clipboard unavailable");
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
+      await copyText(text);
+      setStatus("copied");
     } catch {
-      setCopied(false);
+      setStatus("failed");
     }
   };
   return (
-    <button type="button" className={btnGhost} onClick={() => void copy()}>
-      {copied ? "Copied" : "Copy"}
-    </button>
+    <span className="inline-flex flex-col items-start gap-1">
+      <button type="button" className={btnGhost} onClick={() => void copy()} aria-live="polite">
+        {status === "copied" ? "Copied" : status === "failed" ? "Copy failed — retry" : label}
+      </button>
+      {status === "failed" && (
+        <span className="text-xs text-danger" role="status">
+          Select the commands or expand “Show public key” to copy the text manually.
+        </span>
+      )}
+    </span>
   );
 }

@@ -393,7 +393,9 @@ pub fn loopback_alive(port: u16) -> bool {
 /// Bind synchronously (so a bind error surfaces here), then serve on background
 /// worker threads. Returns immediately with the bound address.
 pub fn spawn(cfg: ServerConfig) -> std::io::Result<ServerHandle> {
-    let server = Server::http(format!("{}:{}", cfg.host, cfg.port))
+    skill_core::process::prepare_open_file_limit();
+    let listener = bind_http_listener(&cfg.host, cfg.port)?;
+    let server = Server::from_listener(listener, None)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let addr = server
         .server_addr()
@@ -456,6 +458,20 @@ pub fn spawn(cfg: ServerConfig) -> std::io::Result<ServerHandle> {
         workers.push(thread::spawn(move || worker_loop(&server, &ctx)));
     }
     Ok(ServerHandle { addr, workers })
+}
+
+fn bind_http_listener(host: &str, port: u16) -> std::io::Result<std::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(format!("{host}:{port}"))?;
+    // tiny_http does not expose accepted sockets. Set this on the listener so
+    // accepted connections inherit it: SSE sends small, unsolicited writes,
+    // which Nagle can otherwise hold until the peer's delayed-ACK timer fires.
+    // Both the workspace host and the switchboard need this for terminal echo.
+    if let Err(error) = socket2::SockRef::from(&listener).set_tcp_nodelay(true) {
+        // This tunes latency; a platform rejecting the option must not prevent
+        // an otherwise usable workspace host or switchboard from starting.
+        log::warn!("could not enable TCP_NODELAY for HTTP connections: {error}");
+    }
+    Ok(listener)
 }
 
 /// Resolved per-request context (config the handlers actually read).
@@ -1826,9 +1842,14 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
 
 /// Write one HTTP/1.1 chunk and flush it to the socket immediately.
 pub(crate) fn write_chunk(w: &mut dyn Write, frame: &[u8]) -> std::io::Result<()> {
-    write!(w, "{:x}\r\n", frame.len())?;
-    w.write_all(frame)?;
-    w.write_all(b"\r\n")?;
+    // Keep the header, payload, and terminator in one write even when the frame
+    // exceeds tiny_http's 1KB buffer. With NODELAY each extra write can become
+    // another small TCP packet / SSH channel message.
+    let mut chunk = Vec::with_capacity(frame.len() + 24);
+    write!(chunk, "{:x}\r\n", frame.len())?;
+    chunk.extend_from_slice(frame);
+    chunk.extend_from_slice(b"\r\n");
+    w.write_all(&chunk)?;
     w.flush()
 }
 
@@ -1972,4 +1993,80 @@ fn stream_events(request: Request) {
         }
     }
     let _ = write_chunk(w.as_mut(), b"");
+}
+
+#[cfg(test)]
+mod terminal_transport_tests {
+    use super::*;
+
+    #[test]
+    fn accepted_http_connections_disable_nagle() {
+        let listener = bind_http_listener("127.0.0.1", 0).unwrap();
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        assert!(accepted.nodelay().unwrap(), "SSE sockets must inherit TCP_NODELAY");
+    }
+
+    #[test]
+    fn http_listener_preserves_bracketed_ipv6_hosts() {
+        // The public ServerConfig previously accepted bracketed IPv6 literals.
+        // Probe availability first so hosts with IPv6 disabled can skip this.
+        let Ok(probe) = std::net::TcpListener::bind("[::1]:0") else { return };
+        drop(probe);
+        let listener = bind_http_listener("[::1]", 0).unwrap();
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        assert!(accepted.nodelay().unwrap());
+    }
+
+    #[test]
+    fn sse_chunks_preserve_framing_and_flush_after_partial_writes() {
+        #[derive(Default)]
+        struct PartialWriter {
+            bytes: Vec<u8>,
+            flushed_at: Vec<usize>,
+        }
+        impl Write for PartialWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let n = bytes.len().min(7);
+                self.bytes.extend_from_slice(&bytes[..n]);
+                Ok(n)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushed_at.push(self.bytes.len());
+                Ok(())
+            }
+        }
+        let mut writer = PartialWriter::default();
+        let frame = format!("data: {}\n\n", "x".repeat(2048));
+        write_chunk(&mut writer, frame.as_bytes()).unwrap();
+        let expected = format!("{:x}\r\n{frame}\r\n", frame.len());
+        assert_eq!(writer.bytes, expected.as_bytes());
+        assert_eq!(writer.flushed_at, [expected.len()]);
+        write_chunk(&mut writer, b"").unwrap();
+        assert_eq!(&writer.bytes[expected.len()..], b"0\r\n\r\n");
+        assert_eq!(writer.flushed_at, [expected.len(), expected.len() + 5]);
+    }
+
+    #[test]
+    fn sse_chunks_propagate_disconnected_writes_and_failed_flushes() {
+        struct FailedWriter { fail_flush: bool }
+        impl Write for FailedWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.fail_flush { return Ok(bytes.len()); }
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                assert!(self.fail_flush, "must not flush after a failed write");
+                Err(std::io::ErrorKind::ConnectionReset.into())
+            }
+        }
+        for (fail_flush, expected) in [
+            (false, std::io::ErrorKind::BrokenPipe),
+            (true, std::io::ErrorKind::ConnectionReset),
+        ] {
+            let error = write_chunk(&mut FailedWriter { fail_flush }, b"data: aGVsbG8=\n\n").unwrap_err();
+            assert_eq!(error.kind(), expected);
+        }
+    }
 }

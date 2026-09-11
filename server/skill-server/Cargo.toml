@@ -37,6 +37,9 @@ skill-term = { path = "../skill-term", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny_http = "0.12"
+# Set TCP_NODELAY before tiny_http takes ownership of the listener so terminal
+# output is not held behind delayed ACKs. Already shared with tokio in the lock.
+socket2 = "0.6"
 urlencoding = "2"
 # Reverse-proxy client for the Remote-SSH switchboard + downloading the remote
 # `skill-server` asset (pure-Rust rustls + gzip).
