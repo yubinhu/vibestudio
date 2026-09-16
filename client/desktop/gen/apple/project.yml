@@ -42,6 +42,7 @@ targets:
       path: vibestudio_iOS/Info.plist
       properties:
         LSRequiresIPhoneOS: true
+        NSFaceIDUsageDescription: Use Face ID to unlock VibeStudio and access your remote computer sessions.
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:
@@ -78,6 +79,7 @@ targets:
       # not reach this final link. AVFoundation reexports the AVFAudio APIs.
       - sdk: AVFoundation.framework
       - sdk: CoreGraphics.framework
+      - sdk: LocalAuthentication.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework

@@ -44,6 +44,12 @@ struct State {
     last_host: Option<String>,
     /// Keep reconnect progress distinct from first-time setup for the client.
     recovering: bool,
+    /// Native authentication suspension. Desktop controllers stay unlocked.
+    app_unlocked: bool,
+    /// Resume live connection intent after authentication, without reviving a
+    /// failed selection or an explicit Disconnect. A connected tunnel recovers;
+    /// an interrupted setup/Retry retains its original provisioning permission.
+    unlock_intent: Option<session::ConnectIntent>,
 }
 
 fn idle_status() -> RemoteStatus {
@@ -53,7 +59,7 @@ fn idle_status() -> RemoteStatus {
 /// Update the live status during a connect, unless that connect has been superseded.
 fn set_stage(state: &Mutex<State>, generation: u64, stage: &str, host: &str, msg: &str) {
     let mut s = state.lock().unwrap();
-    if s.generation != generation {
+    if !s.app_unlocked || s.generation != generation {
         return; // a newer connect/disconnect won — don't clobber its status
     }
     let stage = if s.recovering { "reconnecting" } else { stage };
@@ -89,6 +95,8 @@ impl SshRemoteControl {
                 generation: 0,
                 last_host: lastconn::load(),
                 recovering: false,
+                app_unlocked: true,
+                unlock_intent: None,
             })),
             app_version,
             store,
@@ -110,6 +118,52 @@ impl SshRemoteControl {
         let store = self.store.clone();
         std::thread::spawn(move || resume_reconnect(state, app_version, store));
     }
+
+    /// Suspend this phone's access after the native grace period, or reconnect
+    /// its selected host after native authentication. The state change and
+    /// generation cancellation are synchronous; network teardown/recovery are
+    /// off-thread so neither blocks the OS lifecycle callback. This never stops
+    /// the host service or its jobs, and never turns a selected remote into Local.
+    pub fn set_app_unlocked(&self, unlocked: bool) {
+        let (session, reconnect) = self.update_app_access(unlocked);
+        if let Some(mut session) = session {
+            std::thread::spawn(move || session.teardown());
+        }
+        if let Some((host, generation, intent)) = reconnect {
+            let state = self.state.clone();
+            let app_version = self.app_version.clone();
+            let store = self.store.clone();
+            std::thread::spawn(move || session::run_connect(state, host, generation, app_version, store, intent));
+        }
+    }
+
+    fn update_app_access(&self, unlocked: bool) -> (Option<session::Session>, Option<(String, u64, session::ConnectIntent)>) {
+        let mut s = self.state.lock().unwrap();
+        if s.app_unlocked == unlocked {
+            return (None, None);
+        }
+        s.app_unlocked = unlocked;
+        s.generation += 1;
+        s.busy = false;
+        s.recovering = false;
+        if !unlocked {
+            s.target = None;
+            let session = s.session.take();
+            if s.unlock_intent.is_some() && s.status.host.is_some() {
+                s.status.state = "locked".into();
+                s.status.message = Some("Unlock VibeStudio to reconnect.".into());
+            }
+            return (session, None);
+        }
+        let reconnect = s.status.host.clone().zip(s.unlock_intent).map(|(host, intent)| {
+            s.busy = true;
+            s.recovering = intent != session::ConnectIntent::Setup;
+            s.status.state = if s.recovering { "reconnecting" } else { "detecting" }.into();
+            s.status.message = Some("Reconnecting…".into());
+            (host, s.generation, intent)
+        });
+        (None, reconnect)
+    }
 }
 
 /// The resume reconnect, run on its own thread. Reconnects only when the tunnel is
@@ -126,7 +180,7 @@ fn resume_reconnect(state: Arc<Mutex<State>>, app_version: String, store: Option
     // Snapshot under the lock; probe OFF it so status()/disconnect() stay responsive.
     let (generation, host, probe) = {
         let s = state.lock().unwrap();
-        if s.busy || s.status.state != "connected" {
+        if !s.app_unlocked || s.busy || s.status.state != "connected" {
             // Automatic recovery already owns transient failures. A setup or
             // trust error awaits Retry; remembered history is not live intent.
             return;
@@ -143,7 +197,7 @@ fn resume_reconnect(state: Arc<Mutex<State>>, app_version: String, store: Option
     // Reconnect. Re-take the lock and bail if anything moved while we probed (a
     // user connect/disconnect bumps `generation`), so we never stomp a newer intent.
     let mut s = state.lock().unwrap();
-    if s.busy || s.generation != generation || s.status.host.as_deref() != Some(host.as_str()) {
+    if !s.app_unlocked || s.busy || s.generation != generation || s.status.host.as_deref() != Some(host.as_str()) {
         return;
     }
     s.busy = true;
@@ -152,6 +206,7 @@ fn resume_reconnect(state: Arc<Mutex<State>>, app_version: String, store: Option
     s.target = None;
     let dead = s.session.take();
     s.recovering = true;
+    s.unlock_intent = Some(session::ConnectIntent::Recover);
     s.status = RemoteStatus {
         state: "reconnecting".into(),
         host: Some(host.clone()),
@@ -174,11 +229,15 @@ impl RemoteControl for SshRemoteControl {
     }
 
     fn active_target(&self) -> Option<RemoteTarget> {
-        self.state.lock().unwrap().target.clone()
+        let s = self.state.lock().unwrap();
+        s.app_unlocked.then(|| s.target.clone()).flatten()
     }
 
     fn route(&self) -> crate::RemoteRoute {
         let s = self.state.lock().unwrap();
+        if !s.app_unlocked {
+            return crate::RemoteRoute::Unavailable("Unlock VibeStudio to continue.".into());
+        }
         if let Some(target) = &s.target {
             crate::RemoteRoute::Connected(target.clone())
         } else if s.status.host.is_some() {
@@ -191,12 +250,16 @@ impl RemoteControl for SshRemoteControl {
     fn retry(&self) -> Result<(), String> {
         let (host, generation) = {
             let mut s = self.state.lock().unwrap();
+            if !s.app_unlocked {
+                return Err("Unlock VibeStudio to reconnect.".into());
+            }
             if s.busy || s.target.is_some() {
                 return Ok(());
             }
             let host = s.status.host.clone().ok_or("No remote connection to retry.")?;
             s.busy = true;
             s.recovering = true;
+            s.unlock_intent = Some(session::ConnectIntent::Retry);
             s.generation += 1;
             s.status = RemoteStatus { state: "reconnecting".into(), host: Some(host.clone()), message: Some("Reconnecting…".into()) };
             (host, s.generation)
@@ -214,6 +277,9 @@ impl RemoteControl for SshRemoteControl {
 
     fn connect(&self, host: &str) -> Result<(), String> {
         let mut s = self.state.lock().unwrap();
+        if !s.app_unlocked {
+            return Err("Unlock VibeStudio to connect.".into());
+        }
         if s.busy {
             return Err("A connection attempt is already in progress.".into());
         }
@@ -222,6 +288,7 @@ impl RemoteControl for SshRemoteControl {
         }
         s.busy = true;
         s.recovering = false;
+        s.unlock_intent = Some(session::ConnectIntent::Setup);
         s.generation += 1;
         let generation = s.generation;
         s.status = RemoteStatus {
@@ -247,6 +314,7 @@ impl RemoteControl for SshRemoteControl {
         s.generation += 1;
         s.busy = false;
         s.recovering = false;
+        s.unlock_intent = None;
         s.target = None;
         if forget {
             s.last_host = None;
@@ -274,6 +342,7 @@ mod tests {
                 status: RemoteStatus { state: "reconnecting".into(), host: Some("workbox".into()), message: Some("Reconnecting…".into()) },
                 target: None, session: None, busy: true, generation: 10,
                 last_host: Some("workbox".into()), recovering: true,
+                app_unlocked: true, unlock_intent: Some(session::ConnectIntent::Recover),
             })),
             app_version: "test".into(), store: None,
         }
@@ -325,5 +394,60 @@ mod tests {
         resume_reconnect(control.state.clone(), "test".into(), None);
         assert_eq!(control.status().state, "idle");
         assert_eq!(control.state.lock().unwrap().generation, 11);
+    }
+
+    #[test]
+    fn app_lock_cancels_all_recovery_paths_and_unlock_retains_selected_host() {
+        let control = disconnected_controller();
+        control.set_app_unlocked(false);
+        assert!(control.connect("another-host").is_err());
+        assert!(control.retry().is_err());
+        resume_reconnect(control.state.clone(), "test".into(), None);
+        set_stage(&control.state, 10, "connected", "workbox", "Stale connect");
+        assert_eq!(control.status().state, "locked");
+        assert_eq!(control.status().host.as_deref(), Some("workbox"));
+        assert!(matches!(control.route(), crate::RemoteRoute::Unavailable(_)));
+        assert!(control.active_target().is_none());
+        assert_eq!(control.last_host().as_deref(), Some("workbox"));
+        assert_eq!(control.state.lock().unwrap().generation, 11);
+
+        let (session, reconnect) = control.update_app_access(true);
+        assert!(session.is_none());
+        assert_eq!(reconnect, Some(("workbox".into(), 12, session::ConnectIntent::Recover)));
+        assert_eq!(control.status().state, "reconnecting");
+        assert!(matches!(control.route(), crate::RemoteRoute::Unavailable(_)));
+        assert!(control.update_app_access(true).1.is_none(), "duplicate unlock must not start another tunnel");
+    }
+
+    #[test]
+    fn unlock_does_not_resurrect_history_or_failed_connections() {
+        let control = disconnected_controller();
+        control.disconnect(false).unwrap();
+        control.set_app_unlocked(false);
+        assert!(control.update_app_access(true).1.is_none());
+        assert_eq!(control.status().state, "idle");
+        assert_eq!(control.last_host().as_deref(), Some("workbox"));
+        {
+            let mut state = control.state.lock().unwrap();
+            state.status = RemoteStatus { state: "error".into(), host: Some("untrusted-host".into()), message: Some("Host key changed".into()) };
+        }
+        control.set_app_unlocked(false);
+        assert!(control.update_app_access(true).1.is_none());
+        assert_eq!(control.status().state, "error");
+        assert_eq!(control.status().host.as_deref(), Some("untrusted-host"));
+    }
+
+    #[test]
+    fn app_lock_preserves_interrupted_setup_and_explicit_retry_intent() {
+        for intent in [session::ConnectIntent::Setup, session::ConnectIntent::Retry] {
+            let control = disconnected_controller();
+            control.state.lock().unwrap().unlock_intent = Some(intent);
+            control.set_app_unlocked(false);
+            control.set_app_unlocked(false);
+            assert_eq!(control.update_app_access(true).1, Some(("workbox".into(), 12, intent)));
+            control.set_app_unlocked(false);
+            control.disconnect(false).unwrap();
+            assert!(control.update_app_access(true).1.is_none(), "Disconnect cancels suspended connection intent");
+        }
     }
 }

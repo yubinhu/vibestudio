@@ -260,6 +260,24 @@ account-backed secrets direction; a natural first paid tier (relay bandwidth is 
 Do **not** rebuild the mesh itself (WireGuard / hole punching / DERP) — relay-only is the 95%
 shortcut; browser-P2P (WebRTC) only if relay bandwidth ever forces it.
 
+## Native iPhone app lock
+
+The iPhone shell authenticates with Face ID, Touch ID, or the device passcode on
+cold launch and after **60 seconds in the background**. Returning sooner resumes
+immediately; active reading has no idle timeout. A native opaque cover appears as
+soon as the app becomes inactive, hiding the workspace from app-switcher previews.
+Transient system prompts do not start the background grace period.
+
+The native lifecycle controller uses a monotonic clock and checks expiry again on
+foregrounding, since iOS may suspend background timers. Authentication results from
+an earlier background/foreground cycle cannot unlock a later one. The SPA is loaded
+only after initial authentication. Native callbacks control the portable
+`AppAccess` server guard and the SSH manager: a locked phone cannot fetch workspace
+data, mutate files, or reconnect through HTTP. Locking cancels this phone's tunnel
+and reconnect attempts while preserving its selected host and the computer's jobs.
+Unlocking restores access to the same workspace. Desktop and standalone servers
+leave this optional device-access guard unset.
+
 ## Terminals: persistent by design
 
 Agent terminals are tmux sessions (`ass-*`); the backend is only a **bridge** (`tmux attach`

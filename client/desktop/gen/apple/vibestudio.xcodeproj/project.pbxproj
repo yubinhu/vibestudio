@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		49F537C1ACF540E99B21A001 /* AppLock.mm in Sources */ = {isa = PBXBuildFile; fileRef = 49F537C1ACF540E99B21A002 /* AppLock.mm */; };
+		49F537C1ACF540E99B21A003 /* LocalAuthentication.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 49F537C1ACF540E99B21A004 /* LocalAuthentication.framework */; };
 		0A6182CEB2D94D86951E42B1 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01EB1A77E89A48E29260F8C1 /* AVFoundation.framework */; };
 		0BCB50C344EAFACDF1649394 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 275876ABE689C9102A890F7A /* CoreGraphics.framework */; };
 		0DC6C2CFA51B37F6FC9A692C /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 60EE1429673EC48F76000734 /* QuartzCore.framework */; };
@@ -24,6 +26,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		49F537C1ACF540E99B21A002 /* AppLock.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = AppLock.mm; sourceTree = "<group>"; };
+		49F537C1ACF540E99B21A005 /* AppLockPolicy.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AppLockPolicy.h; sourceTree = "<group>"; };
+		49F537C1ACF540E99B21A004 /* LocalAuthentication.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = LocalAuthentication.framework; path = System/Library/Frameworks/LocalAuthentication.framework; sourceTree = SDKROOT; };
 		01EB1A77E89A48E29260F8C1 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		04BBC38D4D303E3F243709E3 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 		1BD2BFB0B98F1895D297FA38 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
@@ -56,6 +61,7 @@
 				167EF0AF4FCC892BECACFA43 /* libapp.a in Frameworks */,
 				0A6182CEB2D94D86951E42B1 /* AVFoundation.framework in Frameworks */,
 				0BCB50C344EAFACDF1649394 /* CoreGraphics.framework in Frameworks */,
+				49F537C1ACF540E99B21A003 /* LocalAuthentication.framework in Frameworks */,
 				80AA720ECB6169569201222D /* Metal.framework in Frameworks */,
 				5EB8C8FAD279C8CE15C7710B /* MetalKit.framework in Frameworks */,
 				0DC6C2CFA51B37F6FC9A692C /* QuartzCore.framework in Frameworks */,
@@ -73,6 +79,8 @@
 			isa = PBXGroup;
 			children = (
 				04BBC38D4D303E3F243709E3 /* main.mm */,
+				49F537C1ACF540E99B21A002 /* AppLock.mm */,
+				49F537C1ACF540E99B21A005 /* AppLockPolicy.h */,
 				FD131609AFAD894CE1C8795D /* bindings */,
 			);
 			path = vibestudio;
@@ -83,6 +91,7 @@
 			children = (
 				01EB1A77E89A48E29260F8C1 /* AVFoundation.framework */,
 				275876ABE689C9102A890F7A /* CoreGraphics.framework */,
+				49F537C1ACF540E99B21A004 /* LocalAuthentication.framework */,
 				76DAAFA4D330502E407E9C8E /* libapp.a */,
 				B0DAEF8B3D90EAE9C08FB4FE /* Metal.framework */,
 				258B7AA3CD36BCD8ECA608C3 /* MetalKit.framework */,
@@ -258,6 +267,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				87586BB05D4C580FB523F03D /* main.mm in Sources */,
+				49F537C1ACF540E99B21A001 /* AppLock.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

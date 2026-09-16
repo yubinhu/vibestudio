@@ -172,8 +172,11 @@ verification files are supporting assets.
 
 The desktop tag workflow does not upload iOS builds. The `iOS simulator` job in
 `ci.yml` builds the actual arm64 simulator app without distribution credentials,
-installs and launches it, verifies the connection screen is visible, and saves
-screenshots and startup diagnostics.
+installs it on a disposable virtual iPhone, authenticates with simulated Face ID,
+verifies the connection screen, and checks the one-minute background grace,
+cancellation/retry, and app-switcher privacy. The separate XCTest harness handles
+the simulator's first-use Face ID permission; no authentication bypass is added
+to the application. Screenshots and startup diagnostics are saved with the run.
 This checks native compilation, linking and startup; device signing, remote SSH
 sessions and TestFlight delivery still need separate verification.
 

@@ -1,0 +1,41 @@
+name: VibeStudioLockQA
+options:
+  bundleIdPrefix: one.vibestudio.tests
+  deploymentTarget:
+    iOS: '18.0'
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    SWIFT_VERSION: '5.0'
+    GENERATE_INFOPLIST_FILE: YES
+    TARGETED_DEVICE_FAMILY: '1'
+targets:
+  LockQAHarness:
+    type: application
+    platform: iOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: one.vibestudio.tests.lockharness
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+  LockUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: LockQAHarness
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: one.vibestudio.tests.locktests
+        TEST_TARGET_NAME: LockQAHarness
+schemes:
+  LockQAHarness:
+    build:
+      targets:
+        LockQAHarness: all
+        LockUITests: [test]
+    test:
+      targets: [LockUITests]
+      language: en
+      region: US

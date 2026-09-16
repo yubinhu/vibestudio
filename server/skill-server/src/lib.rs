@@ -29,6 +29,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 #[cfg(feature = "local-backend")]
 mod events;
+mod app_access;
 mod gateway;
 #[cfg(feature = "local-backend")]
 pub mod host_service;
@@ -41,6 +42,7 @@ mod sshmgr;
 mod tailscale;
 
 pub use phone::{PhoneControl, PHONE_PORT};
+pub use app_access::AppAccess;
 pub use sshmgr::SshRemoteControl;
 
 /// Install the process-wide logger: stderr sink, level via `RUST_LOG`. Idempotent
@@ -298,6 +300,9 @@ pub struct ServerConfig {
     /// remoting (the standalone binary, or browser-local dev). When set, the server
     /// serves `/api/remote/*` and proxies the rest of `/api/*` to the connected remote.
     pub remote: Option<Arc<dyn RemoteControl>>,
+    /// Native authentication gate (phone only). Must be installed locked before
+    /// serving. Desktop/standalone leave this `None`; no HTTP route can unlock it.
+    pub app_access: Option<Arc<AppAccess>>,
     /// Ordinary local workspace requests go to this durable host service.
     /// The in-process server retains only client capabilities and UI delivery.
     pub local_backend: Option<Arc<dyn LocalBackendControl>>,
@@ -337,6 +342,7 @@ impl Default for ServerConfig {
             workers: 4,
             startup_maintenance: true,
             remote: None,
+            app_access: None,
             local_backend: None,
             #[cfg(feature = "local-backend")]
             host_service_identity: None,
@@ -441,6 +447,7 @@ pub fn spawn(cfg: ServerConfig) -> std::io::Result<ServerHandle> {
         examples_base: cfg.examples_base,
         token: cfg.token,
         remote: cfg.remote,
+        app_access: cfg.app_access,
         local_backend: cfg.local_backend,
         #[cfg(feature = "local-backend")]
         host_service_identity: cfg.host_service_identity,
@@ -481,6 +488,7 @@ struct ServerCtx {
     examples_base: Option<PathBuf>,
     token: Option<String>,
     remote: Option<Arc<dyn RemoteControl>>,
+    app_access: Option<Arc<AppAccess>>,
     local_backend: Option<Arc<dyn LocalBackendControl>>,
     #[cfg(feature = "local-backend")]
     host_service_identity: Option<host_service::HostServiceIdentity>,
@@ -517,6 +525,18 @@ fn worker_loop(server: &Server, ctx: &ServerCtx) {
         let method = request.method().clone();
         let url = request.url().to_string();
         let path = url.split('?').next().unwrap_or(url.as_str()).to_string();
+        // Native authentication precedes every API/gateway dispatch, including
+        // local credentials, connection management, proxies and streaming routes.
+        // Health only identifies this listener, allowing iOS listener recovery
+        // while locked. Static app assets can load behind the native lock screen.
+        if method != Method::Options
+            && !(method == Method::Get && path == "/api/health")
+            && (path == "/api" || path.starts_with("/api/") || path == "/gw" || path.starts_with("/gw/"))
+            && ctx.app_access.as_ref().is_some_and(|access| !access.is_unlocked())
+        {
+            reply_status(request, 423, "Unlock VibeStudio to continue.");
+            continue;
+        }
         // ── MCP gateway (/gw/<id>/mcp) — deliberately BEFORE the bearer guard
         // and the remote proxy (it isn't /api, so the switchboard never forwards
         // it): the local agent CLIs calling it can't send our bearer, and the

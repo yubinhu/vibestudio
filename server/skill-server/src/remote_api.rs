@@ -218,6 +218,7 @@ mod tests {
 
     fn ctx(store: Option<Arc<dyn crate::SecureStore>>) -> crate::ServerCtx {
         crate::ServerCtx {
+            app_access: None,
             dist: "dist".into(),
             bundled_skills: None,
             examples_base: None,

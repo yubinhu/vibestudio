@@ -34,7 +34,7 @@ impl Session {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectIntent {
     Setup,
     Recover,
@@ -54,12 +54,12 @@ pub fn run_connect(
 ) {
     let mut attempt = 0u32;
     loop {
-        if state.lock().unwrap().generation != generation {
+        if current(&state, generation).is_err() {
             return;
         }
         let result = build_and_connect(&state, &host, generation, &app_version, store.as_deref(), intent);
         let mut s = state.lock().unwrap();
-        if s.generation != generation {
+        if !s.app_unlocked || s.generation != generation {
             drop(s);
             if let Ok(mut sess) = result {
                 sess.teardown();
@@ -70,6 +70,7 @@ pub fn run_connect(
             Ok(sess) => {
                 s.busy = false;
                 s.recovering = false;
+                s.unlock_intent = Some(ConnectIntent::Recover);
                 s.target = Some(RemoteTarget {
                     base_url: format!("http://127.0.0.1:{}", sess.local_port),
                     token: sess.token.clone(),
@@ -90,6 +91,7 @@ pub fn run_connect(
                 let retry = intent != ConnectIntent::Setup && super::reconnect::transient(&error);
                 s.busy = retry;
                 s.recovering = retry;
+                s.unlock_intent = retry.then_some(intent);
                 s.status = RemoteStatus {
                     state: if retry { "reconnecting" } else { "error" }.into(),
                     host: Some(host.clone()),
@@ -109,7 +111,7 @@ pub fn run_connect(
 fn wait_current(state: &Mutex<State>, generation: u64, duration: Duration) -> bool {
     let deadline = std::time::Instant::now() + duration;
     loop {
-        if state.lock().unwrap().generation != generation {
+        if current(state, generation).is_err() {
             return false;
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -130,6 +132,7 @@ fn build_and_connect(
     store: Option<&dyn crate::SecureStore>,
     intent: ConnectIntent,
 ) -> Result<Session, String> {
+    current(state, generation)?;
     let remote = conn::build_remote(host, store)?;
     connect_flow(state, remote.as_ref(), host, generation, app_version, intent == ConnectIntent::Recover)
 }
@@ -143,6 +146,7 @@ fn spawn_monitor(state: Arc<Mutex<State>>, generation: u64, host: String, app_ve
         }
         let (probe, alive) = {
             let s = state.lock().unwrap();
+            if !s.app_unlocked || s.generation != generation { return; }
             let Some(session) = &s.session else { return };
             (session.health_probe(), session.handle.is_alive())
         };
@@ -152,13 +156,14 @@ fn spawn_monitor(state: Arc<Mutex<State>>, generation: u64, host: String, app_ve
             continue;
         }
         let mut s = state.lock().unwrap();
-        if s.generation != generation || s.busy {
+        if !s.app_unlocked || s.generation != generation || s.busy {
             return;
         }
         s.generation += 1;
         let next = s.generation;
         s.busy = true;
         s.recovering = true;
+        s.unlock_intent = Some(ConnectIntent::Recover);
         s.target = None;
         let dead = s.session.take();
         s.status = RemoteStatus {
@@ -197,7 +202,8 @@ impl HealthProbe {
 }
 
 fn current(state: &Mutex<State>, generation: u64) -> Result<(), String> {
-    if state.lock().unwrap().generation == generation { Ok(()) }
+    let s = state.lock().unwrap();
+    if s.app_unlocked && s.generation == generation { Ok(()) }
     else { Err("Connection attempt cancelled.".into()) }
 }
 
@@ -394,13 +400,53 @@ mod tests {
         });
         let remote = WslFixture { record, distro_port };
         let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
-            session: None, busy: true, generation: 1, last_host: None, recovering: true }));
+            session: None, busy: true, generation: 1, last_host: None, recovering: true,
+            app_unlocked: true, unlock_intent: Some(ConnectIntent::Recover) }));
         let mut session = connect_flow(&state, &remote, "wsl:Ubuntu", 1, "1.2.4", true)
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(session.health_probe().alive());
         session.teardown();
         windows_worker.join().unwrap();
         distro_worker.join().unwrap();
+    }
+
+    #[test]
+    fn lock_detaches_the_phone_tunnel_off_the_state_lock_and_cancels_stale_connects() {
+        struct Handle {
+            state: Arc<Mutex<State>>,
+            closed: std::sync::mpsc::Sender<bool>,
+        }
+        impl conn::SessionHandle for Handle {
+            fn is_alive(&self) -> bool { true }
+            fn teardown(&mut self) {
+                self.closed.send(self.state.try_lock().is_ok()).unwrap();
+            }
+        }
+        let state = Arc::new(Mutex::new(State {
+            status: RemoteStatus { state: "connected".into(), host: Some("workbox".into()), message: None },
+            target: Some(RemoteTarget { base_url: "http://127.0.0.1:42".into(), token: String::new() }),
+            session: None, busy: false, generation: 5, last_host: Some("workbox".into()),
+            recovering: false, app_unlocked: true, unlock_intent: Some(ConnectIntent::Recover),
+        }));
+        let (closed, observed) = std::sync::mpsc::channel();
+        state.lock().unwrap().session = Some(Session {
+            local_port: 42, token: String::new(), handle: Box::new(Handle { state: state.clone(), closed }),
+            record: ServiceRecord { protocol: 1, instance_id: "fixture".into(), pid: 42, port: 42, explicitly_stopped: false },
+        });
+        let control = super::super::SshRemoteControl { state: state.clone(), app_version: "test".into(), store: None };
+        control.set_app_unlocked(false);
+        assert!(observed.recv_timeout(Duration::from_secs(2)).unwrap(), "teardown cannot hold the connection state lock");
+        assert!(current(&state, 5).is_err());
+        assert!(!wait_current(&state, 5, Duration::ZERO));
+        // An already queued recovery must exit without opening SSH or changing
+        // the selected host, even if it starts running after the app is locked.
+        run_connect(state.clone(), "must-not-open-ssh".into(), 5, "test".into(), None, ConnectIntent::Recover);
+        let locked = state.lock().unwrap();
+        assert!(locked.target.is_none());
+        assert!(locked.session.is_none());
+        assert_eq!(locked.status.state, "locked");
+        assert_eq!(locked.status.host.as_deref(), Some("workbox"));
+        assert_eq!(locked.last_host.as_deref(), Some("workbox"));
     }
 
     #[test]
@@ -441,7 +487,7 @@ mod tests {
                 closed: closed.clone(),
             };
             let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
-                session: None, busy: true, generation: 1, last_host: None, recovering: true }));
+                session: None, busy: true, generation: 1, last_host: None, recovering: true, app_unlocked: true, unlock_intent: Some(ConnectIntent::Recover) }));
             let result = connect_flow(&state, &remote, "fixture", 1, "new-client-version", true);
             match protocol {
                 1 => { let mut session = result.unwrap_or_else(|error| panic!("{error}")); session.teardown(); }
@@ -488,7 +534,7 @@ mod tests {
         });
         let remote = Setup { installed: AtomicBool::new(false), ready: format!("SKILL_HOST_SERVICE_READY {}", serde_json::json!({"protocol":1,"instanceId":identity,"pid":42,"port":port})) };
         let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
-            session: None, busy: true, generation: 1, last_host: None, recovering: true }));
+            session: None, busy: true, generation: 1, last_host: None, recovering: true, app_unlocked: true, unlock_intent: Some(ConnectIntent::Recover) }));
         let mut session = connect_flow(&state, &remote, "fixture", 1, "1.2.3", false).unwrap_or_else(|error| panic!("{error}"));
         assert!(remote.installed.load(Ordering::SeqCst));
         session.teardown();
@@ -510,7 +556,7 @@ mod tests {
             fn open_session(&self, _: &str, _: u16, _: u16, _: &str) -> Result<Box<dyn conn::SessionHandle>, LaunchError> { panic!("must not reattach dying worker") }
         }
         let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
-            session: None, busy: true, generation: 1, last_host: None, recovering: true }));
+            session: None, busy: true, generation: 1, last_host: None, recovering: true, app_unlocked: true, unlock_intent: Some(ConnectIntent::Recover) }));
         let error = connect_flow(&state, &Stopped, "fixture", 1, "1.2.3", true).err().unwrap();
         assert!(error.contains("explicitly stopped"));
     }

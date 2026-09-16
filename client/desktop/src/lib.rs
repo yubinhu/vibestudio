@@ -36,6 +36,8 @@ mod host;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[cfg_attr(desktop, allow(dead_code))]
 mod securestore;
+#[cfg(target_os = "ios")]
+mod app_lock;
 
 /// Locate the bundled `llama-server` so the on-device commit-message generator
 /// runs with zero setup. Checks the production bundle (resource dir) then the
@@ -318,15 +320,15 @@ pub fn run() {
                     event: tauri::WindowEvent::Resumed,
                     ..
                 } => {
+                    app_lock::refresh();
                     // The switchboard itself first: iOS may have reclaimed the
                     // loopback listener during the suspension, and with it gone
                     // nothing else is reachable — the tunnel check included.
                     if let Some(ls) = local_slot.get() {
                         ls.heal(_app.clone());
                     }
-                    if let Some(r) = remote_slot.get() {
-                        r.resume_check();
-                    }
+                    // The native lock restores/checks SSH access only after
+                    // authentication or a return within its one-minute grace.
                 }
                 _ => {}
             }
@@ -535,17 +537,10 @@ impl LocalServer {
                     Ok(p) => {
                         me.port.store(p, Ordering::SeqCst);
                         log::warn!("loopback server moved to {p}; reloading the webview");
-                        let on_main = app.clone();
                         let _ = app.run_on_main_thread(move || {
-                            if let Some(w) = on_main.get_webview_window("main") {
-                                // A changed origin requires navigation, but keep
-                                // the current workspace route and session query.
-                                if let Ok(mut url) = w.url() {
-                                    if url.set_port(Some(p)).is_ok() {
-                                        let _ = w.navigate(url);
-                                    }
-                                }
-                            }
+                            // Keep the route, and defer loading until native
+                            // unlock if this port moved behind the privacy cover.
+                            app_lock::listener_changed();
                         });
                     }
                     Err(e) => log::error!("couldn't respawn the loopback server: {e}"),
@@ -619,6 +614,8 @@ fn setup_mobile(
         app.package_info().version.to_string(),
         Some(store.clone()),
     ));
+    let access = std::sync::Arc::new(skill_server::AppAccess::new_locked());
+    remote.set_app_unlocked(false);
     let _ = remote_slot.set(remote.clone());
 
     let resource_dir = app.path().resource_dir().ok();
@@ -638,7 +635,8 @@ fn setup_mobile(
         as std::sync::Arc<dyn skill_server::NotifyControl>;
     let make_config = {
         let bundled_skills = resource_dir.clone().map(|r| r.join("skills"));
-        let remote = remote as std::sync::Arc<dyn skill_server::RemoteControl>;
+        let remote = remote.clone() as std::sync::Arc<dyn skill_server::RemoteControl>;
+        let access = access.clone();
         move |port: u16| ServerConfig {
             host: "127.0.0.1".into(),
             port, // 0 = ephemeral — nothing on the phone needs a stable port
@@ -647,6 +645,7 @@ fn setup_mobile(
             examples_base: resource_dir.clone(),
             startup_maintenance: false, // no local terminals/engine to maintain
             remote: Some(remote.clone()),
+            app_access: Some(access.clone()),
             secure_store: Some(store.clone()),
             notifier: Some(notifier.clone()),
             ..Default::default()
@@ -654,17 +653,20 @@ fn setup_mobile(
     };
     let handle = skill_server::spawn(make_config(0))?;
     let port = handle.addr.port();
-    let _ = local_slot.set(std::sync::Arc::new(LocalServer {
+    let local = std::sync::Arc::new(LocalServer {
         port: std::sync::atomic::AtomicU16::new(port),
         healing: std::sync::atomic::AtomicBool::new(false),
         respawn: Box::new(move |p| skill_server::spawn(make_config(p)).map(|h| h.addr.port())),
-    }));
+    });
+    let _ = local_slot.set(local.clone());
 
     // Same-origin model as the desktop: the webview's origin IS the loopback
     // server (needs the ATS loopback exception in Info.plist).
-    let url = format!("http://127.0.0.1:{port}");
-    WebviewWindowBuilder::new(app.handle(), "main", WebviewUrl::External(url.parse().unwrap()))
+    // Authentication owns initial navigation. No saved-host reconnect or data
+    // fetch is allowed to run behind the native launch lock.
+    WebviewWindowBuilder::new(app.handle(), "main", WebviewUrl::External("about:blank".parse().unwrap()))
         .build()?;
+    app_lock::install(app, access, remote, local)?;
     Ok(())
 }
 
