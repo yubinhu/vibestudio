@@ -126,7 +126,10 @@ jobs:
           workspaces: "./client/desktop -> target"
           key: ios-simulator
       - run: npm ci
-      - name: Build unsigned simulator app (includes SPA)
+      # iOS resolves bundled resources before running beforeBuildCommand.
+      - name: Build SPA for iOS resource resolution
+        run: npm run build
+      - name: Build unsigned simulator app
         # --no-sign is supported by the CLI version in package-lock.json.
         # The Rust arguments after -- also apply to the Xcode build script.
         run: npm run tauri -- ios build --debug --target aarch64-sim --no-sign --ci -- --locked

@@ -196,6 +196,7 @@ Connect. For example, after setting `IOS_RELEASE_VERSION` and `IOS_BUILD_NUMBER`
 
 ```bash
 npm ci
+npm run build # iOS resolves bundled resources before beforeBuildCommand
 rustup target add aarch64-apple-ios
 export IOS_RELEASE_VERSION IOS_BUILD_NUMBER
 bash scripts/stamp-version.sh "$IOS_RELEASE_VERSION"
