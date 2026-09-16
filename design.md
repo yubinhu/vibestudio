@@ -456,6 +456,9 @@ A **local proxy switchboard**; the webview never changes origin.
   attachment IDs, reset their parser before fresh output, and resume at current dimensions.
   Pending keystrokes and clipboard work are discarded, never replayed into a new attachment.
   Session inventory and attention rebaseline silently; file and discovery stores refresh.
+  Home stays interactive during recovery so navigation and connection controls remain
+  available; other workspace screens pause input under the reconnect overlay. Remote
+  API requests remain blocked until the connection returns.
   Changing hosts still reloads to clear host-specific state. The iOS local listener first
   rebinds its previous port; the rare origin-change reload preserves the workspace URL.
 - **Resume/recents:** the last host is remembered on the connecting machine (`/api/remote/last`,

@@ -27,8 +27,12 @@ const MobileConnect = lazy(() => import("@/pages/MobileConnect"));
  * until a remote is up. Desktop is unaffected (`mobile` is false there).
  */
 export default function AppShell() {
-  const onSessions = useLocation().pathname === "/sessions";
+  const { pathname } = useLocation();
+  const onSessions = pathname === "/sessions";
   const { mobile, status, workspaceHost, interrupted } = useRemote();
+  // Home's navigation and connection controls stay usable during recovery.
+  // Remote requests remain paused by the transport until the host is available.
+  const lockWorkspace = interrupted && pathname !== "/";
   useDiscardBlocker();
 
   // A phone often joins agents started on the desktop. Ask when its workspace
@@ -82,7 +86,7 @@ export default function AppShell() {
 
   return (
     <>
-      <div className="contents" inert={interrupted}>
+      <div className="contents" inert={lockWorkspace}>
       <div style={{ display: onSessions ? "none" : "contents" }}>
         <Suspense fallback={<div className="grid h-dvh place-items-center"><Spinner /></div>}>
           <Outlet />
@@ -92,7 +96,7 @@ export default function AppShell() {
       <UpdateBanner />
       {phoneOpen && <PhoneModal onClose={() => setPhoneOpen(false)} />}
       </div>
-      {interrupted && <RemoteRecovery />}
+      {lockWorkspace && <RemoteRecovery />}
     </>
   );
 }
