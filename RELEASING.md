@@ -172,7 +172,8 @@ verification files are supporting assets.
 
 The desktop tag workflow does not upload iOS builds. The `iOS simulator` job in
 `ci.yml` builds the actual arm64 simulator app without distribution credentials,
-installs and launches it, checks that it stays running, and saves a screenshot.
+installs and launches it, verifies the connection screen is visible, and saves
+screenshots and startup diagnostics.
 This checks native compilation, linking and startup; device signing, remote SSH
 sessions and TestFlight delivery still need separate verification.
 
