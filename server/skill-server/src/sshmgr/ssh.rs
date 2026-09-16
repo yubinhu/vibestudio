@@ -72,13 +72,6 @@ impl Transport {
         }
     }
 
-    /// WSL shares the loopback with Windows (WSL2 `localhostForwarding`, WSL1's shared
-    /// stack), so the server's port IS reachable on Windows directly — no `ssh -L`, and
-    /// the local and remote port must match.
-    pub fn same_port(&self) -> bool {
-        matches!(self, Transport::Wsl { .. })
-    }
-
     /// Build a command that runs `remote_cmd` (a shell script) on the target.
     fn run_command(&self, remote_cmd: &str) -> Command {
         match self {
@@ -92,9 +85,8 @@ impl Transport {
         }
     }
 
-    /// Build the launch command: starts the remote server and, on the ssh path, forwards
-    /// `local_port → 127.0.0.1:remote_port`. The WSL path needs no forward (see
-    /// [`same_port`](Self::same_port)) so the ports passed in are equal there.
+    /// Build the keepalive command and, on the ssh path, forward
+    /// `local_port → 127.0.0.1:remote_port`. WSL forwarding is owned by `wsl::Forward`.
     pub fn launch_command(&self, remote_cmd: &str, local_port: u16, remote_port: u16) -> Command {
         match self {
             Transport::Ssh { host } => {
@@ -137,6 +129,16 @@ fn wsl_command(distro: &str, remote_cmd: &str) -> Command {
         .arg("-lc")
         .arg(wrapper);
     c
+}
+
+/// Raw pipe for one TCP stream inside the selected distro. Bypass the interop
+/// shell and login profiles: anything they print would corrupt HTTP/binary data.
+pub(super) fn wsl_stream_command(distro: &str, remote_cmd: &str) -> Command {
+    let b64 = base64(remote_cmd.as_bytes());
+    let mut command = hidden_command("wsl.exe");
+    command.args(["-d", distro, "--exec", "env", "-u", "BASH_ENV", "bash", "--noprofile", "--norc", "-c"])
+        .arg(format!("exec bash --noprofile --norc <(echo {b64}|base64 -d)"));
+    command
 }
 
 /// Standard base64 (with `+/` and `=` padding) — decodable by coreutils/busybox

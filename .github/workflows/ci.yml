@@ -38,11 +38,17 @@ jobs:
 
   # The transport-agnostic backend (server/skill-core, skill-term, skill-server).
   # No webkit/Tauri deps, so clippy + the existing unit/integration tests (incl.
-  # server/skill-server/tests/proxy_smoke.rs) run fast and cache cleanly. tmux is
-  # needed for the skill-term terminal tests (they self-skip if it's absent, but
-  # the GitHub runner has it, so install to actually exercise them).
+  # server/skill-server/tests/proxy_smoke.rs) run fast and cache cleanly. Run on
+  # macOS too so native descriptor isolation and session working-directory
+  # regressions are checked before tagging. Install tmux on both platforms so
+  # skill-term's terminal tests actually run instead of skipping.
   server:
-    runs-on: ubuntu-latest
+    name: server (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -51,15 +57,19 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-      - name: Install tmux (skill-term tests)
+      - name: Install tmux (Linux skill-term tests)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install tmux (macOS skill-term tests)
+        if: runner.os == 'macOS'
+        run: command -v tmux >/dev/null 2>&1 || brew install tmux
       # clippy on the server crates (no webkit deps; the desktop crate is checked in
       # its own job below). `-D warnings` makes any lint fatal — the tree is clean,
       # so this keeps it that way. (No rustfmt gate: formatting is hand-maintained.)
       - name: clippy
-        run: cargo clippy -p skill-core -p skill-term -p skill-server --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
-        run: cargo test -p skill-core -p skill-term -p skill-server
+        run: cargo test --workspace --all-targets
 
   # The Tauri shell (client/desktop, crate `vibestudio`). tauri-build validates
   # the frontendDist at check time, so the SPA must be built into ./dist first.
@@ -95,3 +105,74 @@ jobs:
       - name: cargo check (desktop shell)
         working-directory: client/desktop
         run: cargo check --locked
+
+  # Compile and link the actual iOS app, then catch native startup crashes in a
+  # simulator. No Apple account, distribution certificate or upload is involved.
+  ios:
+    name: iOS simulator
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./client/desktop -> target"
+          key: ios-simulator
+      - run: npm ci
+      - name: Build unsigned simulator app (includes SPA)
+        # --no-sign is supported by the CLI version in package-lock.json.
+        # The Rust arguments after -- also apply to the Xcode build script.
+        run: npm run tauri -- ios build --debug --target aarch64-sim --no-sign --ci -- --locked
+      - name: Launch simulator app
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ios-smoke"
+          xcrun simctl list devices available --json > "$RUNNER_TEMP/ios-smoke/devices.json"
+          device=$(python3 - "$RUNNER_TEMP/ios-smoke/devices.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as source:
+              devices = json.load(source)["devices"]
+          candidates = [device for runtime, group in devices.items()
+                        if ".iOS-" in runtime for device in group
+                        if device.get("isAvailable") and device["name"].startswith("iPhone")]
+          if not candidates:
+              raise SystemExit("No available iPhone simulator")
+          print(candidates[0]["udid"], candidates[0]["state"])
+          PY
+          )
+          read -r device_id device_state <<< "$device"
+          trap 'xcrun simctl shutdown "$device_id" >/dev/null 2>&1 || true' EXIT
+          if [[ "$device_state" != Booted ]]; then
+            xcrun simctl boot "$device_id"
+          fi
+          xcrun simctl bootstatus "$device_id" -b
+          simulator_app=client/desktop/gen/apple/build/arm64-sim/VibeStudio.app
+          # Ad-hoc signing satisfies arm64 simulator execution; it needs no key.
+          codesign --force --deep --sign - "$simulator_app"
+          xcrun simctl install "$device_id" "$simulator_app"
+          launch_output=$(xcrun simctl launch \
+            --stdout="$RUNNER_TEMP/ios-smoke/stdout.log" \
+            --stderr="$RUNNER_TEMP/ios-smoke/stderr.log" \
+            "$device_id" one.vibestudio.app)
+          echo "$launch_output"
+          app_pid=${launch_output##*: }
+          [[ "$app_pid" =~ ^[0-9]+$ ]]
+          sleep 10
+          kill -0 "$app_pid"
+          xcrun simctl io "$device_id" screenshot "$RUNNER_TEMP/ios-smoke/launch.png"
+      - name: Upload simulator launch evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-smoke
+          path: ${{ runner.temp }}/ios-smoke
+          if-no-files-found: ignore

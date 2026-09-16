@@ -2,8 +2,8 @@
 //! exposes over `/api/remote/*`. It shells out to the system `ssh` (inheriting the
 //! user's keys/config/ProxyJump) or, for a local WSL/WSL2 distro on Windows, to
 //! `wsl.exe`; it discovers or starts the per-user host service on the target,
-//! provisioning a version-pinned `skill-server` when needed, and reaches it (`ssh -L` tunnel, or WSL's
-//! shared loopback); the local server then proxies `/api/*` to it (see `proxy.rs`).
+//! provisioning a version-pinned `skill-server` when needed, and reaches it through an
+//! SSH or distro-specific WSL loopback forward; the local server proxies `/api/*` to it.
 //!
 //! Lives server-side so BOTH entry points get it identically: the desktop's
 //! in-process server and the standalone `skill-server` binary (browser-local dev, or
@@ -27,6 +27,7 @@ pub mod keygen;
 mod russh_tx;
 mod session;
 mod ssh;
+mod wsl;
 
 /// Shared connection state. `generation` is bumped on every connect/disconnect so a
 /// background connect thread can tell if it has been superseded (the user

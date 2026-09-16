@@ -74,7 +74,7 @@ export default function RemoteMenu() {
 export function RemoteDialog({ onClose, onOpenPhone }: { onClose: () => void; onOpenPhone: () => void }) {
   const { status, connect, disconnect, cancel } = useRemote();
   const [hosts, setHosts] = useState<api.RemoteHost[] | null>(null);
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(status.host ?? "");
   const [busy, setBusy] = useState(false); // disconnect in flight (reloads the page)
   const [starting, setStarting] = useState(false); // connect kickoff, before status updates
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +114,8 @@ export function RemoteDialog({ onClose, onOpenPhone }: { onClose: () => void; on
   const doConnect = async (host: string) => {
     const h = host.trim();
     if (!h) return;
+    // List selections must remain retryable when setup fails, just like typed hosts.
+    setValue(h);
     setError(null);
     setStarting(true);
     try {

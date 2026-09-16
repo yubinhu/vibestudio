@@ -28,6 +28,8 @@ function storeUnderTest(api) {
   let subscribe;
   const timers = new Map();
   const exports = {};
+  const agents = {};
+  vm.runInNewContext(compile("agents"), { exports: agents });
   vm.runInNewContext(compile("skills"), {
     exports, Promise, Set, Error, Date: { now: () => clock },
     setTimeout: (callback, delay) => {
@@ -38,6 +40,7 @@ function storeUnderTest(api) {
     clearTimeout: (id) => timers.delete(id),
     require: (id) => {
       if (id === "@/lib/api") return { gitDirtyMany: async () => [], ...api };
+      if (id === "@/lib/agents") return agents;
       if (id === "react") return {
         useSyncExternalStore: (listen, snapshot) => { subscribe = listen; return snapshot(); },
       };
@@ -64,6 +67,45 @@ function storeUnderTest(api) {
     },
   };
 }
+
+test("global skills lead project skills within the same origin while preserving origin priority", () => {
+  const { compareSkills } = storeUnderTest({});
+  const skills = [
+    { root: "/project/personal-a", name: "a-personal", kind: "personal", project: "repo" },
+    { root: "/global/plugin", name: "a-plugin", kind: "plugin" },
+    { root: "/project/official", name: "a-official", kind: "official", project: "repo" },
+    { root: "/global/studio", name: "z-studio", kind: "studio" },
+    { root: "/global/personal-z", name: "z-personal", kind: "personal" },
+    { root: "/project/plugin", name: "a-plugin", kind: "plugin", project: "repo" },
+    { root: "/project/studio", name: "a-studio", kind: "studio", project: "repo" },
+    { root: "/global/official", name: "z-official", kind: "official" },
+    { root: "/project/personal-z", name: "z-personal", kind: "personal", project: "repo" },
+    { root: "/global/personal-a", name: "a-personal", kind: "personal" },
+  ];
+  assert.deepEqual(skills.sort(compareSkills).map((skill) => skill.root), [
+    "/global/personal-a", "/global/personal-z",
+    "/project/personal-a", "/project/personal-z",
+    "/global/official", "/project/official",
+    "/global/studio", "/project/studio",
+    "/global/plugin", "/project/plugin",
+  ]);
+});
+
+test("skill ordering retains displayed-name fallbacks and unknown-origin compatibility", () => {
+  const { compareSkills } = storeUnderTest({});
+  const skills = [
+    { root: "/home/.agents/skills/zebra", kind: "personal" },
+    { root: "C:\\Users\\harvey\\.agents\\skills\\alpha\\", kind: "personal" },
+    { root: "/home/.agents/skills/unnamed", name: "middle", kind: "future-origin" },
+    { root: "/home/repo/.agents/skills/aaa", kind: "personal", project: "repo" },
+  ];
+  assert.deepEqual(skills.sort(compareSkills).map((skill) => skill.root), [
+    "C:\\Users\\harvey\\.agents\\skills\\alpha\\",
+    "/home/.agents/skills/unnamed",
+    "/home/.agents/skills/zebra",
+    "/home/repo/.agents/skills/aaa",
+  ]);
+});
 
 test("installed skills paint before project discovery and slow git badges cannot block completion", async () => {
   const initial = deferred();

@@ -271,11 +271,11 @@ fn launch_worker(dir: &Path, options: &HostServiceOptions) -> Result<Child, Stri
         log.set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(|error| error.to_string())?;
     }
-    let mut command = skill_core::process::hidden_command(&options.executable);
+    let mut command = skill_core::process::hidden_command(absolute(&options.executable)?);
     command
         .arg("--host-service")
         .arg("--host-service-config")
-        .arg(dir)
+        .arg(absolute(dir)?)
         .arg("--port")
         .arg(options.preferred_port.to_string())
         .arg("--dist")
@@ -301,6 +301,9 @@ fn launch_worker(dir: &Path, options: &HostServiceOptions) -> Result<Child, Stri
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        // The detached worker can outlive or lose access to its launch folder.
+        // All resource/config arguments above are absolute before changing cwd.
+        command.current_dir("/");
         // setsid is async-signal-safe and detaches the worker from SSH's session
         // and terminal. All inherited streams have already been redirected.
         unsafe {

@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSkills, refreshSkills } from "@/lib/skills";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSkills, refreshSkills, compareSkills } from "@/lib/skills";
 import type { ReactNode } from "react";
 import { Spinner } from "@/components/ui";
 import { FolderIcon } from "@/components/FileIcon";
@@ -16,6 +16,7 @@ import type { AgentSkills, DiscoveredSkill } from "@/lib/api";
 import { useMining, refreshMining } from "@/lib/mining";
 import { useNavigate } from "react-router-dom";
 import { studioPath, sessionsPath } from "@/lib/routes";
+import { filterSkillGroups } from "./skillSearch";
 
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 
@@ -112,11 +113,6 @@ function ProposedTag() {
     </span>
   );
 }
-
-// Your own skills first, then official, then plugins; ties broken by name.
-const byKindThenName = (a: DiscoveredSkill, b: DiscoveredSkill) =>
-  kindMeta(a.kind).rank - kindMeta(b.kind).rank ||
-  (a.name ?? baseName(a.root)).localeCompare(b.name ?? baseName(b.root));
 
 // Every discovered skill renders through this one card so they stay identical —
 // personal, official, plugin and studio differ only by the kind badge. The
@@ -238,6 +234,7 @@ const agentLabel = (agent: string) => AGENT_LABELS[agent] ?? agent;
 // you haven't touched collapse together behind a single toggle (default collapsed).
 function AgentSection({
   group,
+  searching,
   dirtyRoots,
   deletingRoot,
   busyRoot,
@@ -247,6 +244,7 @@ function AgentSection({
   onDiscard,
 }: {
   group: AgentSkills;
+  searching: boolean;
   dirtyRoots: Set<string>;
   deletingRoot: string | null;
   busyRoot: string | null;
@@ -257,13 +255,13 @@ function AgentSection({
 }) {
   const [showBundled, setShowBundled] = useState(false);
   if (group.skills.length === 0) return null;
-  const proposals = group.skills.filter((s) => s.proposed).sort(byKindThenName);
+  const proposals = group.skills.filter((s) => s.proposed).sort(compareSkills);
   const own = group.skills
     .filter((s) => !s.proposed && kindMeta(s.kind).kind === "personal")
-    .sort(byKindThenName);
+    .sort(compareSkills);
   const allBundled = group.skills
     .filter((s) => !s.proposed && kindMeta(s.kind).kind !== "personal")
-    .sort(byKindThenName);
+    .sort(compareSkills);
   // A changed bundled skill is "pending review" too — don't bury it behind the
   // collapse. Surface it in the open grid (just after proposals); only the
   // untouched ones stay collapsed, and the toggle tally counts just those.
@@ -284,7 +282,7 @@ function AgentSection({
     .join(" · ");
   const info = AGENT_GROUP_INFO[group.agent];
   const bundledToggle =
-    bundled.length > 0 ? (
+    bundled.length > 0 && !searching ? (
       <button
         type="button"
         onClick={() => setShowBundled((o) => !o)}
@@ -350,7 +348,7 @@ function AgentSection({
       {(own.length > 0 || proposals.length > 0 || changedBundled.length > 0) && bundledToggle && (
         <div className="mt-2 -ml-2">{bundledToggle}</div>
       )}
-      {showBundled && bundled.length > 0 && (
+      {(searching || showBundled) && bundled.length > 0 && (
         <div className={`mt-3 ${gridCls}`}>
           {bundled.map((s) => (
             <SkillCard
@@ -454,6 +452,8 @@ export default function SkillGallery({ onBrowse }: { onBrowse: () => void }) {
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [mineOpen, setMineOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchInput = useRef<HTMLInputElement>(null);
   const mining = useMining();
 
   // Discovered skills come from the shared module store: cached across visits, so
@@ -549,8 +549,14 @@ export default function SkillGallery({ onBrowse }: { onBrowse: () => void }) {
   );
 
   // Proposed drafts ride inside their agent group, badged and leading the grid.
-  const groups = discovered;
-  const totalFound = groups.reduce((n, g) => n + g.skills.length, 0);
+  const groups = useMemo(() => filterSkillGroups(discovered, query), [discovered, query]);
+  const totalFound = discovered.reduce((n, g) => n + g.skills.length, 0);
+  const matchCount = groups.reduce((n, g) => n + g.skills.length, 0);
+  const searching = query.trim().length > 0;
+  const clearSearch = () => {
+    setQuery("");
+    searchInput.current?.focus();
+  };
 
   // Skill actions and browsing live together beside the gallery.
   const actions = (
@@ -617,33 +623,81 @@ export default function SkillGallery({ onBrowse }: { onBrowse: () => void }) {
       >
         Agent skills
       </SectionTitle>
-      {actionError && <p className="mb-3 text-sm text-danger">{actionError}</p>}
-      {!discovering && !scanning && totalFound === 0 ? (
-        <p className="max-w-2xl text-sm text-muted">
-          No installed skills found. Skills live under <code className="font-mono text-[0.8em]">~/.agents/skills</code>,{" "}
-          <code className="font-mono text-[0.8em]">~/.claude/skills</code>,{" "}
-          <code className="font-mono text-[0.8em]">~/.codex/skills</code>,{" "}
-          <code className="font-mono text-[0.8em]">~/.cursor/skills-cursor</code>,{" "}
-          <code className="font-mono text-[0.8em]">~/.config/opencode/skills</code>, and{" "}
-          <code className="font-mono text-[0.8em]">~/.openclaw/skills</code>.
-        </p>
-      ) : (
-        <div className="space-y-3">
-          {groups.map((g) => (
-            <AgentSection
-              key={g.agent}
-              group={g}
-              dirtyRoots={dirtyRoots}
-              deletingRoot={busyRoot}
-              busyRoot={busyRoot}
-              onOpen={onOpen}
-              onDelete={doDelete}
-              onAccept={acceptProposed}
-              onDiscard={discardProposed}
-            />
-          ))}
+      <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-h-10 w-full items-center gap-2 rounded-lg border border-border bg-surface pl-3 pr-1 text-muted focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20 sm:max-w-md">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0" aria-hidden>
+            <circle cx="10.5" cy="10.5" r="6.5" />
+            <path d="m16 16 4.5 4.5" />
+          </svg>
+          <input
+            ref={searchInput}
+            type="search"
+            aria-label="Search skills"
+            aria-controls="skill-search-results"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && query) {
+                event.preventDefault();
+                clearSearch();
+              }
+            }}
+            placeholder="Search skills, agents, or projects…"
+            autoComplete="off"
+            spellCheck={false}
+            // The surrounding field supplies one focus ring around the icon and input.
+            style={{ outline: "none" }}
+            className="min-w-0 flex-1 bg-transparent py-2 text-base text-fg placeholder:text-faint sm:text-sm [&::-webkit-search-cancel-button]:hidden"
+          />
+          {query && (
+            <button type="button" onClick={clearSearch} aria-label="Clear search" title="Clear search" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted hover:bg-panel hover:text-fg focus-visible:outline-accent">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                <path d="m6 6 12 12M6 18 18 6" />
+              </svg>
+            </button>
+          )}
         </div>
-      )}
+        <p role="status" className="text-xs tabular-nums text-muted">
+          {searching ? `${matchCount} of ${totalFound} skills` : null}
+          {(discovering || scanning) && <span>{searching ? " · " : ""}Discovering skills…</span>}
+        </p>
+      </div>
+      {actionError && <p className="mb-3 text-sm text-danger">{actionError}</p>}
+      <div id="skill-search-results">
+        {searching && matchCount === 0 ? (
+          <div className="rounded-xl border border-dashed border-border px-5 py-8 text-center">
+            <p className="text-sm font-medium text-fg">No matching skills{discovering || scanning ? " yet" : ""}</p>
+            <p className="mt-1 text-xs text-muted">Try a different name, description, agent, or project.</p>
+            <button type="button" onClick={clearSearch} className="mt-3 rounded-md px-3 py-2 text-xs font-medium text-accent hover:bg-accent-soft focus-visible:outline-accent">Show all skills</button>
+          </div>
+        ) : !discovering && !scanning && totalFound === 0 ? (
+          <p className="max-w-2xl text-sm text-muted">
+            No installed skills found. Skills live under <code className="font-mono text-[0.8em]">~/.agents/skills</code>,{" "}
+            <code className="font-mono text-[0.8em]">~/.claude/skills</code>,{" "}
+            <code className="font-mono text-[0.8em]">~/.codex/skills</code>,{" "}
+            <code className="font-mono text-[0.8em]">~/.cursor/skills-cursor</code>,{" "}
+            <code className="font-mono text-[0.8em]">~/.config/opencode/skills</code>, and{" "}
+            <code className="font-mono text-[0.8em]">~/.openclaw/skills</code>.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {groups.map((g) => (
+              <AgentSection
+                key={g.agent}
+                group={g}
+                searching={searching}
+                dirtyRoots={dirtyRoots}
+                deletingRoot={busyRoot}
+                busyRoot={busyRoot}
+                onOpen={onOpen}
+                onDelete={doDelete}
+                onAccept={acceptProposed}
+                onDiscard={discardProposed}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 

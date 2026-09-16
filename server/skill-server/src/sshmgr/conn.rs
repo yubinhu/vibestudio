@@ -26,7 +26,8 @@ pub trait Remote: Send + Sync {
     fn run(&self, cmd: &str) -> Result<String, RunError>;
     /// Run a command, feeding it `stdin` (the piped-binary provisioning path).
     fn run_with_stdin(&self, cmd: &str, stdin: &[u8]) -> Result<(), RunError>;
-    /// WSL shares Windows loopback (local port == remote, no `-L`); everything else forwards.
+    /// Whether the endpoint is already local (used by in-process test remotes).
+    /// Both production SSH and WSL transports forward through a fresh local port.
     fn same_port(&self) -> bool;
     /// Forward `local_port → 127.0.0.1:remote_port`, hold a tunnel-only keepalive
     /// channel, and wait for its READY line. The worker was started separately. `host` is only for
@@ -99,7 +100,7 @@ impl Remote for SshRemote {
         ssh::run_with_stdin(&self.transport, cmd, stdin)
     }
     fn same_port(&self) -> bool {
-        self.transport.same_port()
+        false
     }
     fn open_session(
         &self,
@@ -108,7 +109,13 @@ impl Remote for SshRemote {
         remote_port: u16,
         host: &str,
     ) -> Result<Box<dyn SessionHandle>, LaunchError> {
-        spawn_session(&self.transport, host, remote_cmd, local_port, remote_port)
+        let keepalive = spawn_session(&self.transport, host, remote_cmd, local_port, remote_port)?;
+        if let Transport::Wsl { distro } = &self.transport {
+            super::wsl::Forward::start(distro.clone(), local_port, remote_port, keepalive)
+                .map(|forward| Box::new(forward) as Box<dyn SessionHandle>)
+        } else {
+            Ok(keepalive)
+        }
     }
 }
 

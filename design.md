@@ -110,6 +110,12 @@ synchronous full scan and complete array response for older clients, which canno
 poll for background results. The index belongs to the server, so switching to an
 SSH host cannot reuse local project locations.
 
+Home searches the current discovery snapshot across skill names, descriptions,
+agents, origin labels, global/project scope, and paths. Search reveals matching
+bundled skills, keeps the active query as discovery fills in, and does not restart
+the scan. Within each origin priority, global skills sort before project skills;
+names break ties within that scope.
+
 Each personal skill is its **own git repo** (versioned/diffed/rolled-back/synced
 independently). **Auto-tracked:** `GET /api/skills/discover` → `discover_progressive` →
 `gitops::auto_track_personal`, which off-thread `git init`s + lands a baseline **"Initial
@@ -266,6 +272,17 @@ already-running tmux server retains its original allowance across backend
 restarts. Neither path raises the hard limit or changes running agents. The
 allowance does not reserve descriptors; the server logs a failure to raise it.
 
+Detached Unix workers and tmux launchers start from `/`, so deleting or revoking
+access to a launch folder cannot poison subsequent sessions. Session creation
+validates the requested directory before creating tmux state, then a new pane
+re-enters that folder after login-shell startup and checks physical cwd resolution
+before starting the agent. A private, short-lived startup record lets the HTTP
+request report directory errors instead of returning an unusable session or
+running the agent in tmux's fallback directory. Failed starts remove only the new
+session; existing agents continue. On macOS, permission failures include the
+[Files & Folders settings](https://support.apple.com/guide/mac-help/control-access-to-files-and-folders-on-mac-mchld5a35146/mac)
+needed when the operating system denies folder access.
+
 1. **A terminal outlives everything but an explicit kill** — closing a tab, closing the app
    window, quitting the desktop, dropping SSH, or restarting a backend never stops the agent
    inside. Killing a session is a separate action in its session controls.
@@ -407,8 +424,12 @@ A **local proxy switchboard**; the webview never changes origin.
   service record → attach and verify its identity. If absent, detect arch, ensure a
   version-pinned static-musl `skill-server` (checksum-verified) and start `--daemon`.
   Recovery first reuses the installed binary and never repeats provisioning merely because
-  the tunnel dropped. ssh uses `ssh -L`; WSL shares Windows loopback (no `-L`). Closing that
-  tunnel cannot stop the host. Legacy binaries without the service protocol fail with an
+  the tunnel dropped. SSH uses `ssh -L`; WSL uses a fresh Windows loopback listener
+  and binary pipes through `wsl.exe --exec` into the selected distro (bash `/dev/tcp`).
+  Windows and WSL may both own the host's port, so Windows localhost forwarding is
+  never used to identify or reach the WSL worker. The relay skips shell profiles,
+  supports pooled HTTP and independent SSE streams, and needs no new remote binary.
+  Closing either forward cannot stop the host. Legacy binaries without the service protocol fail with an
   update message; running agents are left intact.
 - **Recovery:** off-thread identity probes detect stale tunnels, including after iOS resume.
   Transient failures retry with capped backoff; trust/auth/setup failures stop for explicit

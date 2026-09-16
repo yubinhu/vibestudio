@@ -298,6 +298,10 @@ apt install tmux on Debian/Ubuntu), then try again."
 /// pane (`-d` creates are fine within tmux; we only must not inherit `$TMUX`).
 fn tmux() -> Command {
     let mut c = hidden_command(tmux_bin());
+    // A daemon/accessor may have outlived the directory it was launched from.
+    // Never pass that stale cwd descriptor to tmux or its startup shell.
+    #[cfg(unix)]
+    c.current_dir("/");
     #[cfg(target_os = "macos")]
     macos_fds::isolate(&mut c);
     // `-u` forces UTF-8 regardless of locale: a GUI-launched app has no LANG/
@@ -312,6 +316,7 @@ fn tmux() -> Command {
 
 #[cfg(target_os = "macos")]
 mod macos_fds;
+mod session_start;
 
 /// Strip characters that would corrupt our tab-separated `list-sessions` parse.
 /// Tabs/newlines are legal in Unix paths but must never leak into metadata.
@@ -901,15 +906,8 @@ fn create_session_inner(
     agent_cmd: String,
     session_id: Option<&str>,
 ) -> Result<SessionInfo, String> {
-    let cwd_resolved = if cwd.trim().is_empty() {
-        dirs::home_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".into())
-    } else {
-        skill_core::pathsafe::resolve_root(cwd)
-            .to_string_lossy()
-            .into_owned()
-    };
+    let cwd_resolved = session_start::resolve_directory(cwd)?;
+    let startup = session_start::Startup::new()?;
 
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -941,7 +939,8 @@ fn create_session_inner(
     } else {
         format!("{env_source}{agent_cmd}; exec bash -l")
     };
-    let line = format!("{}{line}", shell_open_file_limit());
+    let line = format!("{}{}{line}", startup.shell_prefix(&cwd_resolved), shell_open_file_limit());
+    let bootstrap = startup.bootstrap(&cwd_resolved, &line);
 
     let (cols, rows) = size_floor("create", &name, cols, rows);
     let cols_s = cols.to_string();
@@ -953,7 +952,7 @@ fn create_session_inner(
     // (immune to `base-index` / `renumber-windows` in the user's tmux config).
     let out = tmux()
         .args([
-            "new-session", "-d", "-s", &name, "-x", &cols_s, "-y", &rows_s,
+            "new-session", "-d", "-s", &name, "-x", &cols_s, "-y", &rows_s, "-c", "/",
             "-P", "-F", "#{window_id}", "sleep", "60",
         ])
         .output()
@@ -1010,14 +1009,18 @@ fn create_session_inner(
     set("mouse", "on");
     set("history-limit", "10000");
 
-    let status = tmux()
-        .args(["new-window", "-t", &name, "-c", &cwd_resolved, "bash", "-lc", &line])
-        .status()
-        .map_err(tmux_spawn_err)?;
-    if !status.success() {
+    let launched = tmux()
+        .args(["new-window", "-t", &name, "-c", "/", "/bin/sh", "-c", &bootstrap])
+        .output();
+    let started = match launched {
+        Ok(output) if output.status.success() => startup.wait(&cwd_resolved),
+        Ok(output) => Err(format!("tmux couldn't create the session: {}", String::from_utf8_lossy(&output.stderr).trim())),
+        Err(error) => Err(tmux_spawn_err(error)),
+    };
+    if let Err(error) = started {
         let _ = kill_session(&name);
         log::error!("tmux new-window failed (agent={}, cwd={cwd_resolved})", opt.agent);
-        return Err("tmux couldn't create the session (is the working directory valid?).".into());
+        return Err(error);
     }
     let _ = tmux().args(["kill-window", "-t", &stub]).output();
 

@@ -1,9 +1,8 @@
 //! The remote session lifecycle, transport-agnostic. A [`Remote`] (the user's `ssh`/`wsl`
 //! on desktop, or russh on the mobile switchboard) attaches a durable host service
-//! and reaches a local port on it: the ssh path forwards
-//! `-L L:127.0.0.1:R` (the client chooses R, sidestepping the "`-L` needs the port before
-//! the server picks it" chicken-and-egg, and retries on a port collision); WSL needs no
-//! forward — its loopback is shared with Windows, so L == R. One session ⇒ one auth; tearing
+//! through a fresh local port: SSH forwards `-L L:127.0.0.1:R`, while WSL relays
+//! TCP over `wsl.exe` pipes into the selected distro. Windows localhost can belong to
+//! a different service at the same port, so WSL must not connect to it directly. Tearing
 //! it down closes only the forward. The host service outlives every accessor.
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -290,7 +289,7 @@ fn reattach(remote: &dyn Remote, host: &str, record: ServiceRecord) -> Result<Se
         }
         return Ok(session);
     }
-    Err(format!("Could not bind the SSH tunnel after several attempts. {last_error}"))
+    Err(format!("Could not bind the remote forward after several attempts. {last_error}"))
 }
 
 fn verify_tunnel(local_port: u16, record: &ServiceRecord) -> Result<(), String> {
@@ -349,6 +348,60 @@ fn free_local_port() -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wsl_attaches_to_distro_even_when_windows_port_belongs_to_another_host() {
+        struct WslFixture { record: String, distro_port: u16 }
+        impl Remote for WslFixture {
+            fn capture(&self, command: &str) -> Result<String, String> {
+                assert_eq!(command, probe_script(), "existing worker must not be reprovisioned");
+                Ok(self.record.clone())
+            }
+            fn run(&self, _: &str) -> Result<String, super::super::ssh::RunError> { panic!("must not provision") }
+            fn run_with_stdin(&self, _: &str, _: &[u8]) -> Result<(), super::super::ssh::RunError> { panic!("must not upload") }
+            fn same_port(&self) -> bool { conn::SshRemote::new("wsl:Ubuntu").same_port() }
+            fn open_session(&self, _: &str, local_port: u16, remote_port: u16, _: &str) -> Result<Box<dyn conn::SessionHandle>, LaunchError> {
+                assert_ne!(local_port, remote_port, "WSL must not reuse Windows localhost");
+                // Separate listeners model the two OS network namespaces: the
+                // distro command reaches its own service at the logical port.
+                Ok(super::super::wsl::test_forward(local_port, self.distro_port))
+            }
+        }
+        let windows = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let windows_port = windows.server_addr().to_ip().unwrap().port();
+        let distro = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let distro_port = distro.server_addr().to_ip().unwrap().port();
+        let identity = "0123456789abcdef0123456789abcdef";
+        let record = serde_json::json!({"protocol":1,"instanceId":identity,"pid":42,"port":windows_port}).to_string();
+        let windows_worker = std::thread::spawn(move || {
+            let request = windows.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            request.respond(tiny_http::Response::from_string(serde_json::json!({
+                "pid":99,"hostService":{"protocol":1,"instanceId":"f".repeat(32)}
+            }).to_string())).unwrap();
+            assert!(windows.recv_timeout(Duration::from_millis(500)).unwrap().is_none(),
+                "forward must never send workspace requests to the Windows worker");
+        });
+        // Reproduce the screenshot's error with the old direct-localhost path.
+        assert!(verify_tunnel(windows_port, &parse_record(&record).unwrap()).unwrap_err().contains("identity changed"));
+        let distro_worker = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let request = distro.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+                request.respond(tiny_http::Response::from_string(serde_json::json!({
+                    "pid":42,"hostService":{"protocol":1,"instanceId":identity}
+                }).to_string())).unwrap();
+            }
+        });
+        let remote = WslFixture { record, distro_port };
+        let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
+            session: None, busy: true, generation: 1, last_host: None, recovering: true }));
+        let mut session = connect_flow(&state, &remote, "wsl:Ubuntu", 1, "1.2.4", true)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(session.health_probe().alive());
+        session.teardown();
+        windows_worker.join().unwrap();
+        distro_worker.join().unwrap();
+    }
 
     #[test]
     fn shared_worker_is_verified_before_any_provisioning_and_incompatible_worker_is_not_replaced() {

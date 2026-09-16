@@ -3,7 +3,19 @@
 // poll that snapshot while Home is mounted, without restarting the search.
 import { useSyncExternalStore } from "react";
 import * as api from "@/lib/api";
-import type { AgentSkills } from "@/lib/api";
+import type { AgentSkills, DiscoveredSkill } from "@/lib/api";
+import { kindMeta } from "@/lib/agents";
+
+const skillName = (skill: DiscoveredSkill) =>
+  skill.name ?? skill.root.split(/[\\/]/).filter(Boolean).pop() ?? skill.root;
+
+/** Keep origin priority; within each origin, show global skills before project
+ * skills, then sort each scope by its displayed name. */
+export function compareSkills(a: DiscoveredSkill, b: DiscoveredSkill): number {
+  return kindMeta(a.kind).rank - kindMeta(b.kind).rank ||
+    Number(Boolean(a.project)) - Number(Boolean(b.project)) ||
+    skillName(a).localeCompare(skillName(b));
+}
 
 // A mount-driven background refresh is skipped when the cache is fresher than
 // this — coalescing already dedups a same-tick mount storm; this also spares a

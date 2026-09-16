@@ -1,7 +1,7 @@
 # Releasing VibeStudio
 
-How a desktop release is cut, verified, and shipped. Read this end-to-end before
-your first release; after that the **Checklist** is the working copy.
+How desktop releases and iOS TestFlight builds are verified and shipped. Read
+this end-to-end before your first release; after that use **The process** below.
 
 ## Signing configuration
 
@@ -167,6 +167,69 @@ verification files are supporting assets.
    Verify the
    [public feed](https://github.com/yubinhu/vibestudio/releases/latest/download/latest.json)
    and the three installer links from that release without authentication.
+
+## iOS / TestFlight
+
+The desktop tag workflow does not upload iOS builds. The `iOS simulator` job in
+`ci.yml` builds the actual arm64 simulator app without distribution credentials,
+installs and launches it, checks that it stays running, and saves a screenshot.
+This checks native compilation, linking and startup; device signing, remote SSH
+sessions and TestFlight delivery still need separate verification.
+
+For TestFlight, use a Mac with a supported Xcode/iOS SDK and access to the existing
+App Store Connect app for `one.vibestudio.app`. Supply an Apple Distribution
+certificate/private key and matching App Store Connect provisioning profile, plus
+credentials allowed to upload builds. The desktop Developer ID/notarization
+secrets are separate. For manual signing, Tauri accepts a base64-encoded `.p12`
+in `IOS_CERTIFICATE`, its password in `IOS_CERTIFICATE_PASSWORD`, and a
+base64-encoded profile in `IOS_MOBILE_PROVISION`. Alternatively, configure Xcode
+automatic signing with a suitable account or the complete `APPLE_API_KEY`
+(key ID), `APPLE_API_ISSUER` and `APPLE_API_KEY_PATH` trio. The checked-in release
+Xcode configuration uses manual signing: for automatic signing, change that
+configuration in the build checkout first. See [Tauri's signing guide](https://v2.tauri.app/distribute/sign/ios/).
+
+Build from a clean checkout of the desktop release tag. Keep the Cargo manifests'
+committed `0.0.0` placeholders. `tauri.ios.conf.json` currently overrides the app
+version, so Cargo stamping alone does not version an iOS release. Merge a
+temporary config with the release version and a build number unused in App Store
+Connect. For example, after setting `IOS_RELEASE_VERSION` and `IOS_BUILD_NUMBER`:
+
+```bash
+npm ci
+rustup target add aarch64-apple-ios
+export IOS_RELEASE_VERSION IOS_BUILD_NUMBER
+bash scripts/stamp-version.sh "$IOS_RELEASE_VERSION"
+ios_release_dir=$(mktemp -d -t vibestudio-ios)
+ios_release_config="$ios_release_dir/release.json"
+python3 - "$ios_release_config" <<'PY'
+import json, os, sys
+with open(sys.argv[1], "w") as destination:
+    json.dump({"version": os.environ["IOS_RELEASE_VERSION"],
+               "bundle": {"iOS": {"bundleVersion": os.environ["IOS_BUILD_NUMBER"]}}},
+              destination)
+PY
+npm run tauri -- ios build --target aarch64 --ci \
+  --export-method app-store-connect --config "$ios_release_config"
+rm "$ios_release_config"
+rmdir "$ios_release_dir"
+```
+
+The explicit export method overrides the checked-in `debugging` setting. Inspect
+the resulting `.ipa` version, bundle ID and provisioning before uploading. With
+API-key authentication, place the private key in an `altool` search directory as
+`AuthKey_<KEY_ID>.p8` (for example `~/.appstoreconnect/private_keys/`), then run:
+
+```bash
+xcrun altool --upload-app --type ios \
+  --file client/desktop/gen/apple/build/arm64/VibeStudio.ipa \
+  --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
+```
+
+Wait for Apple processing, check the build's TestFlight status, and add it to the
+intended tester group. External testing can require Beta App Review. Upload
+success alone does not confirm testers can install it. See the
+[Tauri build/upload guide](https://v2.tauri.app/distribute/app-store/) and
+[Apple's upload requirements](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds).
 
 ## Screenshot harness (headless, never touches the live app)
 
