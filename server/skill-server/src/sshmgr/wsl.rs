@@ -133,6 +133,13 @@ impl Drop for Forward {
 }
 
 fn relay(socket: TcpStream, mut command: Command, stopped: Arc<AtomicBool>) {
+    // Winsock accepts inherit the listener's nonblocking mode (Linux's do not).
+    // These dedicated copy threads need blocking I/O: WouldBlock during an idle
+    // request/response otherwise tears down a healthy HTTP or SSE connection.
+    if let Err(error) = socket.set_nonblocking(false) {
+        log::debug!("Could not configure the WSL stream: {error}");
+        return;
+    }
     let Ok(mut upload) = socket.try_clone() else {
         return;
     };
@@ -272,6 +279,48 @@ mod tests {
             .local_addr()
             .unwrap()
             .port()
+    }
+
+    #[test]
+    fn inherited_nonblocking_socket_waits_for_requests_between_responses() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = connection(listener.local_addr().unwrap().port());
+        let (socket, _) = listener.accept().unwrap();
+        // Winsock inherits this mode from the nonblocking listener; Linux does not.
+        socket.set_nonblocking(true).unwrap();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let cancelled = stopped.clone();
+        let worker = thread::spawn(move || {
+            let mut command = skill_core::process::hidden_command("bash");
+            command.env_remove("BASH_ENV").args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                "echo READY; exec cat",
+            ]);
+            relay(socket, command, cancelled);
+        });
+        let payloads = [b"first request".as_slice(), b"second request".as_slice()];
+        let received = (|| -> io::Result<Vec<Vec<u8>>> {
+            // Keep upload idle until the child is ready, without a timing race.
+            let mut ready = [0; 6];
+            client.read_exact(&mut ready)?;
+            let mut received = vec![ready.to_vec()];
+            for payload in payloads {
+                client.write_all(payload)?;
+                let mut response = vec![0; payload.len()];
+                client.read_exact(&mut response)?;
+                received.push(response);
+            }
+            Ok(received)
+        })();
+        drop(client);
+        stopped.store(true, Ordering::Release);
+        worker.join().unwrap();
+        assert_eq!(
+            received.expect("an idle upload must not close the relay"),
+            vec![b"READY\n".to_vec(), payloads[0].to_vec(), payloads[1].to_vec()]
+        );
     }
 
     #[test]
