@@ -187,6 +187,8 @@ struct ServiceRecord {
     instance_id: String,
     pid: u32,
     port: u16,
+    #[serde(default)]
+    version: String,
     #[serde(skip)]
     explicitly_stopped: bool,
 }
@@ -216,9 +218,12 @@ fn connect_flow(
     reuse_installed: bool,
 ) -> Result<Session, String> {
     current(state, generation)?;
+    let version = provision::server_version(app_version)?;
+    let minimum = crate::server_version::minimum(app_version, &version)?;
     set_stage(state, generation, "launching", host, "Looking for the host service…");
     // Reconnect/second-client discovery happens BEFORE platform detection or
-    // provisioning. A compatible shared worker is reused across app versions.
+    // provisioning. Older clients reuse newer compatible workers; newer clients
+    // must upgrade an older worker before routing workspace requests to it.
     if let Some(record) = probe_running(remote)? {
         current(state, generation)?;
         if record.explicitly_stopped {
@@ -227,7 +232,19 @@ fn connect_flow(
             // worker to stop before clearing intent, never returns a doomed port.
         } else {
             match reattach(remote, host, record) {
-                Ok(session) => return Ok(session),
+                Ok(mut session) => {
+                    match crate::server_version::require_at_least(&session.record.version, &minimum) {
+                        Ok(()) => return Ok(session),
+                        Err(error) => {
+                            // Only this temporary tunnel closes. The verified
+                            // old worker stays live while a replacement stages.
+                            session.teardown();
+                            if reuse_installed {
+                                return Err(format!("{error} Running terminal sessions were left untouched."));
+                            }
+                        }
+                    }
+                }
                 Err(error) if error.contains("incompatible host service") => return Err(error),
                 Err(error) => log::debug!("Existing host-service endpoint unavailable: {error}"),
             }
@@ -236,16 +253,14 @@ fn connect_flow(
     current(state, generation)?;
     // During recovery reuse the already installed binary if possible. The
     // supervisor must not repeatedly download releases while a radio is offline.
-    let version = provision::server_version(app_version);
     if !version.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)) || version.is_empty() {
         return Err("Invalid skill-server release version.".into());
     }
     let installed = format!("$HOME/.vibestudio/server/{version}/skill-server");
     let bin = if reuse_installed {
         let output = remote.capture(&format!("[ -x \"{installed}\" ] && \"{installed}\" --version"))?;
-        if !output.contains("host-service=1") {
-            return Err("The installed server does not support the durable host service. Update its skill-server release and reconnect; existing agents were left untouched.".into());
-        }
+        let actual = crate::server_version::from_banner(&output)?;
+        crate::server_version::require_at_least(&actual, &minimum)?;
         installed
     } else {
         set_stage(state, generation, "detecting", host, "Detecting the remote platform…");
@@ -255,9 +270,8 @@ fn connect_flow(
         let bin = provision::ensure_installed(remote, &platform, app_version)?;
         current(state, generation)?;
         let output = remote.capture(&format!("\"{bin}\" --version"))?;
-        if !output.contains("host-service=1") {
-            return Err("The downloaded server does not support the durable host service. Publish/install a matching skill-server release and reconnect; existing agents were left untouched.".into());
-        }
+        let actual = crate::server_version::from_banner(&output)?;
+        crate::server_version::require_at_least(&actual, &minimum)?;
         bin
     };
     current(state, generation)?;
@@ -266,7 +280,24 @@ fn connect_flow(
     let record = output.lines().find_map(|line| line.strip_prefix("SKILL_HOST_SERVICE_READY ").and_then(parse_record))
         .ok_or("The host service did not return a valid ready record.")?;
     current(state, generation)?;
-    reattach(remote, host, record)
+    let mut session = reattach(remote, host, record)?;
+    if let Err(error) = crate::server_version::require_at_least(&session.record.version, &minimum)
+        .and_then(|()| current(state, generation)) {
+        session.teardown();
+        return Err(error);
+    }
+    // A failed download/upgrade must retain the previous executable for rollback.
+    // Pruning happens only after the replacement's identity/version are verified.
+    // A concurrent launcher may have started a newer worker that --daemon
+    // reused. Its installation is not the cache we just provisioned.
+    if !reuse_installed && session.record.version == version {
+        if let Err(error) = current(state, generation) {
+            session.teardown();
+            return Err(error);
+        }
+        provision::prune_old_versions(remote, &version);
+    }
+    Ok(session)
 }
 
 fn parse_record(text: &str) -> Option<ServiceRecord> {
@@ -312,6 +343,11 @@ fn verify_tunnel(local_port: u16, record: &ServiceRecord) -> Result<(), String> 
         || value["hostService"]["instanceId"].as_str() != Some(record.instance_id.as_str()) {
         return Err("The host service identity changed; reconnect to discover its current endpoint.".into());
     }
+    let actual = value["version"].as_str().unwrap_or_default();
+    if actual != record.version {
+        return Err("incompatible host service version: its health response does not match the service record. Reconnect after updating the host service; running agents were left untouched.".into());
+    }
+    crate::server_version::require_at_least(actual, actual)?;
     Ok(())
 }
 
@@ -379,7 +415,7 @@ mod tests {
         let distro = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let distro_port = distro.server_addr().to_ip().unwrap().port();
         let identity = "0123456789abcdef0123456789abcdef";
-        let record = serde_json::json!({"protocol":1,"instanceId":identity,"pid":42,"port":windows_port}).to_string();
+        let record = serde_json::json!({"protocol":1,"instanceId":identity,"pid":42,"port":windows_port,"version":"1.2.4"}).to_string();
         let windows_worker = std::thread::spawn(move || {
             let request = windows.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
             request.respond(tiny_http::Response::from_string(serde_json::json!({
@@ -394,7 +430,7 @@ mod tests {
             for _ in 0..2 {
                 let request = distro.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
                 request.respond(tiny_http::Response::from_string(serde_json::json!({
-                    "pid":42,"hostService":{"protocol":1,"instanceId":identity}
+                    "pid":42,"version":"1.2.4","hostService":{"protocol":1,"instanceId":identity}
                 }).to_string())).unwrap();
             }
         });
@@ -431,7 +467,7 @@ mod tests {
         let (closed, observed) = std::sync::mpsc::channel();
         state.lock().unwrap().session = Some(Session {
             local_port: 42, token: String::new(), handle: Box::new(Handle { state: state.clone(), closed }),
-            record: ServiceRecord { protocol: 1, instance_id: "fixture".into(), pid: 42, port: 42, explicitly_stopped: false },
+            record: ServiceRecord { protocol: 1, instance_id: "fixture".into(), pid: 42, port: 42, version: "1.2.4".into(), explicitly_stopped: false },
         });
         let control = super::super::SshRemoteControl { state: state.clone(), app_version: "test".into(), store: None };
         control.set_app_unlocked(false);
@@ -450,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_worker_is_verified_before_any_provisioning_and_incompatible_worker_is_not_replaced() {
+    fn existing_workers_enforce_protocol_and_version_before_any_provisioning() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct Handle(Arc<AtomicUsize>);
         impl conn::SessionHandle for Handle {
@@ -471,11 +507,19 @@ mod tests {
                 Ok(Box::new(Handle(self.closed.clone())))
             }
         }
-        for protocol in [1u32, 2] {
+        for (protocol, recorded, actual, minimum, error) in [
+            (1u32, "1.2.4", "1.2.4", "1.2.4", None),
+            (1, "1.2.9", "1.2.9", "1.2.4", None),
+            (2, "1.2.4", "1.2.4", "1.2.4", Some("incompatible host service")),
+            (1, "1.2.4", "1.2.4", "1.2.8", Some("Choose Retry")),
+            (1, "1.2.8", "1.2.4", "1.2.8", Some("incompatible host service version")),
+            (1, "", "", "1.2.8", Some("incompatible host service version")),
+            (1, "unknown", "unknown", "1.2.8", Some("incompatible host service version")),
+        ] {
             let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
             let port = server.server_addr().to_ip().unwrap().port();
             let identity = "0123456789abcdef0123456789abcdef";
-            let response = serde_json::json!({"pid":42,"hostService":{"protocol":protocol,"instanceId":identity}}).to_string();
+            let response = serde_json::json!({"pid":42,"version":actual,"hostService":{"protocol":protocol,"instanceId":identity}}).to_string();
             let thread = std::thread::spawn(move || {
                 let request = server.recv().unwrap();
                 assert_eq!(request.url(), "/api/health");
@@ -483,18 +527,140 @@ mod tests {
             });
             let closed = Arc::new(AtomicUsize::new(0));
             let remote = Existing {
-                record: serde_json::json!({"protocol":protocol,"instanceId":identity,"pid":42,"port":port}).to_string(),
+                record: serde_json::json!({"protocol":protocol,"instanceId":identity,"pid":42,"port":port,"version":recorded}).to_string(),
                 closed: closed.clone(),
             };
             let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
                 session: None, busy: true, generation: 1, last_host: None, recovering: true, app_unlocked: true, unlock_intent: Some(ConnectIntent::Recover) }));
-            let result = connect_flow(&state, &remote, "fixture", 1, "new-client-version", true);
-            match protocol {
-                1 => { let mut session = result.unwrap_or_else(|error| panic!("{error}")); session.teardown(); }
-                _ => assert!(result.err().unwrap().contains("incompatible host service")),
+            let result = connect_flow(&state, &remote, "fixture", 1, minimum, true);
+            match error {
+                None => { let mut session = result.unwrap_or_else(|error| panic!("{error}")); session.teardown(); }
+                Some(expected) => assert!(result.err().unwrap().contains(expected)),
             }
             assert_eq!(closed.load(Ordering::SeqCst), 1);
             thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn explicit_upgrade_verifies_download_before_launch_and_prunes_only_a_verified_replacement() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Handle(Arc<Mutex<Vec<&'static str>>>);
+        impl conn::SessionHandle for Handle {
+            fn is_alive(&self) -> bool { true }
+            fn teardown(&mut self) { self.0.lock().unwrap().push("close tunnel"); }
+        }
+        struct Upgrade {
+            old: String,
+            replacement: String,
+            banner: &'static str,
+            download_fails: bool,
+            cancel: Option<Arc<Mutex<State>>>,
+            launched: Arc<AtomicBool>,
+            events: Arc<Mutex<Vec<&'static str>>>,
+        }
+        impl Remote for Upgrade {
+            fn capture(&self, command: &str) -> Result<String, String> {
+                if command == probe_script() {
+                    self.events.lock().unwrap().push("probe");
+                    return Ok(self.old.clone());
+                }
+                if command == "uname -sm" {
+                    self.events.lock().unwrap().push("detect");
+                    return Ok("Linux x86_64".into());
+                }
+                if command.ends_with("--version") {
+                    self.events.lock().unwrap().push("verify binary");
+                    return Ok(self.banner.into());
+                }
+                assert_eq!(command, launch_script("$HOME/.vibestudio/server/1.2.8/skill-server", false));
+                self.events.lock().unwrap().push("launch");
+                self.launched.store(true, Ordering::SeqCst);
+                Ok(format!("SKILL_HOST_SERVICE_READY {}", self.replacement))
+            }
+            fn run(&self, command: &str) -> Result<String, super::super::ssh::RunError> {
+                if command.contains("url=") {
+                    self.events.lock().unwrap().push("download");
+                    if self.download_fails {
+                        return Err(super::super::ssh::RunError { code: Some(4), message: "checksum mismatch".into() });
+                    }
+                    if let Some(state) = &self.cancel {
+                        state.lock().unwrap().generation += 1;
+                    }
+                } else {
+                    assert!(self.launched.load(Ordering::SeqCst), "cleanup must follow a verified launch");
+                    self.events.lock().unwrap().push("prune");
+                }
+                Ok("INSTALLED".into())
+            }
+            fn run_with_stdin(&self, _: &str, _: &[u8]) -> Result<(), super::super::ssh::RunError> { panic!("no upload needed") }
+            fn same_port(&self) -> bool { true }
+            fn open_session(&self, _: &str, _: u16, _: u16, _: &str) -> Result<Box<dyn conn::SessionHandle>, LaunchError> {
+                self.events.lock().unwrap().push("open tunnel");
+                Ok(Box::new(Handle(self.events.clone())))
+            }
+        }
+        for (download_fails, banner, after, success, cancelled) in [
+            (false, "skill-server 1.2.8 host-service=1", "1.2.8", true, false),
+            (false, "skill-server 1.2.8 host-service=1", "1.2.9", true, false),
+            (true, "skill-server 1.2.8 host-service=1", "1.2.8", false, false),
+            (false, "skill-server 1.2.4 host-service=1", "1.2.8", false, false),
+            (false, "skill-server 1.2.8 host-service=1", "1.2.4", false, false),
+            (false, "skill-server 1.2.8 host-service=1", "1.2.8", false, true),
+        ] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let port = server.server_addr().to_ip().unwrap().port();
+            let old_id = "a".repeat(32);
+            let new_id = "b".repeat(32);
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let observed = events.clone();
+            let launched = Arc::new(AtomicBool::new(false));
+            let serving_new = launched.clone();
+            let expected_launch = !download_fails && !cancelled && banner.contains("1.2.8");
+            let old_identity = old_id.clone();
+            let new_identity = new_id.clone();
+            let responder = std::thread::spawn(move || {
+                for _ in 0..if expected_launch { 2 } else { 1 } {
+                    let request = server.recv_timeout(Duration::from_secs(5)).unwrap().expect("expected health probe");
+                    assert_eq!(request.url(), "/api/health");
+                    observed.lock().unwrap().push("verify health");
+                    let replacing = serving_new.load(Ordering::SeqCst);
+                    request.respond(tiny_http::Response::from_string(serde_json::json!({
+                        "pid": if replacing { 43 } else { 42 },
+                        "version": if replacing { after } else { "1.2.4" },
+                        "hostService": { "protocol": 1, "instanceId": if replacing { &new_identity } else { &old_identity } },
+                    }).to_string())).unwrap();
+                }
+            });
+            let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
+                session: None, busy: true, generation: 1, last_host: None, recovering: false,
+                app_unlocked: true, unlock_intent: Some(ConnectIntent::Setup) }));
+            let remote = Upgrade {
+                old: serde_json::json!({"protocol":1,"instanceId":old_id,"pid":42,"port":port,"version":"1.2.4"}).to_string(),
+                replacement: serde_json::json!({"protocol":1,"instanceId":new_id,"pid":43,"port":port,"version":after}).to_string(),
+                banner, download_fails, launched: launched.clone(), events: events.clone(),
+                cancel: cancelled.then(|| state.clone()),
+            };
+            let result = connect_flow(&state, &remote, "fixture", 1, "1.2.8", false);
+            if success {
+                let mut session = result.unwrap_or_else(|error| panic!("{error}"));
+                assert_eq!(session.record.version, after);
+                session.teardown();
+            } else {
+                assert!(result.is_err(), "an unverified replacement must not become the active target");
+            }
+            responder.join().unwrap();
+            let events = events.lock().unwrap();
+            assert_eq!(&events[..5], &["probe", "open tunnel", "verify health", "close tunnel", "detect"]);
+            assert_eq!(events.contains(&"launch"), expected_launch);
+            let pruned = success && after == "1.2.8";
+            assert_eq!(events.contains(&"prune"), pruned);
+            if expected_launch {
+                assert!(events.iter().position(|event| *event == "verify binary") < events.iter().position(|event| *event == "launch"));
+            }
+            if pruned {
+                assert!(events.iter().rposition(|event| *event == "verify health") < events.iter().position(|event| *event == "prune"));
+            }
         }
     }
 
@@ -528,11 +694,11 @@ mod tests {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         let identity = "0123456789abcdef0123456789abcdef";
-        let response = serde_json::json!({"pid":42,"hostService":{"protocol":1,"instanceId":identity}}).to_string();
+        let response = serde_json::json!({"pid":42,"version":"1.2.3","hostService":{"protocol":1,"instanceId":identity}}).to_string();
         let thread = std::thread::spawn(move || {
             server.recv().unwrap().respond(tiny_http::Response::from_string(response)).unwrap();
         });
-        let remote = Setup { installed: AtomicBool::new(false), ready: format!("SKILL_HOST_SERVICE_READY {}", serde_json::json!({"protocol":1,"instanceId":identity,"pid":42,"port":port})) };
+        let remote = Setup { installed: AtomicBool::new(false), ready: format!("SKILL_HOST_SERVICE_READY {}", serde_json::json!({"protocol":1,"instanceId":identity,"pid":42,"port":port,"version":"1.2.3"})) };
         let state = Arc::new(Mutex::new(State { status: super::super::idle_status(), target: None,
             session: None, busy: true, generation: 1, last_host: None, recovering: true, app_unlocked: true, unlock_intent: Some(ConnectIntent::Recover) }));
         let mut session = connect_flow(&state, &remote, "fixture", 1, "1.2.3", false).unwrap_or_else(|error| panic!("{error}"));

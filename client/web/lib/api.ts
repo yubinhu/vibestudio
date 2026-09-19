@@ -1193,7 +1193,14 @@ export interface TerminalLinkFile {
   rel: string;
 }
 export const terminalResolveLink = (id: string, path: string) =>
-  http<TerminalLinkFile>("POST", "terminal/resolve-link", { id, path });
+  http<TerminalLinkFile>("POST", "terminal/resolve-link", { id, path }).catch((error: unknown) => {
+    // Durable hosts can outlive an app update. Never resolve against the saved
+    // launch directory: the live pane may have changed directories since then.
+    if ((error as { status?: number } | null)?.status === 404) {
+      throw new Error("File links require VibeStudio server v1.2.8 or newer on this host. Update and restart its host service; terminal sessions stay running.", { cause: error });
+    }
+    throw error;
+  });
 
 // --- agent turn-finish notifications ---
 // The SPA decides WHEN a bell deserves a notification (lib/sessions.ts); these

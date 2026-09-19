@@ -125,6 +125,12 @@ fn read_record(dir: &Path) -> Option<HostServiceRecord> {
 /// Prove the record belongs to the answering worker, not a recycled PID/port or
 /// a legacy switchboard. A version string alone is not sufficient identity.
 pub fn healthy(record: &HostServiceRecord) -> bool {
+    responding_record(record).is_some()
+}
+
+/// Use the executable's health response for its version. Older launchers could
+/// write an arbitrary --host-service-version label into the discovery record.
+fn responding_record(record: &HostServiceRecord) -> Option<HostServiceRecord> {
     let response = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_millis(500))
         .timeout(Duration::from_secs(1))
@@ -132,7 +138,7 @@ pub fn healthy(record: &HostServiceRecord) -> bool {
         .get(&format!("{}/api/health", record.base_url()))
         .call();
     let Ok(response) = response else {
-        return false;
+        return None;
     };
     let mut body = String::new();
     if response
@@ -141,16 +147,26 @@ pub fn healthy(record: &HostServiceRecord) -> bool {
         .read_to_string(&mut body)
         .is_err()
     {
-        return false;
+        return None;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return false;
+        return None;
     };
-    value.get("pid").and_then(|pid| pid.as_u64()) == Some(record.pid as u64)
+    let identity_matches = value.get("pid").and_then(|pid| pid.as_u64()) == Some(record.pid as u64)
         && value
             .get("hostService")
             .and_then(|value| serde_json::from_value::<HostServiceIdentity>(value.clone()).ok())
-            == Some(record.identity())
+            == Some(record.identity());
+    identity_matches.then(|| HostServiceRecord {
+        // Unknown versions still prove liveness, but can never pass the release
+        // floor. This distinction also allows an operator to stop that worker.
+        version: value
+            .get("version")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .into(),
+        ..record.clone()
+    })
 }
 
 fn compatible(record: HostServiceRecord) -> Result<HostServiceRecord, String> {
@@ -192,6 +208,15 @@ fn stop_intent(dir: &Path, record: Option<&HostServiceRecord>) -> Result<bool, S
 }
 
 fn ensure_in(dir: &Path, options: &HostServiceOptions) -> Result<HostServiceRecord, String> {
+    crate::server_version::require_at_least(&options.version, &options.version)?;
+    ensure_attempt(dir, options, 0)
+}
+
+fn ensure_attempt(
+    dir: &Path,
+    options: &HostServiceOptions,
+    upgrades: u8,
+) -> Result<HostServiceRecord, String> {
     let deadline = Instant::now() + READY_TIMEOUT;
     let startup = private_file(&dir.join("host-service-startup.lock"))?;
     lock_until(&startup, deadline)?;
@@ -210,8 +235,37 @@ fn ensure_in(dir: &Path, options: &HostServiceOptions) -> Result<HostServiceReco
         // Explicit user intent only clears Stop once the old worker is gone.
         drop(lifetime);
     }
-    if let Some(record) = read_record(dir).filter(healthy) {
-        return compatible(record);
+    if let Some(record) = read_record(dir).and_then(|record| responding_record(&record)) {
+        let record = compatible(record)?;
+        if let Err(version_error) =
+            crate::server_version::require_at_least(&record.version, &options.version)
+        {
+            // Unknown versions fail closed: only a proven older compatible
+            // worker is eligible for replacement by an explicit launch/Retry.
+            crate::server_version::require_at_least(&record.version, &record.version)?;
+            if options.recovery {
+                return Err(version_error);
+            }
+            if upgrades >= 3 {
+                return Err("The host service changed repeatedly during its update. Choose Retry to reconnect; running agents were left untouched.".into());
+            }
+            validate_replacement(options)?;
+            // The Stop route obtains this same lock before recording intent.
+            // Release it for Stop, then reenter discovery under a fresh lock so
+            // a concurrent newer worker is reused and never downgraded.
+            drop(startup);
+            if let Err(error) = stop_in(dir, &record) {
+                if read_record(dir).is_none_or(|current| current.identity() == record.identity())
+                    && healthy(&record)
+                {
+                    return Err(error);
+                }
+            }
+            return ensure_attempt(dir, options, upgrades + 1).map_err(|error| format!(
+                "The host service update did not finish: {error} Choose Retry or reopen VibeStudio to start the bundled server. Your tmux sessions were left running."
+            ));
+        }
+        return Ok(record);
     }
     let lifetime = private_file(&dir.join("host-service.lock"))?;
     let mut child = ReapOnDrop(match lifetime.try_lock() {
@@ -225,8 +279,10 @@ fn ensure_in(dir: &Path, options: &HostServiceOptions) -> Result<HostServiceReco
         }
     });
     loop {
-        if let Some(record) = read_record(dir).filter(healthy) {
-            return compatible(record);
+        if let Some(record) = read_record(dir).and_then(|record| responding_record(&record)) {
+            let record = compatible(record)?;
+            crate::server_version::require_at_least(&record.version, &options.version)?;
+            return Ok(record);
         }
         if let Some(child) = child.0.as_mut() {
             if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
@@ -243,6 +299,21 @@ fn ensure_in(dir: &Path, options: &HostServiceOptions) -> Result<HostServiceReco
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// Local launchers use their own bundled executable, whose version is known
+/// without spawning a desktop GUI just to query an unsupported --version flag.
+/// Refuse an unverified external replacement before stopping a healthy worker.
+fn validate_replacement(options: &HostServiceOptions) -> Result<(), String> {
+    let executable = fs::canonicalize(&options.executable)
+        .map_err(|error| format!("Could not verify the replacement host executable: {error}"))?;
+    let current = std::env::current_exe()
+        .and_then(fs::canonicalize)
+        .map_err(|error| format!("Could not verify the current host executable: {error}"))?;
+    if executable != current {
+        return Err("The replacement host executable could not be verified as this client's bundled server. Update the host explicitly and reconnect; the running service was left untouched.".into());
+    }
+    crate::server_version::require_at_least(env!("CARGO_PKG_VERSION"), &options.version)
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, String> {
@@ -338,10 +409,13 @@ fn write_record(dir: &Path, record: &HostServiceRecord) -> Result<(), String> {
 
 /// Run a worker in this process. Returns immediately if another worker already
 /// owns the per-user lifetime lock. It never becomes an SSH switchboard.
-pub fn run(options: HostServiceOptions) -> Result<(), String> {
+pub fn run(mut options: HostServiceOptions) -> Result<(), String> {
     // Native headless entry bypasses Tauri setup; stdout/stderr are already
     // redirected by ensure. Standalone may have installed this logger already.
     crate::init_logging();
+    // Discovery, phone UI and health must all report the compiled server
+    // release, never a caller-supplied version label.
+    options.version = env!("CARGO_PKG_VERSION").into();
     let dir = skill_core::paths::ensure_config_dir()?;
     if options.recovery && stop_intent(&dir, read_record(&dir).as_ref())? {
         return Err(STOPPED_MESSAGE.into());
@@ -423,13 +497,16 @@ pub fn run(options: HostServiceOptions) -> Result<(), String> {
 /// Explicitly stop this verified service instance, leaving every tmux agent
 /// running. Disconnecting a client never calls this operation.
 pub fn stop(record: &HostServiceRecord) -> Result<(), String> {
+    stop_in(&skill_core::paths::config_dir()?, record)
+}
+
+fn stop_in(dir: &Path, record: &HostServiceRecord) -> Result<(), String> {
     if !healthy(record) {
         return Err(
             "The recorded host service is no longer answering with the expected identity.".into(),
         );
     }
-    let dir = skill_core::paths::config_dir()?;
-    if !read_record(&dir)
+    if !read_record(dir)
         .is_some_and(|local| local.identity() == record.identity() && local.pid == record.pid)
     {
         return Err("The record does not belong to this local host-service configuration.".into());
@@ -445,8 +522,12 @@ pub fn stop(record: &HostServiceRecord) -> Result<(), String> {
             let detail = match error {
                 ureq::Error::Status(status, response) => {
                     let mut body = String::new();
-                    let _ = response.into_reader().take(16 * 1024).read_to_string(&mut body);
-                    serde_json::from_str::<serde_json::Value>(&body).ok()
+                    let _ = response
+                        .into_reader()
+                        .take(16 * 1024)
+                        .read_to_string(&mut body);
+                    serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
                         .and_then(|value| value["error"].as_str().map(str::to_owned))
                         .unwrap_or_else(|| format!("HTTP {status}"))
                 }

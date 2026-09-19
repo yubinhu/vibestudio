@@ -196,8 +196,16 @@ stops that service; sessions remain in tmux until closed through their session c
 ensures one detached worker and prints its ready record. Desktop uses its own executable's
 `--host-service` entry point before initializing Tauri. Startup and lifetime file locks
 serialize launches; `host-service.json` records protocol, instance ID, PID, port and version.
-Reuse verifies the record against loopback `/api/health`, and never replaces a live worker
-merely because the accessor version changed. The worker has no remote-switching capability.
+Reuse verifies the record against loopback `/api/health`, checks the service protocol,
+and requires the actual server release to be at least the client's version. A newer
+protocol-compatible worker can serve an older client; an older worker cannot serve a
+newer client merely because its protocol matches. Explicit startup/connection or Retry
+can replace an older worker after validating the replacement executable. Only the
+identity-verified HTTP host is stopped; tmux processes continue running. Background
+recovery reports the version mismatch and waits for Retry instead of performing an
+upgrade. A failed replacement startup returns an error so Retry can start it again;
+legacy workers do not provide enough launch metadata for universal automatic rollback.
+The worker has no remote-switching capability.
 Its lifetime is independent of SSH/stdin and the desktop window. `--stop-host-service` or
 `POST /api/host-service/stop` stops an instance after identity verification. This is a detached
 process, not an OS login/boot service: a machine restart requires starting an accessor or
@@ -439,8 +447,17 @@ A **local proxy switchboard**; the webview never changes origin.
   hub connected it proxies, so subscriptions live next to the bell watcher that fires them.
   Non-`/api` GETs serve the local UI.
 - **Connect flow:** list targets (`~/.ssh/config` + WSL distros) → discover the durable
-  service record → attach and verify its identity. If absent, detect arch, ensure a
-  version-pinned static-musl `skill-server` (checksum-verified) and start `--daemon`.
+  service record → attach and verify its identity, protocol and actual release version.
+  A server must be at least the client version (and any higher configured server
+  version); a directory name or matching protocol is insufficient. If absent or older
+  during an explicit connection, detect arch, ensure a version-pinned static-musl
+  `skill-server` (checksum-verified), check its own `--version`, and start `--daemon`.
+  The daemon rechecks the shared worker before replacing an older one, preventing
+  an older client from downgrading a healthy newer worker. The resulting health
+  response must satisfy the version requirement before workspace requests are enabled.
+  Provisioning keeps three recently used server installations; pruning happens only
+  after a successful verified connection, leaving the previous binary available while
+  an upgrade is being prepared. A removed cache can be downloaded again when needed.
   Recovery first reuses the installed binary and never repeats provisioning merely because
   the tunnel dropped. SSH uses `ssh -L`; WSL uses a fresh Windows loopback listener
   and binary pipes through `wsl.exe --exec` into the selected distro (bash `/dev/tcp`).

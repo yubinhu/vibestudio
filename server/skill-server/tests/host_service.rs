@@ -5,7 +5,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use skill_server::host_service::{healthy, stop, HostServiceRecord};
@@ -91,6 +92,212 @@ fn wait_stopped(record: &HostServiceRecord) {
     while healthy(record) {
         assert!(Instant::now() < deadline, "host service did not stop");
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A versioned legacy worker on private loopback/config roots. The production
+/// server binary remains unmodified; its release floor comes from its real
+/// compiled version while this fixture can advertise an older health response.
+struct LegacyWorker {
+    record: HostServiceRecord,
+    exit: Arc<AtomicBool>,
+    stops: Arc<AtomicUsize>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LegacyWorker {
+    fn start(fixture: &Fixture, actual_version: &str, recorded_version: &str) -> Self {
+        Self::start_with_failure(fixture, actual_version, recorded_version, false)
+    }
+
+    fn start_with_failure(
+        fixture: &Fixture,
+        actual_version: &str,
+        recorded_version: &str,
+        fail_next_launch: bool,
+    ) -> Self {
+        let dir = fixture.0.join("config/vibestudio");
+        fs::create_dir_all(&dir).unwrap();
+        let lifetime = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("host-service.lock"))
+            .unwrap();
+        lifetime.lock().unwrap();
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let record = HostServiceRecord {
+            protocol: 1,
+            instance_id: format!("{:032x}", NEXT.fetch_add(1, Ordering::Relaxed)),
+            pid: std::process::id(),
+            port: server.server_addr().to_ip().unwrap().port(),
+            version: recorded_version.into(),
+            started_at: 0,
+        };
+        fs::write(
+            dir.join("host-service.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let identity =
+            serde_json::json!({"protocol": record.protocol, "instanceId": record.instance_id});
+        let health = serde_json::json!({"pid": record.pid, "version": actual_version, "hostService": identity});
+        let exit = Arc::new(AtomicBool::new(false));
+        let stops = Arc::new(AtomicUsize::new(0));
+        let thread_exit = exit.clone();
+        let thread_stops = stops.clone();
+        let thread = std::thread::spawn(move || {
+            while !thread_exit.load(Ordering::SeqCst) {
+                let Some(mut request) = server.recv_timeout(Duration::from_millis(50)).unwrap()
+                else {
+                    continue;
+                };
+                match request.url() {
+                    "/api/health" => {
+                        request
+                            .respond(tiny_http::Response::from_string(health.to_string()))
+                            .unwrap();
+                    }
+                    "/api/host-service/stop" => {
+                        let mut body = String::new();
+                        request.as_reader().read_to_string(&mut body).unwrap();
+                        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+                        assert_eq!(body["instanceId"], identity["instanceId"]);
+                        // The real Stop route takes the startup lock. Holding it
+                        // here catches a launcher that forgets to release it.
+                        let startup = fs::OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .create(true)
+                            .truncate(false)
+                            .open(dir.join("host-service-startup.lock"))
+                            .unwrap();
+                        startup
+                            .try_lock()
+                            .expect("launcher must release startup lock before Stop");
+                        fs::write(
+                            dir.join("host-service-stopped.json"),
+                            serde_json::to_vec(&identity).unwrap(),
+                        )
+                        .unwrap();
+                        if fail_next_launch {
+                            // Fail the replacement's log-open after verified
+                            // Stop, proving an unsuccessful update never makes
+                            // the client accept its old incompatible worker.
+                            fs::create_dir(dir.join("host-service.log")).unwrap();
+                        }
+                        thread_stops.fetch_add(1, Ordering::SeqCst);
+                        request
+                            .respond(tiny_http::Response::from_string("{}"))
+                            .unwrap();
+                        break;
+                    }
+                    _ => {
+                        request.respond(tiny_http::Response::empty(404)).unwrap();
+                    }
+                }
+            }
+            drop(server);
+            drop(lifetime);
+        });
+        Self {
+            record,
+            exit,
+            stops,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for LegacyWorker {
+    fn drop(&mut self) {
+        self.exit.store(true, Ordering::SeqCst);
+        self.thread.take().unwrap().join().unwrap();
+    }
+}
+
+#[test]
+fn recovery_rejects_older_worker_then_explicit_launch_upgrades_without_trusting_record_version() {
+    let fixture = Fixture::new();
+    let legacy = LegacyWorker::start(&fixture, "0.0.0-alpha", "999.0.0");
+    let recovery = fixture.command().arg("--recover").output().unwrap();
+    assert!(!recovery.status.success());
+    let error = String::from_utf8_lossy(&recovery.stderr);
+    assert!(
+        error.contains("incompatible host service version 0.0.0-alpha"),
+        "{error}"
+    );
+    assert!(error.contains("Retry"), "{error}");
+    assert_eq!(legacy.stops.load(Ordering::SeqCst), 0);
+    assert!(healthy(&legacy.record));
+
+    let upgrade = fixture.command().output().unwrap();
+    assert!(
+        upgrade.status.success(),
+        "{}",
+        String::from_utf8_lossy(&upgrade.stderr)
+    );
+    let current = fixture.record();
+    assert_ne!(current.instance_id, legacy.record.instance_id);
+    assert_eq!(current.port, legacy.record.port);
+    assert_eq!(current.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(legacy.stops.load(Ordering::SeqCst), 1);
+    assert!(healthy(&current));
+}
+
+#[test]
+fn failed_replacement_reports_retry_and_can_be_started_after_the_failure_is_fixed() {
+    let fixture = Fixture::new();
+    let legacy = LegacyWorker::start_with_failure(&fixture, "0.0.0-alpha", "0.0.0-alpha", true);
+    let result = fixture.command().output().unwrap();
+    assert!(!result.status.success());
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        error.contains("host service update did not finish"),
+        "{error}"
+    );
+    assert!(error.contains("Retry"), "{error}");
+    assert!(error.contains("tmux sessions were left running"), "{error}");
+    assert_eq!(legacy.stops.load(Ordering::SeqCst), 1);
+    assert!(!healthy(&legacy.record));
+    fs::remove_dir(fixture.0.join("config/vibestudio/host-service.log")).unwrap();
+    let retry = fixture.command().output().unwrap();
+    assert!(
+        retry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(healthy(&fixture.record()));
+}
+
+#[test]
+fn newer_host_is_reused_and_unknown_health_version_is_not_accepted_or_stopped() {
+    for (actual, recorded, accepted) in [
+        ("999.0.0", "0.0.0-alpha", true),
+        ("unknown", "999.0.0", false),
+    ] {
+        let fixture = Fixture::new();
+        let legacy = LegacyWorker::start(&fixture, actual, recorded);
+        for recover in [false, true] {
+            let mut command = fixture.command();
+            if recover {
+                command.arg("--recover");
+            }
+            let result = command.output().unwrap();
+            assert_eq!(
+                result.status.success(),
+                accepted,
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            if accepted {
+                let output = String::from_utf8_lossy(&result.stdout);
+                assert!(output.contains("\"version\":\"999.0.0\""), "{output}");
+            }
+            assert_eq!(legacy.stops.load(Ordering::SeqCst), 0);
+            assert_eq!(fixture.record(), legacy.record);
+        }
     }
 }
 

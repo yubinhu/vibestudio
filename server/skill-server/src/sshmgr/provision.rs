@@ -19,7 +19,7 @@ const INSTALL_SCRIPT: &str = r#"set -e
 ver="__VERSION__"
 dir="$HOME/.vibestudio/server/$ver"
 bin="$dir/skill-server"
-if [ -x "$bin" ]; then
+if [ "__SKIP_CACHE__" = 0 ] && [ -x "$bin" ]; then
   installed=$("$bin" --version 2>/dev/null) || installed=""
   case "$installed" in *" host-service=1"*) echo INSTALLED; exit 0 ;; esac
 fi
@@ -71,7 +71,7 @@ mv -f "$tmp" "$dir/skill-server"
 /// recently used few and delete the rest.
 const KEEP_VERSIONS: usize = 3;
 
-/// Remote-side prune: mark the version we just provisioned as most-recently-used, then
+/// Remote-side prune: mark the version we successfully connected to as most-recently-used, then
 /// delete all but the newest `KEEP_VERSIONS` version directories under
 /// `~/.vibestudio/server`. mtime-ordered with a touch-on-use, so it's effectively LRU
 /// and the version we're about to launch is always kept. Deleting a binary another client
@@ -91,14 +91,15 @@ exit 0
 
 /// The release version whose `skill-server` asset we prefer. Defaults to the running
 /// app's version (`app_version`, from `tauri.conf.json`, which CI stamps from the
-/// release tag); override with `VIBESTUDIO_SERVER_VERSION`. A released build's version
+/// release tag); `VIBESTUDIO_SERVER_VERSION` may raise that floor, never lower it. A released build's version
 /// exact-matches its tag; an unstamped dev build sits at the placeholder `0.0.0` that
 /// was never released, so `candidate_urls` falls back to the latest release.
-pub fn server_version(app_version: &str) -> String {
-    std::env::var("VIBESTUDIO_SERVER_VERSION")
+pub fn server_version(app_version: &str) -> Result<String, String> {
+    let configured = std::env::var("VIBESTUDIO_SERVER_VERSION")
         .ok()
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| app_version.to_string())
+        .unwrap_or_else(|| app_version.to_string());
+    crate::server_version::minimum(app_version, &configured)
 }
 
 /// The asset URLs to try, in order: the version-pinned release first (so a released
@@ -162,42 +163,56 @@ pub fn detect(remote: &dyn Remote) -> Result<Platform, String> {
 /// a literal `$HOME` for the remote shell to expand). Idempotent. Tries each candidate
 /// asset URL in turn — version-pinned first, then latest — so a 404 on the pinned URL
 /// (e.g. an unstamped dev build at `0.0.0`) transparently falls back to the latest
-/// release instead of failing the whole connect.
+/// release instead of failing the whole connect. Cached and downloaded executables
+/// must report a supported version at least as new as the client.
 pub fn ensure_installed(remote: &dyn Remote, platform: &Platform, app_version: &str) -> Result<String, String> {
-    let version = server_version(app_version);
+    let version = server_version(app_version)?;
     let base = std::env::var("VIBESTUDIO_SERVER_BASE_URL").ok();
     let urls = candidate_urls(&version, platform.target, base.as_deref());
     ensure_installed_from_urls(remote, &version, platform.target, &urls)
 }
 
 fn ensure_installed_from_urls(remote: &dyn Remote, version: &str, target: &str, urls: &[String]) -> Result<String, String> {
+    crate::server_version::require_at_least(version, version)?;
     let bin = format!("$HOME/.vibestudio/server/{version}/skill-server");
 
     let mut last = String::new();
+    let mut skip_cache = false;
     for url in urls {
-        let script = INSTALL_SCRIPT.replace("__VERSION__", version).replace("__URL__", url);
-        match remote.run(&script) {
-            Ok(_) => {
-                prune_old_versions(remote, version);
-                return Ok(bin);
+        loop {
+            let script = INSTALL_SCRIPT.replace("__VERSION__", version).replace("__URL__", url)
+                .replace("__SKIP_CACHE__", if skip_cache { "1" } else { "0" });
+            match remote.run(&script) {
+                Ok(output) => {
+                    match verify_installed(remote, &bin, version) {
+                        Ok(()) => return Ok(bin),
+                        Err(_) if output.trim() == "INSTALLED" && !skip_cache => {
+                            // A version directory may contain an earlier latest-release
+                            // fallback. Redownload once without deleting that cache or
+                            // stopping its worker; only verified bytes replace the file.
+                            skip_cache = true;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                // Exit 3 = the remote lacks a downloader or hasher → download and verify
+                // here, then pipe it over the same transport (also works through ProxyJump).
+                Err(e) if e.code == Some(3) => {
+                    install_via_pipe(remote, version, urls)?;
+                    return Ok(bin);
+                }
+                // Exit 4 = the downloaded binary's checksum couldn't be verified. Never
+                // try another release or transport after an integrity failure.
+                Err(e) if e.code == Some(4) => {
+                    return Err(format!(
+                        "The downloaded skill-server could not be verified against its published checksum. Aborted. {}", e.message,
+                    ));
+                }
+                // Download failed (e.g. a 404 for a version with no published asset) — record
+                // it and fall through to the next candidate URL.
+                Err(e) => { last = e.message; break; },
             }
-            // Exit 3 = the remote lacks a downloader or hasher → download and verify
-            // here, then pipe it over the same transport (also works through ProxyJump).
-            Err(e) if e.code == Some(3) => {
-                install_via_pipe(remote, version, urls)?;
-                prune_old_versions(remote, version);
-                return Ok(bin);
-            }
-            // Exit 4 = the downloaded binary's checksum couldn't be verified. Never
-            // try another release or transport after an integrity failure.
-            Err(e) if e.code == Some(4) => {
-                return Err(format!(
-                    "The downloaded skill-server could not be verified against its published checksum. Aborted. {}", e.message,
-                ));
-            }
-            // Download failed (e.g. a 404 for a version with no published asset) — record
-            // it and fall through to the next candidate URL.
-            Err(e) => last = e.message,
         }
     }
     Err(format!(
@@ -209,11 +224,19 @@ fn ensure_installed_from_urls(remote: &dyn Remote, version: &str, target: &str, 
     ))
 }
 
+fn verify_installed(remote: &dyn Remote, bin: &str, minimum: &str) -> Result<(), String> {
+    let banner = remote.capture(&format!("\"{bin}\" --version"))
+        .map_err(|error| format!("Could not verify the installed skill-server executable: {error}"))?;
+    let actual = crate::server_version::from_banner(&banner)?;
+    crate::server_version::require_at_least(&actual, minimum)
+}
+
 /// Best-effort cleanup so remotes don't accumulate a `skill-server` binary for every
 /// version ever connected with (see [`KEEP_VERSIONS`]). Runs on every successful
-/// connect, after the current version is in place; failures are logged and ignored —
-/// keeping the remote tidy must never block connecting.
-fn prune_old_versions(remote: &dyn Remote, version: &str) {
+/// provisioned connection, after the replacement worker answers with a compatible
+/// version. Installation alone must not prune an older worker's restart binary
+/// while that worker is still serving clients. Failures never block connecting.
+pub(super) fn prune_old_versions(remote: &dyn Remote, version: &str) {
     let script = PRUNE_SCRIPT
         .replace("__VERSION__", version)
         .replace("__KEEP_PLUS_1__", &(KEEP_VERSIONS + 1).to_string());
@@ -282,7 +305,8 @@ fn install_via_pipe_with_fetch(
 
     let script = PIPE_SCRIPT.replace("__VERSION__", version);
     remote.run_with_stdin(&script, &bytes)
-        .map_err(|e| format!("Piping skill-server to the remote failed: {}", e.message))
+        .map_err(|e| format!("Piping skill-server to the remote failed: {}", e.message))?;
+    verify_installed(remote, &format!("$HOME/.vibestudio/server/{version}/skill-server"), version)
 }
 
 #[cfg(test)]
@@ -306,6 +330,8 @@ mod tests {
         results: Mutex<VecDeque<Result<String, RunError>>>,
         commands: Mutex<Vec<String>>,
         piped: Mutex<Vec<(String, Vec<u8>)>>,
+        banners: Mutex<VecDeque<Result<String, String>>>,
+        captures: Mutex<Vec<String>>,
     }
 
     impl MockRemote {
@@ -327,7 +353,11 @@ mod tests {
     }
 
     impl Remote for MockRemote {
-        fn capture(&self, _: &str) -> Result<String, String> { unreachable!() }
+        fn capture(&self, cmd: &str) -> Result<String, String> {
+            self.captures.lock().unwrap().push(cmd.to_string());
+            self.banners.lock().unwrap().pop_front()
+                .unwrap_or_else(|| Ok("skill-server 1.2.1 host-service=1".into()))
+        }
         fn run(&self, cmd: &str) -> Result<String, RunError> {
             self.commands.lock().unwrap().push(cmd.to_string());
             self.results.lock().unwrap().pop_front().expect("unexpected remote command")
@@ -369,12 +399,48 @@ mod tests {
         let urls = candidate_urls("1.2.1", target, None);
         for failures in 0..urls.len() {
             let mut codes = vec![Some(1); failures];
-            codes.extend([None, None]); // Successful install, then best-effort pruning.
+            codes.push(None); // Installation must not prune before a verified connection.
             let remote = MockRemote::returning(&codes);
             assert_eq!(ensure_installed_from_urls(&remote, "1.2.1", target, &urls).unwrap(),
                 "$HOME/.vibestudio/server/1.2.1/skill-server");
             assert_eq!(remote.requested_urls(), urls[..=failures]);
+            assert_eq!(remote.commands.lock().unwrap().len(), failures + 1,
+                "installing a replacement must leave the previous host's binary available");
         }
+    }
+
+    #[test]
+    fn stale_or_malformed_cache_is_redownloaded_once_and_a_bad_download_is_rejected() {
+        let urls = candidate_urls("1.2.8", TARGETS[0].0, None);
+        for cached in ["skill-server 1.2.4 host-service=1", "unrecognized version"] {
+            for replacement in ["skill-server 1.2.8 host-service=1", "skill-server 1.2.4 host-service=1", "malformed"] {
+                let remote = MockRemote {
+                    results: Mutex::new(VecDeque::from([Ok("INSTALLED\n".into()), Ok("DOWNLOADED\n".into())])),
+                    banners: Mutex::new(VecDeque::from([Ok(cached.into()), Ok(replacement.into())])),
+                    ..MockRemote::default()
+                };
+                let result = ensure_installed_from_urls(&remote, "1.2.8", TARGETS[0].0, &urls);
+                assert_eq!(result.is_ok(), replacement.contains("1.2.8"));
+                assert_eq!(remote.requested_urls(), vec![urls[0].clone(), urls[0].clone()]);
+                let commands = remote.commands.lock().unwrap();
+                assert!(commands[0].contains("if [ \"0\" = 0 ]"));
+                assert!(commands[1].contains("if [ \"1\" = 0 ]"));
+                assert_eq!(remote.captures.lock().unwrap().len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn compatible_newer_cache_is_reused_without_download_or_prune() {
+        let remote = MockRemote {
+            results: Mutex::new(VecDeque::from([Ok("INSTALLED\n".into())])),
+            banners: Mutex::new(VecDeque::from([Ok("skill-server 1.2.10 host-service=1".into())])),
+            ..MockRemote::default()
+        };
+        let urls = candidate_urls("1.2.9", TARGETS[0].0, None);
+        assert!(ensure_installed_from_urls(&remote, "1.2.9", TARGETS[0].0, &urls).is_ok());
+        assert_eq!(remote.commands.lock().unwrap().len(), 1);
+        assert_eq!(remote.requested_urls(), urls[..1]);
     }
 
     #[test]
@@ -411,6 +477,24 @@ mod tests {
             assert!(piped[0].0.contains("dir=\"$HOME/.vibestudio/server/1.2.1\""));
             assert!(piped[0].0.contains("\"$dir/skill-server\""));
         }
+    }
+
+    #[test]
+    fn checksum_verified_pipe_download_must_report_a_compatible_executable_version() {
+        let payload = b"server payload";
+        let checksum = format!("{:x}\n", Sha256::digest(payload));
+        let urls = candidate_urls("1.2.8", TARGETS[0].0, None);
+        let remote = MockRemote {
+            banners: Mutex::new(VecDeque::from([Ok("skill-server 1.2.4 host-service=1".into())])),
+            ..MockRemote::default()
+        };
+        let error = install_via_pipe_with_fetch(&remote, "1.2.8", &urls, |url| {
+            Ok(if url.ends_with(".sha256") { checksum.as_bytes().to_vec() } else { payload.to_vec() })
+        }).unwrap_err();
+        assert!(error.contains("incompatible host service version 1.2.4"));
+        assert_eq!(remote.piped.lock().unwrap().len(), 1);
+        assert_eq!(remote.captures.lock().unwrap().len(), 1);
+        assert!(remote.commands.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -496,7 +580,7 @@ mod tests {
                 fs::create_dir(&root).unwrap();
                 let tools = root.join("tools");
                 fs::create_dir(&tools).unwrap();
-                for name in ["mkdir", "rm", "mv", "chmod", "awk"] {
+                for name in ["mkdir", "rm", "mv", "chmod", "awk", "ls", "tail", "touch"] {
                     let path = ["/usr/bin", "/bin"].into_iter()
                         .map(|dir| Path::new(dir).join(name)).find(|path| path.exists()).unwrap();
                     symlink(path, tools.join(name)).unwrap();
@@ -543,6 +627,7 @@ esac
                 // Substitute the script's remote HOME without changing this process's
                 // HOME or allowing the fixture to write to the user's install path.
                 let script = INSTALL_SCRIPT.replace("$HOME", self.root.to_str().unwrap())
+                    .replace("__SKIP_CACHE__", "0")
                     .replace("__VERSION__", "1.2.1").replace("__URL__", URL);
                 skill_core::process::hidden_command("/bin/sh").args(["-c", &script])
                     .env("PATH", self.root.join("tools"))
@@ -552,6 +637,17 @@ esac
 
             fn bin(&self) -> PathBuf {
                 self.root.join(".vibestudio/server/1.2.1/skill-server")
+            }
+
+            fn execute(&self, script: &str) -> Result<String, RunError> {
+                let script = script.replace("$HOME", self.root.to_str().unwrap());
+                let output = skill_core::process::hidden_command("/bin/sh").args(["-c", &script])
+                    .env("PATH", self.root.join("tools")).output().unwrap();
+                if output.status.success() {
+                    Ok(String::from_utf8(output.stdout).unwrap())
+                } else {
+                    Err(RunError { code: output.status.code(), message: String::from_utf8_lossy(&output.stderr).into_owned() })
+                }
             }
 
             fn assert_not_installed(&self) {
@@ -564,6 +660,32 @@ esac
         impl Drop for Fixture {
             fn drop(&mut self) {
                 fs::remove_dir_all(&self.root).unwrap();
+            }
+        }
+
+        impl Remote for Fixture {
+            fn capture(&self, cmd: &str) -> Result<String, String> {
+                self.execute(cmd).map_err(|error| error.message)
+            }
+            fn run(&self, cmd: &str) -> Result<String, RunError> { self.execute(cmd) }
+            fn run_with_stdin(&self, _: &str, _: &[u8]) -> Result<(), RunError> { unreachable!() }
+            fn same_port(&self) -> bool { false }
+            fn open_session(&self, _: &str, _: u16, _: u16, _: &str) -> Result<Box<dyn SessionHandle>, LaunchError> { unreachable!() }
+        }
+
+        #[test]
+        fn stale_cache_is_atomically_replaced_only_after_checksum_verification() {
+            let stale = b"#!/bin/sh\necho 'skill-server 1.2.0 host-service=1'\n";
+            for valid_checksum in [false, true] {
+                let fixture = Fixture::new(true);
+                fs::create_dir_all(fixture.bin().parent().unwrap()).unwrap();
+                fs::write(fixture.bin(), stale).unwrap();
+                fs::set_permissions(fixture.bin(), fs::Permissions::from_mode(0o755)).unwrap();
+                if !valid_checksum { fixture.checksum(Some(b"invalid checksum")); }
+                let result = ensure_installed_from_urls(&fixture, "1.2.1", TARGETS[0].0, &[URL.into()]);
+                assert_eq!(result.is_ok(), valid_checksum, "{result:?}");
+                assert_eq!(fs::read(fixture.bin()).unwrap(), if valid_checksum { PAYLOAD } else { stale });
+                assert_eq!(fs::read_to_string(fixture.root.join("requests")).unwrap(), format!("{URL}\n{URL}.sha256\n"));
             }
         }
 
@@ -583,6 +705,42 @@ esac
             assert!(output.status.success());
             assert_eq!(String::from_utf8(output.stdout).unwrap(), "INSTALLED\n");
             assert_eq!(fs::read_to_string(fixture.root.join("requests")).unwrap(), requests);
+        }
+
+        #[test]
+        fn cleanup_keeps_three_recent_versions_and_removed_versions_can_be_reinstalled() {
+            let fixture = Fixture::new(true);
+            assert!(fixture.run(0).status.success());
+            let installs = fixture.root.join(".vibestudio/server");
+            for (index, version) in ["1.1.0", "1.1.1", "1.1.2"].iter().enumerate() {
+                let directory = installs.join(version);
+                fs::create_dir(&directory).unwrap();
+                fs::write(directory.join("skill-server"), PAYLOAD).unwrap();
+                fs::File::open(directory).unwrap().set_times(fs::FileTimes::new().set_modified(
+                    std::time::UNIX_EPOCH + Duration::from_secs(100 + index as u64)
+                )).unwrap();
+            }
+            let script = PRUNE_SCRIPT.replace("$HOME", fixture.root.to_str().unwrap())
+                .replace("__VERSION__", "1.2.1")
+                .replace("__KEEP_PLUS_1__", &(KEEP_VERSIONS + 1).to_string());
+            let output = skill_core::process::hidden_command("/bin/sh").args(["-c", &script])
+                .env("PATH", fixture.root.join("tools")).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            assert_eq!(fs::read_dir(&installs).unwrap().count(), KEEP_VERSIONS);
+            assert!(!installs.join("1.1.0").exists());
+            assert!(installs.join("1.1.1/skill-server").exists());
+            assert!(installs.join("1.1.2/skill-server").exists());
+            assert!(fixture.bin().exists());
+
+            // An older client can provision its removed cache again. It still
+            // needs the normal executable/health checks before routing requests.
+            let script = INSTALL_SCRIPT.replace("$HOME", fixture.root.to_str().unwrap())
+                .replace("__SKIP_CACHE__", "0")
+                .replace("__VERSION__", "1.1.0").replace("__URL__", URL);
+            let output = skill_core::process::hidden_command("/bin/sh").args(["-c", &script])
+                .env("PATH", fixture.root.join("tools")).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            assert_eq!(fs::read(installs.join("1.1.0/skill-server")).unwrap(), PAYLOAD);
         }
 
         #[test]

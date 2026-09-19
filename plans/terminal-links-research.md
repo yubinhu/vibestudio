@@ -138,6 +138,19 @@ tmux attachment, including reconnect. Reject unsupported URL schemes, report
 missing files clearly, and verify that file resolution follows a changed pane
 directory. Keep fixture sessions on a private tmux socket.
 
+File links require the **active workspace host** to run server v1.2.8 or newer.
+The original desktop update left a healthy persistent WSL/SSH worker on v1.2.4:
+reuse checked only its protocol. Host selection now also requires the server to be
+at least the client's release version, with verified upgrades on explicit connection
+and a Retry error during background recovery. Test this mixed version case as well
+as matching fresh installations. A missing resolver route on older clients
+must explain the host upgrade requirement, never guess relative paths using the
+session's saved launch directory. An explicit host upgrade should verify the new
+binary first, stop only the identity-verified HTTP service, then restart and check
+that the same tmux pane process survives and the reported link resolves. Verify
+the workspace host's health directly: the desktop switchboard's health endpoint
+reports its own version.
+
 Run frontend build/lint/tests and Rust checks for the changed crates, followed
 by browser interaction against the actual HTTP/SSE backend. A native platform
 build is still needed to verify that platform's webview and external-browser

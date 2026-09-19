@@ -38,6 +38,7 @@ mod proxy;
 #[cfg(feature = "local-backend")]
 mod push;
 mod remote_api;
+mod server_version;
 mod sshmgr;
 mod tailscale;
 

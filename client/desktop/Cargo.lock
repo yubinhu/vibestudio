@@ -4817,6 +4817,7 @@ dependencies = [
  "qrcode",
  "ring",
  "russh",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
