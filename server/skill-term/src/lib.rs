@@ -39,6 +39,8 @@ use serde::Serialize;
 
 /// Bounded, attachment-independent tmux observations for agent state detection.
 pub mod detection_snapshot;
+mod terminal_links;
+pub use terminal_links::resolve_file_link;
 
 /// Prefix that marks every tmux session this app owns (so we never touch the
 /// user's own tmux sessions).

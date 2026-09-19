@@ -28,4 +28,5 @@ pub mod skill;
 mod state_store;
 pub mod switchboard;
 pub mod sync;
+pub mod terminal_links;
 pub mod update;

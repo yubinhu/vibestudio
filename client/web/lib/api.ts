@@ -1186,6 +1186,15 @@ export const terminalCreate = (a: CreateTermArgs) => http<TermSession>("POST", "
 export const terminalKill = (id: string) =>
   http<{ ok: boolean }>("POST", "terminal/kill", { id }).then(() => {});
 
+/** A file on the terminal's host, resolved against its live working directory. */
+export interface TerminalLinkFile {
+  path: string;
+  root: string;
+  rel: string;
+}
+export const terminalResolveLink = (id: string, path: string) =>
+  http<TerminalLinkFile>("POST", "terminal/resolve-link", { id, path });
+
 // --- agent turn-finish notifications ---
 // The SPA decides WHEN a bell deserves a notification (lib/sessions.ts); these
 // routes are pinned LOCAL (never proxied) because a toast/badge belongs to the

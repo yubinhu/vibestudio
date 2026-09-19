@@ -239,20 +239,45 @@ success alone does not confirm testers can install it. See the
 ## Screenshot harness (headless, never touches the live app)
 
 The desktop's own server runs on `:8765` and **must not be killed** (it may host
-the agent session driving the release). Verify against a throwaway server instead:
+the agent session driving the release). Verify against a throwaway server with
+its own config and tmux socket directory. `--no-startup-maintenance` is required:
+Tailscale Serve belongs to the machine, so an isolated config directory alone
+does not prevent a test server from changing the live phone-access target.
 
 ```bash
-# fresh server on a spare port, no auth token:
+# Keep tmux's socket path short enough for macOS as well as Linux.
+visual_fixture=$(mktemp -d /tmp/vs-visual.XXXXXX)
+mkdir -p "$visual_fixture/config" "$visual_fixture/tmux"
 cargo build -p skill-server   # workspace target is ./target, NOT ./server/target
-env -u VIBESTUDIO_SERVER_TOKEN ./target/debug/skill-server --port 8799 &
-# vite pointed at it (its /api proxy target is overridable):
-VITE_API_TARGET=http://127.0.0.1:8799 npx vite --port 1421 --strictPort &
+# Fresh server on a spare port; never inherit the agent's tmux connection.
+env -u VIBESTUDIO_SERVER_TOKEN -u TMUX -u TMUX_PANE \
+  XDG_CONFIG_HOME="$visual_fixture/config" TMUX_TMPDIR="$visual_fixture/tmux" \
+  ./target/debug/skill-server --port 8799 --no-startup-maintenance \
+  > "$visual_fixture/server.log" 2>&1 &
+visual_server_pid=$!
+# Vite pointed at it (its /api proxy target is overridable):
+VITE_API_TARGET=http://127.0.0.1:8799 node node_modules/vite/bin/vite.js --port 1421 --strictPort \
+  > "$visual_fixture/vite.log" 2>&1 &
+visual_vite_pid=$!
 ```
 
 Then drive `http://localhost:1421` with `playwright-core` if installed, or any
 headless Chromium/CDP harness against cached Chromium
 (`~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`). Studio needs a real
 skill root from `GET /api/skills/discover`, reached via `/#/skills/<encoded-root>`.
+Confirm both processes started successfully from their logs before browsing.
+After the checks, stop only the processes and private tmux server created above:
+
+```bash
+kill "$visual_vite_pid" "$visual_server_pid"
+wait "$visual_vite_pid" "$visual_server_pid" 2>/dev/null || true
+env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$visual_fixture/tmux" \
+  tmux kill-server 2>/dev/null || true
+rm -rf "$visual_fixture"
+```
+
+Never run a bare `tmux kill-server`, stop the live host service, or kill processes
+by name or port during these checks.
 
 ## Key facts & gotchas
 

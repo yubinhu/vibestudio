@@ -405,7 +405,11 @@ pub fn run(options: HostServiceOptions) -> Result<(), String> {
     };
     write_record(&dir, &record)?;
     phone.set_port(record.port);
-    phone.resync_on_start();
+    // Tailscale Serve is machine-wide, even when this worker's config directory
+    // is isolated. Respect the same maintenance opt-out as the standalone host.
+    if options.startup_maintenance {
+        phone.resync_on_start();
+    }
     log::info!(
         "host service ready on 127.0.0.1:{} (protocol {})",
         record.port,

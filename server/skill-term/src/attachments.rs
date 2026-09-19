@@ -15,6 +15,34 @@ use super::{new_uuid, size_floor, valid_session_name, MIN_COLS, MIN_ROWS};
 
 const GEOMETRY_OWNER: &str = "@ass_geometry_owner";
 
+fn supports_hyperlinks() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        super::tmux().arg("-V").output().ok().is_some_and(|output| {
+            output.status.success()
+                && version_supports_hyperlinks(&String::from_utf8_lossy(&output.stdout))
+        })
+    })
+}
+
+fn version_supports_hyperlinks(version: &str) -> bool {
+    let version = version.trim().strip_prefix("tmux ").unwrap_or("");
+    let version = version.strip_prefix("next-").unwrap_or(version);
+    let Some((major, minor)) = version.split_once('.') else {
+        return false;
+    };
+    let major = major.parse::<u32>().unwrap_or(0);
+    let minor = minor
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse::<u32>()
+        .unwrap_or(0);
+    // OSC 8 was added in tmux 3.4. Older hosts still get links recognized from
+    // visible text in xterm; don't pass new flags/features to their clients.
+    (major, minor) >= (3, 4)
+}
+
 #[derive(Clone, Default)]
 struct Tmux {
     // A private socket lets integration tests exercise real tmux/PTY behavior
@@ -268,6 +296,12 @@ fn attach_with(
         .map_err(|e| format!("openpty failed: {e}"))?;
     let mut command = CommandBuilder::new(super::tmux_bin());
     command.arg("-u");
+    if supports_hyperlinks() {
+        // xterm.js handles OSC 8, but plain xterm-256color doesn't advertise it.
+        // Declare support on this viewer only, preserving the user's tmux config
+        // and other attached terminal emulators' capabilities.
+        command.args(["-T", "hyperlinks"]);
+    }
     if let Some(socket) = &tmux.socket {
         command.arg("-S");
         command.arg(socket);
@@ -520,6 +554,59 @@ mod tests {
             }
         }
         panic!("missing terminal output {needle:?}: {output:?}");
+    }
+
+    #[test]
+    fn hyperlink_features_require_tmux_3_4_or_newer() {
+        for version in [
+            "tmux 3.4", "tmux 3.4a\n", "tmux 3.10", "tmux next-3.4", "tmux 4.0",
+        ] {
+            assert!(version_supports_hyperlinks(version), "{version}");
+        }
+        for version in ["tmux 3.3a", "tmux 3.2", "tmux 2.9", "", "unknown"] {
+            assert!(!version_supports_hyperlinks(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn osc8_hyperlinks_reach_viewers_and_survive_reattachment() {
+        if !supports_hyperlinks() {
+            eprintln!("tmux 3.4+ unavailable — skipping OSC 8 integration test");
+            return;
+        }
+        let Some(session) = Session::create() else {
+            return;
+        };
+        let global_features = || {
+            let output = session
+                .tmux
+                .command()
+                .args(["show-options", "-s", "-v", "terminal-features"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            output.stdout
+        };
+        let features_before = global_features();
+        let (viewer, output) = session.attach(100, 30);
+        session.wait_clients(1);
+        write_attachment(
+            &session.id,
+            Some(viewer.attachment_id()),
+            b"printf '\\033]8;;https://example.com/osc8-test\\033\\\\VISIBLE-LINK\\033]8;;\\033\\\\\\n'\r",
+            true,
+        )
+        .unwrap();
+        output_contains(&output, "\x1b]8;");
+        // A fresh tmux attach must render the hyperlink retained in its screen.
+        drop(viewer);
+        session.wait_clients(0);
+        let (_reattached, redraw) = session.attach(100, 30);
+        output_contains(&redraw, "https://example.com/osc8-test\x1b\\");
+        assert_eq!(
+            global_features(), features_before,
+            "client capability must not change global options"
+        );
     }
 
     #[test]

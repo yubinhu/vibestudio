@@ -1,11 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import * as api from "@/lib/api";
 import { log } from "@/lib/log";
+import { fileLinkProvider, parseFileLink, webLinkUrl, type FileLinkTarget } from "@/lib/terminalLinks";
+
+const TerminalFilePreview = lazy(() => import("./TerminalFilePreview"));
 
 /** Reject pasted images larger than this client-side, matching the server cap in
  *  `save_pasted_image`, so an over-limit paste fails instantly instead of after a
@@ -92,6 +96,19 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
   const termRef = useRef<Terminal | null>(null);
   const [connectionState, setConnectionState] = useState<api.TerminalConnectionState>("connecting");
   const inputTokenRef = useRef<() => string | null>(() => null);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const linkVisibilityEpoch = useRef(0);
+  const [linkHint, setLinkHint] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkedFile, setLinkedFile] = useState<(api.TerminalLinkFile & FileLinkTarget) | null>(null);
+  const closeLinkedFile = useCallback(() => {
+    setLinkedFile(null);
+    // Let the dialog remove its focus trap before returning keyboard input.
+    requestAnimationFrame(() => {
+      if (visibleRef.current && !window.matchMedia("(pointer: coarse)").matches) termRef.current?.focus();
+    });
+  }, []);
 
   // Select mode: while on, a plain drag makes a NATIVE xterm selection instead of
   // being forwarded to the agent's own mouse handling — the only way to drag-copy a
@@ -188,6 +205,41 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     const host = hostRef.current;
     if (!host) return;
 
+    let linksDisposed = false;
+    let linkRequest = 0;
+    let hoveringLink = false;
+    let touchLinkGesture = false;
+    const hoverLink = (_event: MouseEvent, text: string) => {
+      hoveringLink = true;
+      if (selectModeRef.current) return;
+      const gesture = window.matchMedia("(pointer: coarse)").matches ? "Tap" : IS_MAC ? "⌘-click" : "Ctrl-click";
+      setLinkHint(`${gesture} to open ${text}`);
+    };
+    const leaveLink = () => { hoveringLink = false; setLinkHint(null); };
+    const activateLink = (event: MouseEvent, text: string) => {
+      if (selectModeRef.current || term.hasSelection() || event.button !== 0) return;
+      if (!window.matchMedia("(pointer: coarse)").matches && !(IS_MAC ? event.metaKey : event.ctrlKey)) return;
+      event.preventDefault();
+      setLinkError(null);
+      const web = webLinkUrl(text);
+      if (web) {
+        window.open(web, "_blank", "noopener,noreferrer");
+        return;
+      }
+      const target = parseFileLink(text);
+      if (!target) return;
+      const request = ++linkRequest;
+      const epoch = linkVisibilityEpoch.current;
+      void api.terminalResolveLink(id, target.path).then((file) => {
+        if (linksDisposed || !visibleRef.current || epoch !== linkVisibilityEpoch.current || request !== linkRequest) return;
+        term.blur();
+        setLinkHint(null);
+        setLinkedFile({ ...target, ...file });
+      }).catch((error: unknown) => {
+        if (!linksDisposed && visibleRef.current && epoch === linkVisibilityEpoch.current && request === linkRequest) setLinkError(error instanceof Error ? error.message : "Could not open file.");
+      });
+    };
+
     const term = new Terminal({
       cursorBlink: true,
       disableStdin: true,
@@ -200,9 +252,19 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
       // shouldForceSelection override after open().
       macOptionClickForcesSelection: true,
       theme: themeFromCss(),
+      linkHandler: {
+        allowNonHttpProtocols: true,
+        activate: activateLink,
+        hover: hoverLink,
+        leave: leaveLink,
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon(activateLink, { hover: hoverLink, leave: leaveLink }));
+    const fileLinks = term.registerLinkProvider(fileLinkProvider(term, {
+      activate: activateLink, hover: hoverLink, leave: leaveLink,
+    }));
     // tmux owns the scrollback (wheel → copy-mode); copying there arrives as an
     // OSC 52 write — honor it so copy-mode copies land on the system clipboard.
     // Releasing a mouse-drag IS the copy in tmux: there is no Ctrl+C step.
@@ -282,7 +344,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     )._core?._selectionService;
     if (sel && typeof sel.shouldForceSelection === "function") {
       sel.shouldForceSelection = (ev: MouseEvent) =>
-        selectModeRef.current || ev.shiftKey || (IS_MAC && ev.altKey);
+        touchLinkGesture || selectModeRef.current || ev.shiftKey || (IS_MAC ? ev.altKey || ev.metaKey : ev.ctrlKey);
     } else {
       log.warn("term", "xterm selection service unavailable — select mode inert");
     }
@@ -585,8 +647,14 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
       if (e.type === "touchend" && pan && pan.axis === null && handle) {
         const p = e.changedTouches[0] ?? { clientX: pan.x, clientY: pan.y };
         e.preventDefault();
-        host.querySelector(".xterm-screen")?.dispatchEvent(asMouse("mousedown", p, 1));
-        document.dispatchEvent(asMouse("mouseup", p, 0));
+        const screen = host.querySelector(".xterm-screen");
+        // xterm's link providers resolve synchronously. Establish a hover at the
+        // tap before pressing; its linkifier needs both events on the terminal.
+        screen?.dispatchEvent(asMouse("mousemove", p, 0));
+        touchLinkGesture = hoveringLink;
+        screen?.dispatchEvent(asMouse("mousedown", p, 1));
+        screen?.dispatchEvent(asMouse("mouseup", p, 0));
+        touchLinkGesture = false;
       }
       // A vertical flick coasts; a slow drag or a hold-then-lift (stale velocity,
       // >60ms since the last move) just stops with the finger.
@@ -621,6 +689,8 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     };
 
     return () => {
+      linksDisposed = true;
+      fileLinks.dispose();
       gone = true;
       host.removeEventListener("paste", onPaste, true);
       document.removeEventListener("copy", onCopy);
@@ -651,10 +721,27 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
   // and fit() can't measure; re-fit (and resize the pty) once shown again.
   useEffect(() => {
     if (visible) requestAnimationFrame(() => refitRef.current());
+    else {
+      linkVisibilityEpoch.current++;
+      setLinkedFile(null);
+      setLinkHint(null);
+      setLinkError(null);
+    }
   }, [visible]);
 
   return (
     <div className="group relative h-full w-full">
+      {visible && linkedFile && (
+        <Suspense fallback={<div role="status" className="absolute inset-x-0 top-10 z-20 text-center text-sm">Opening file…</div>}>
+          <TerminalFilePreview file={linkedFile} onClose={closeLinkedFile} />
+        </Suspense>
+      )}
+      {(linkError || linkHint) && (
+        <div role={linkError ? "alert" : "status"} className={`${linkError ? "" : "pointer-events-none"} absolute bottom-3 left-3 z-20 flex max-w-[90%] items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-xs shadow-sm`}>
+          <span className={`break-all ${linkError ? "text-danger" : "text-muted"}`}>{linkError ?? linkHint}</span>
+          {linkError && <button type="button" aria-label="Dismiss link error" onClick={() => setLinkError(null)}>✕</button>}
+        </div>
+      )}
       {connectionState !== "ready" && (
         <div role="status" className="pointer-events-none absolute inset-x-0 bottom-2 z-20 mx-auto w-fit max-w-[90%] rounded-md border border-border bg-surface/95 px-3 py-2 text-center text-xs text-muted shadow-sm">
           {connectionState === "incompatible"

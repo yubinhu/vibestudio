@@ -1345,6 +1345,10 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
             json_reply(skill_term::kill_session(&s("id")).map(|_| json!({ "ok": true })))
         }
         #[cfg(feature = "local-backend")]
+        (Method::Post, "/api/terminal/resolve-link") => {
+            json_reply(skill_term::resolve_file_link(&s("id"), &s("path")))
+        }
+        #[cfg(feature = "local-backend")]
         (Method::Post, "/api/terminal/input") => {
             let data = skill_term::b64_decode(&s("data"));
             // Only an absent field enables legacy single-viewer resolution;
