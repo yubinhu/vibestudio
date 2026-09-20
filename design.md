@@ -389,6 +389,12 @@ their first input request; repeat evidence never produces repeat alerts. Legacy
 bells remain only for agents without a detector. The same events feed Web Push
 when no client is focused.
 
+Home cards use the same detected states as the Sessions view, independently of
+read/unread marks. Completion age uses the confirmed done transition; an initial
+idle observation does not imply a new completion. Raw tmux activity cannot prove
+agent work because idle terminals repaint. Legacy servers show the last recorded
+completion bell without claiming a current working state.
+
 The client brings blocked sessions to the top while retaining manual order within
 each group and keeping the selected session. It labels states and offers a
 persistent sound toggle. Herdr's request sound also plays for a watched session;

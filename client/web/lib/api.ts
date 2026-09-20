@@ -1033,6 +1033,7 @@ export interface SessionAttention {
   state: "unknown" | "idle" | "working" | "blocked";
   /** `<boot>:<counter>`; counters order transitions within one server lifetime. */
   sequence: string;
+  /** Unix milliseconds when this state was observed; initial inventory is not a completion. */
   changedAt: number;
   kind: "request" | "done" | null;
   matchedRule?: string | null;
@@ -1046,7 +1047,7 @@ export interface TermSession {
   /** Unix seconds (string) when the session was created — the rail's stable sort key. */
   created: string;
   /** Unix seconds (string) of the session's most recent tmux activity.
-   *  Informational — NOT the unread signal (an idle TUI keeps repainting). */
+   *  Informational — NOT evidence of agent work or unread output (idle TUIs repaint). */
   activity: string;
   /** Unix seconds (string) of the last turn-completion BELL the agent rang
    *  ("0" until the first). The rail compares it against a per-session "last

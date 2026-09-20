@@ -15,6 +15,7 @@ import SkillGallery from "@/pages/home/SkillGallery";
 import * as api from "@/lib/api";
 import type { TermSession } from "@/lib/api";
 import { sessionTitle } from "@/lib/sessionTitle";
+import { attentionLabel } from "@/lib/sessionAttention";
 import { useSessions, isUnread, refresh as refreshSessions, noteCreated, nativeNotifyState } from "@/lib/sessions";
 import { useMining } from "@/lib/mining";
 import { useSkills } from "@/lib/skills";
@@ -48,6 +49,25 @@ function ago(unixSecs: number): string {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
+
+// Read/unread marks describe what the user has seen, not whether the agent is
+// working. Terminal activity is also unsuitable: idle TUIs keep repainting.
+function sessionStatus(s: TermSession): string {
+  if (s.attention) {
+    const label = attentionLabel(s) ?? "Status unavailable";
+    const { state, kind, changedAt } = s.attention;
+    if (state === "idle" && kind === "done" && Number.isFinite(changedAt) && changedAt > 0) {
+      return `${label} ${ago(changedAt / 1000)}`;
+    }
+    return label;
+  }
+  // Older servers only report bells. That is a historical completion signal,
+  // not evidence that the agent has or hasn't started another turn since then.
+  const bellAt = Number(s.bellAt);
+  if (Number.isFinite(bellAt) && bellAt > 0) return `Last finished ${ago(bellAt)}`;
+  return s.agent === "shell" ? "Terminal open" : "Status unavailable";
+}
+
 function greeting(): string {
   const h = new Date().getHours();
   if (h >= 5 && h < 12) return "Good morning";
@@ -124,7 +144,7 @@ function SessionCard({ s, waiting, onClick, titleMenu }: {
         {s.cwd}
       </span>
       <span className="text-xs text-faint">
-        {meta.label} · {waiting ? `finished ${ago(Number(s.bellAt))}` : `active ${ago(Number(s.activity))}`}
+        {meta.label} · {sessionStatus(s)}
       </span>
     </button>
   );
@@ -260,9 +280,8 @@ export function Component() {
   // the count is cached across visits and the page runs ONE discovery scan, not two.
   const skills = useSkills();
 
-  // Keep session activity/attention fresh while the dashboard is the visible page
-  // (the 5s poll backstop lives in the Sessions workspace, which isn't mounted here;
-  // the module's SSE subscription still delivers bells, this just refills timestamps).
+  // Refresh detector state and relative completion times while Home is visible.
+  // SSE delivers transitions; polling is the backstop for missed events.
   useEffect(() => {
     void refreshSessions();
     const t = setInterval(() => {
@@ -294,7 +313,7 @@ export function Component() {
   const sessions = sessionStore.sessions;
   const waiting = sessions.filter((s) => isUnread(s, sessionStore.seen, null));
   const waitingIds = new Set(waiting.map((s) => s.id));
-  const running = sessions.filter((s) => !waitingIds.has(s.id));
+  const otherSessions = sessions.filter((s) => !waitingIds.has(s.id));
 
   const needsReauth = connectors?.filter((c) => c.availability.some((a) => a.state === "needs_auth")).length ?? 0;
   const remoteConnected = remote.status.state === "connected";
@@ -438,7 +457,7 @@ export function Component() {
               Sessions
             </Heading>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {[...waiting, ...running].map((s) => (
+              {[...waiting, ...otherSessions].map((s) => (
                 <SessionCard key={s.id} s={s} waiting={waitingIds.has(s.id)} onClick={() => openSession(s.id)} titleMenu={titleMenu} />
               ))}
               <button
