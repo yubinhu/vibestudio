@@ -94,17 +94,60 @@ export function detectFileLinks(text: string): FileLinkMatch[] {
   return result;
 }
 
+/** TUIs can word-wrap colored paths themselves, emitting CRLF + indentation
+ * instead of setting xterm's isWrapped flag. Require a path break and matching
+ * explicit colors, so ordinary output and new rooted paths stay separate. */
+function hardWrapBoundary(buffer: IBuffer, y: number, cols: number): { end: number; start: number } | null {
+  const previous = buffer.getLine(y);
+  const next = buffer.getLine(y + 1);
+  if (!previous || !next || next.isWrapped) return null;
+  let end = Math.min(cols, previous.length) - 1;
+  while (end >= 0 && !previous.getCell(end)?.getChars().trim()) end--;
+  const tail = previous.getCell(end);
+  if (!tail || !/[-/\\]$/.test(tail.getChars()) || tail.isFgDefault()) return null;
+  const previousText = previous.translateToString(true, 0, end + tail.getWidth());
+  if (/(?:^|[\s("'`])-$/.test(previousText)) return null;
+  let start = 0;
+  const length = Math.min(cols, next.length);
+  while (start < length && !next.getCell(start)?.getChars().trim()) start++;
+  const head = next.getCell(start);
+  if (!start || !head || head.getFgColorMode() !== tail.getFgColorMode() || head.getFgColor() !== tail.getFgColor()) return null;
+  const continuation = next.translateToString(true, start, length);
+  if (!/^[\p{L}\p{N}_.-]/u.test(continuation) || /^(?:\.{1,2}[/\\]|[a-z]:[/\\]|[a-z][a-z\d+.-]*:\/\/)/i.test(continuation)) return null;
+  let coloredText = "";
+  for (let x = start; x < length; x++) {
+    const cell = next.getCell(x);
+    if (cell?.getWidth() === 0) continue;
+    if (!cell?.getChars() || cell.getFgColorMode() !== tail.getFgColorMode() || cell.getFgColor() !== tail.getFgColor()) break;
+    coloredText += cell.getChars();
+  }
+  if (/\S\s+\S/.test(coloredText)) {
+    // A whole colored sentence is not a continuation. Spaces are valid only
+    // inside one quoted path or a compiler location such as file.ts(12, 3).
+    const joined = previousText + coloredText;
+    if (!detectFileLinks(joined).some((link) => link.start < previousText.length && link.end > previousText.length
+      && /^[\s)\].,;:!?"'`]*$/.test(joined.slice(link.end)))) return null;
+  }
+  return { end: end + tail.getWidth(), start };
+}
+
 /** Build a logical wrapped line and map UTF-16 offsets to terminal CELLS. An
  * emoji, wide character or combining mark before a path must not shift its hit
  * target. Bound work even when an application emits a huge unbroken line. */
 export function fileLinksForBuffer(buffer: IBuffer, row: number, cols: number): Array<FileLinkMatch & { range: IBufferRange }> {
+  const boundaries = new Map<number, ReturnType<typeof hardWrapBoundary>>();
+  const boundary = (y: number) => {
+    if (!boundaries.has(y)) boundaries.set(y, hardWrapBoundary(buffer, y, cols));
+    return boundaries.get(y);
+  };
+  const joinsNext = (y: number) => buffer.getLine(y + 1)?.isWrapped || !!boundary(y);
   let first = row - 1;
-  while (first > 0 && buffer.getLine(first)?.isWrapped) {
+  while (first > 0 && joinsNext(first - 1)) {
     if (row - first > 32) return [];
     first--;
   }
   let last = row - 1;
-  while (buffer.getLine(last + 1)?.isWrapped) {
+  while (joinsNext(last)) {
     if (last - first >= 32) return [];
     last++;
   }
@@ -113,13 +156,13 @@ export function fileLinksForBuffer(buffer: IBuffer, row: number, cols: number): 
   for (let y = first; y <= last; y++) {
     const line = buffer.getLine(y);
     if (!line) break;
-    let length = Math.min(cols, line.length);
+    let length = boundary(y)?.end ?? Math.min(cols, line.length);
     // A wide glyph can wrap early, leaving an unoccupied last cell. It is not
     // a space in the printed path. Explicitly printed spaces still stay intact.
     if (y < last) {
       while (length > 0 && line.getCell(length - 1)?.getWidth() === 1 && !line.getCell(length - 1)?.getChars()) length--;
     }
-    for (let x = 0; x < length; x++) {
+    for (let x = boundary(y - 1)?.start ?? 0; x < length; x++) {
       const cell = line.getCell(x);
       if (!cell || cell.getWidth() === 0) continue;
       const chars = cell.getChars() || " ";
@@ -129,9 +172,17 @@ export function fileLinksForBuffer(buffer: IBuffer, row: number, cols: number): 
     if (text.length > 8192) return [];
   }
   return detectFileLinks(text).flatMap((link) => {
-    const start = cells[link.start];
-    const end = cells[link.end - 1];
+    let start = cells[link.start];
+    let end = cells[link.end - 1];
     if (!start || !end || row < start.y || row > end.y) return [];
+    if (Array.from(boundaries).some(([y, wrap]) => wrap && y >= start.y - 1 && y < end.y - 1)) {
+      // A multiline xterm range also covers margins and indentation. Give each
+      // hard-wrapped fragment its own hit area, all activating the same target.
+      const fragment = cells.slice(link.start, link.end).filter((cell) => cell.y === row);
+      start = fragment[0];
+      end = fragment[fragment.length - 1];
+      if (!start || !end) return [];
+    }
     return [{ ...link, range: { start: { x: start.x, y: start.y }, end: { x: end.x + end.width - 1, y: end.y } } }];
   });
 }

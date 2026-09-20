@@ -26,14 +26,27 @@ function links(text) {
 function line(glyphs, cols, isWrapped = false) {
   const cells = [];
   for (const glyph of glyphs) {
-    const [chars, width] = Array.isArray(glyph) ? glyph : [glyph, 1];
-    cells.push({ getChars: () => chars, getWidth: () => width });
+    const [chars, width, color] = Array.isArray(glyph) ? glyph : [glyph, 1];
+    cells.push({
+      getChars: () => chars, getWidth: () => width,
+      isFgDefault: () => color === undefined,
+      getFgColorMode: () => color === undefined ? 0 : 1,
+      getFgColor: () => color ?? 0,
+    });
     if (width === 2) cells.push({ getChars: () => "", getWidth: () => 0 });
   }
   while (cells.length < cols) cells.push({ getChars: () => "", getWidth: () => 1 });
   assert.equal(cells.length, cols, "fixture occupies exactly the requested columns");
-  return { isWrapped, length: cells.length, getCell: (index) => cells[index] };
+  return {
+    isWrapped, length: cells.length, getCell: (index) => cells[index],
+    translateToString: (trimRight = false, start = 0, end = cells.length) => {
+      const text = cells.slice(start, end).filter((cell) => cell.getWidth() > 0).map((cell) => cell.getChars() || " ").join("");
+      return trimRight ? text.trimEnd() : text;
+    },
+  };
 }
+
+const colored = (text, color = 6) => [...text].map((char) => [char, 1, color]);
 
 function buffer(rows) {
   return { getLine: (index) => rows[index] };
@@ -146,6 +159,110 @@ test("a file split across wrapped rows is clickable from either row", () => {
   assert.deepEqual(plain(fileLinksForBuffer(active, 3, cols)), []);
 });
 
+test("indented hard-wrapped colored paths open the complete file from either row", () => {
+  const cols = 80;
+  const prefix = "  May I apply these edits (";
+  const first = "/tmp/vibestudio-doc-audit/readme-";
+  const second = "proposal.patch";
+  const active = buffer([
+    line([...prefix, ...colored(first)], cols),
+    line([..."  ", ...colored(second), ...")? They correct the README."], cols),
+  ]);
+  const term = { buffer: { active }, cols };
+  const activations = [];
+  const provider = fileLinkProvider(term, { activate: (_event, text) => activations.push(text) });
+  for (const row of [1, 2]) {
+    const [link] = plain(fileLinksForBuffer(active, row, cols));
+    assert.equal(link.path, first + second);
+    assert.equal(link.text, first + second);
+    assert.deepEqual(link.range, row === 1
+      ? { start: { x: prefix.length + 1, y: 1 }, end: { x: prefix.length + first.length, y: 1 } }
+      : { start: { x: 3, y: 2 }, end: { x: second.length + 2, y: 2 } });
+    provider.provideLinks(row, (provided) => provided[0].activate({ ctrlKey: true }, provided[0].text));
+  }
+  assert.deepEqual(activations, [first + second, first + second]);
+});
+
+test("hard-wrapped paths can span three rows and keep line and column suffixes", () => {
+  const cols = 48;
+  const active = buffer([
+    line([..."  See (", ...colored("/tmp/my-project/")], cols),
+    line([..."  ", ...colored("long-file-")], cols),
+    line([..."  ", ...colored("name.ts:42:3"), ..."). Then other.ts."], cols),
+  ]);
+  for (const row of [1, 2, 3]) {
+    const [link] = plain(fileLinksForBuffer(active, row, cols));
+    assert.equal(link.path, "/tmp/my-project/long-file-name.ts");
+    assert.equal(link.line, 42);
+    assert.equal(link.column, 3);
+    assert.equal(link.range.start.y, row);
+    assert.equal(link.range.end.y, row);
+  }
+  assert.equal(fileLinksForBuffer(active, 3, cols)[1].path, "other.ts");
+});
+
+test("hard line boundaries do not combine unrelated file links or prose", () => {
+  const cols = 64;
+  for (const [first, second] of [
+    [[..."See /tmp/readme-"], [..."  proposal.patch"]],
+    [[..."See ", ...colored("/tmp/readme-", 6)], [..."  ", ...colored("proposal.patch", 5)]],
+    [[..."See ", ...colored("/tmp/readme.patch")], [..."  ", ...colored("other.patch")]],
+    [[..."See ", ...colored("/tmp/readme-")], [..."  Ordinary prose follows."]],
+    [[..."See ", ...colored("/tmp/readme-")], [...colored("proposal.patch")]],
+    [colored("Status -"), [..."  ", ...colored("output.patch")]],
+    [colored("directory: /tmp/project/"), [..."  ", ...colored("Run the test.")]],
+    [[..."See ", ...colored("/tmp/readme-")], colored("    ")],
+    [[..."See ", ...colored("/tmp/readme-")], [..."  ", ...colored("- other.patch")]],
+    ...["/tmp/other.patch", "~/other.patch", "./other.patch", "../other.patch", "C:\\other.patch", "file:///tmp/other.patch", "https://example.test/other.patch"]
+      .map((next) => [[..."See ", ...colored("/tmp/readme-")], [..."  ", ...colored(next)]]),
+  ]) {
+    const active = buffer([line(first, cols), line(second, cols)]);
+    for (const row of [1, 2]) {
+      const separate = buffer([line(row === 1 ? first : second, cols)]);
+      assert.deepEqual(
+        plain(fileLinksForBuffer(active, row, cols)).map(({ text }) => text),
+        plain(fileLinksForBuffer(separate, 1, cols)).map(({ text }) => text),
+      );
+    }
+  }
+});
+
+test("hard-wrapped quoted paths and compiler locations retain embedded spaces", () => {
+  const cols = 64;
+  for (const [first, second, path, row, column] of [
+    ['"/tmp/my project/readme-', 'proposal copy.patch"', "/tmp/my project/readme-proposal copy.patch"],
+    ["/tmp/readme-", "proposal.patch(12, 3)", "/tmp/readme-proposal.patch", 12, 3],
+  ]) {
+    const active = buffer([
+      line([..."See ", ...colored(first)], cols),
+      line([..."  ", ...colored(second), ..." and continue."], cols),
+    ]);
+    for (const y of [1, 2]) {
+      const [link] = plain(fileLinksForBuffer(active, y, cols));
+      assert.deepEqual({ path: link.path, line: link.line, column: link.column }, target(path, row, column));
+    }
+  }
+});
+
+test("mixed hard and soft wraps preserve Unicode cell positions", () => {
+  const cols = 20;
+  const active = buffer([
+    line([["😀", 2], "e\u0301", " ", ...colored("/tmp/readme-")], cols),
+    line([..."  ", ...colored("proposal-with-long")], cols),
+    line([...colored("file.ts:42:3")], cols, true),
+  ]);
+  for (const row of [1, 2, 3]) {
+    const [link] = plain(fileLinksForBuffer(active, row, cols));
+    assert.equal(link.path, "/tmp/readme-proposal-with-longfile.ts");
+    assert.equal(link.line, 42);
+    assert.equal(link.column, 3);
+    assert.deepEqual(link.range, {
+      start: { x: [5, 3, 1][row - 1], y: row },
+      end: { x: [16, 20, 12][row - 1], y: row },
+    });
+  }
+});
+
 test("wide glyphs at a wrap skip unused cells and include the complete end glyph", () => {
   const cols = 10;
   const active = buffer([
@@ -164,6 +281,8 @@ test("large wrapped output is bounded and paths in different rows stay separate"
   const cols = 10;
   const excessive = buffer(Array.from({ length: 35 }, (_, i) => line([..."src/aaaaaa"], cols, i > 0)));
   assert.deepEqual(plain(fileLinksForBuffer(excessive, 20, cols)), []);
+  const hardWrapped = buffer(Array.from({ length: 35 }, () => line([..."  ", ...colored("src/aaa-")], cols)));
+  assert.deepEqual(plain(fileLinksForBuffer(hardWrapped, 20, cols)), []);
   const separate = buffer([line([..."first.ts"], cols), line([..."second.ts"], cols)]);
   assert.equal(fileLinksForBuffer(separate, 1, cols)[0].path, "first.ts");
   assert.equal(fileLinksForBuffer(separate, 2, cols)[0].path, "second.ts");
