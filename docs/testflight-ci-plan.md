@@ -66,6 +66,8 @@ Reruns validate the allocation and restore the exact signed bytes, or resume App
 processing when the build already exists. Missing, expired, conflicting, or
 changed retry evidence fails closed. A new dispatch gets a new build number; do
 that only after reconciling an uncertain earlier upload or terminal rejection.
+Use failed-job or specific-job reruns. A full workflow rerun deletes the previous
+artifacts and intentionally fails the missing-evidence guard.
 
 [Apple reconciliation](../scripts/testflight-apple.mjs) checks the app and group,
 queries all builds matching the allocated number, and refuses wrong-version,
@@ -81,7 +83,23 @@ Focused tests cover allocation and exact-SHA CI gates, artifact tampering, API
 pagination/retries, build identity and audience failures, processing timeouts,
 rerun idempotence, distribution proofs, signing metadata, and cleanup ownership.
 The IPA verifier has also been run against the already released local IPA.
-A complete hosted run and a retry of that run validate the deployed workflow.
+
+Hosted delivery and retry were verified on September 20, 2026:
+
+- [Setup CI](https://github.com/yubinhu/vibestudio/actions/runs/35497560232)
+  passed frontend tests/lint/build, both server platforms, desktop, and iOS simulator.
+- [Hosted release](https://github.com/yubinhu/vibestudio/actions/runs/35498192852/attempts/1)
+  built published tag `v1.2.11` as **1.2.11 (1002)** and verified internal Alpha
+  delivery, beta notes, and its existing tester.
+- [Specific-job retry](https://github.com/yubinhu/vibestudio/actions/runs/35498192852/attempts/2)
+  restored the allocation and signed IPA, verified the same Apple build, and
+  skipped both archive and upload. Both receipts identify Apple build
+  `f9556e9e-2b08-403a-9686-454d6599515c` and the same package checksum.
+
+The first setup attempt exposed an incompatible PKCS#12 wrapper; repackaging the
+same identity with explicit 3DES/SHA-1 wrapping fixed the hosted import. A full
+workflow rerun also confirmed GitHub's artifact deletion behavior and the
+missing-evidence guard. Neither failed setup attempt uploaded a build.
 
 Primary references: [GitHub hosted signing](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications),
 [Tauri iOS signing](https://v2.tauri.app/distribute/sign/ios/),

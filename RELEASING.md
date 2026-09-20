@@ -214,6 +214,12 @@ pins app ID `6789766775`, bundle `one.vibestudio.app`, developer team `5J5PGFKG9
 and the existing internal Alpha group. Its API key needs access to the app and
 permission to upload builds and manage beta metadata/groups.
 
+Use a PKCS#12 export compatible with Apple's `security import`. OpenSSL's newer
+AES/PBES2 defaults can fail import even with the correct password. For an OpenSSL
+export, use `-keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 -iter 20000`
+and a strong password; verify that repackaging preserves the certificate identity.
+Keep any unencrypted intermediate key material in memory, never in git or logs.
+
 The app is archived unsigned with the checked-in native project; never regenerate
 it with `tauri ios init`, which would lose custom native startup and app-lock code.
 The signing helper imports the distribution identity into a temporary runner
@@ -244,6 +250,11 @@ jobs** for transient failures: a retry restores the original allocation and IPA,
 or resumes distribution if Apple already has that build. It never silently
 rebuilds an IPA that may already have been uploaded. Expired or inconsistent
 retry records fail closed; reconcile the Apple build before a fresh dispatch.
+
+Do not use **Re-run all jobs**: GitHub deletes the previous artifacts on a full
+rerun, and the missing-evidence guard will stop it. Use **Re-run failed jobs** or
+rerun the specific `release` job (`gh run rerun --job JOB_ID`) to preserve
+the saved package. This also applies when checking a previously successful run.
 
 A lost upload acknowledgement still proceeds to processing checks for that exact
 build. The job succeeds only after Apple processing is `VALID`, audience is
