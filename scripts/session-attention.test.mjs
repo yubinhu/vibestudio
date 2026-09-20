@@ -268,6 +268,40 @@ test("a late list response cannot overwrite a newer attention event", async () =
   assert.deepEqual(h.sounds, ["request"]);
 });
 
+test("refresh keeps status labels until the next snapshot arrives and through a failed fetch", async () => {
+  const h = harness([session("a", state(1, "working")), session("b", state(2, "idle"))]);
+  h.connect(); await h.settle();
+  const labels = () => [...h.store.useSessions().sessions].map(attention.attentionLabel);
+  const initial = h.store.useSessions().sessions;
+  let resolve;
+  h.deferList(new Promise((r) => { resolve = r; }));
+  const refresh = h.store.refresh();
+  await h.settle();
+  assert.equal(h.store.useSessions().sessions, initial);
+  assert.deepEqual(labels(), ["Working", "Idle"]);
+
+  resolve([session("a", state(3, "idle", "done")), session("b", state(4, "working"))]);
+  await refresh; await h.settle();
+  assert.deepEqual(labels(), ["Finished", "Working"]);
+
+  let reject;
+  h.deferList(new Promise((_resolve, r) => { reject = r; }));
+  const failedRefresh = h.store.refresh();
+  reject(new Error("temporary connection failure"));
+  await failedRefresh; await h.settle();
+  assert.deepEqual(labels(), ["Finished", "Working"]);
+});
+
+test("an explicit unknown transition clears the old agent label", async () => {
+  const h = harness([session("a", state(1, "working"))]);
+  h.connect(); await h.settle();
+  const released = session("a", state(2, "unknown"));
+  h.setList([released]); h.event("attention", released);
+  await h.settle();
+  assert.equal(attention.attentionLabel(h.store.useSessions().sessions[0]), null);
+  assert.deepEqual(h.sounds, []);
+});
+
 test("a pre-detection snapshot without attention cannot erase a live SSE state", async () => {
   const initial = session("a", undefined);
   const h = harness([initial]);

@@ -49,6 +49,11 @@ pub struct ProcessSnapshot {
 
 impl ProcessSnapshot {
     pub fn capture() -> Result<Self, String> {
+        // Take generation tokens before reading process names/arguments. A PID
+        // reused during either ps call must fail the later identity check, not
+        // attach an old agent's metadata to a replacement process's token.
+        #[cfg(target_os = "linux")]
+        let start_tokens = process_start_tokens()?;
         // Keep comm last in its own table so executable paths with spaces do not
         // shift argv parsing. Both forms work in Linux and macOS ps. They run on
         // the same owning host as tmux (including Linux when the host is WSL).
@@ -59,7 +64,35 @@ impl ProcessSnapshot {
         };
         let metadata = output("pid=,ppid=,lstart=,comm=")?;
         let arguments = output("pid=,args=")?;
-        Ok(Self::parse(&metadata, &arguments))
+        let snapshot = Self::parse(&metadata, &arguments);
+        // Linux ps derives lstart from the wall clock and uptime; its rounded
+        // value can move by a second for a process that has never restarted.
+        // Use the kernel's immutable start ticks for recognized agents instead.
+        #[cfg(target_os = "linux")]
+        let snapshot = snapshot.with_start_tokens(|pid| {
+            start_tokens
+                .get(&pid)
+                .cloned()
+                .ok_or_else(|| "agent identity missing from initial process snapshot".into())
+        })?;
+        Ok(snapshot)
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn with_start_tokens(
+        mut self,
+        mut start_token: impl FnMut(u32) -> Result<String, String>,
+    ) -> Result<Self, String> {
+        for process in self.processes.values_mut() {
+            if skill_core::agent_detection::identify_process(&process.name, &process.command_line)
+                .is_some()
+            {
+                // A disappearing/unreadable process is unavailable evidence.
+                // Never fall back to a different identity format for one poll.
+                process.identity.started_at = start_token(process.identity.pid)?;
+            }
+        }
+        Ok(self)
     }
 
     fn parse(metadata: &str, arguments: &str) -> Self {
@@ -145,17 +178,55 @@ impl ProcessSnapshot {
 // starts between the batch ps and screen read, never run the new screen through
 // the old generation's tracker. One small PID-only probe avoids another full ps.
 fn verify_current_process(process: &AgentProcess) -> Result<(), String> {
-    let mut command = skill_core::process::hidden_command("ps");
-    command
-        .env("LC_ALL", "C")
-        .args(["-ww", "-p", &process.pid.to_string(), "-o", "lstart="]);
-    let started =
-        bounded_output(command, 1024).map_err(|error| format!("agent identity probe: {error}"))?;
-    if started.split_whitespace().collect::<Vec<_>>().join(" ") == process.started_at {
+    #[cfg(target_os = "linux")]
+    let started = process_start_token(process.pid)?;
+    #[cfg(not(target_os = "linux"))]
+    let started = {
+        let mut command = skill_core::process::hidden_command("ps");
+        command
+            .env("LC_ALL", "C")
+            .args(["-ww", "-p", &process.pid.to_string(), "-o", "lstart="]);
+        let started = bounded_output(command, 1024)
+            .map_err(|error| format!("agent identity probe: {error}"))?;
+        started.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    if started == process.started_at {
         Ok(())
     } else {
         Err("agent process changed during detection capture".into())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn process_start_tokens() -> Result<HashMap<u32, String>, String> {
+    let entries = std::fs::read_dir("/proc")
+        .map_err(|error| format!("process identity inventory: {error}"))?;
+    Ok(entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        // Unrelated processes may disappear or be inaccessible. A recognized
+        // agent without a token makes the completed snapshot unavailable.
+        .filter_map(|pid| process_start_token(pid).ok().map(|token| (pid, token)))
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn process_start_token(pid: u32) -> Result<String, String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map_err(|error| format!("agent identity probe: {error}"))?;
+    linux_start_token(&stat)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_start_token(stat: &str) -> Result<String, String> {
+    // comm (field 2) may contain spaces and closing parentheses. The final ')'
+    // closes it; starttime is field 22, or index 19 after that delimiter.
+    let ticks = stat
+        .rsplit_once(')')
+        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or("invalid process start time")?;
+    Ok(format!("proc:{ticks}"))
 }
 
 // A batch inventory predates individual screen reads. Before declaring exit,
@@ -175,7 +246,13 @@ fn confirmed_process(
             Ok(Some(process))
         }
         absent if !verify_absence => absent,
-        Ok(None) | Err(_) => fresh()?.agent_process(pane_pid, expected),
+        Ok(None) | Err(_) => {
+            let process = fresh()?.agent_process(pane_pid, expected)?;
+            if let Some(process) = &process {
+                verify_current(process)?;
+            }
+            Ok(process)
+        }
     }
 }
 
@@ -382,6 +459,104 @@ mod tests {
             first.agent_process(10, "codex").unwrap(),
             second.agent_process(10, "codex").unwrap()
         );
+    }
+
+    #[test]
+    fn kernel_start_token_survives_wall_clock_start_rounding_but_detects_pid_reuse() {
+        let snapshot = |second: u8, ticks: &str| {
+            ProcessSnapshot::parse(
+                &format!("10 1 Sun Sep 6 16:00:{second:02} 2026 codex\n"),
+                "10 codex\n",
+            )
+            .with_start_tokens(|_| Ok(format!("proc:{ticks}")))
+            .unwrap()
+            .agent_process(10, "codex")
+            .unwrap()
+            .unwrap()
+        };
+        let first = snapshot(0, "40705554");
+        assert_eq!(first, snapshot(1, "40705554"));
+        assert_ne!(first, snapshot(1, "40705654"));
+    }
+
+    #[test]
+    fn unavailable_kernel_identity_does_not_fall_back_to_wall_clock() {
+        let snapshot = processes(&[
+            (10, 1, "bash", "bash"),
+            (11, 10, "node", "node /opt/codex/bin/codex.js"),
+        ]);
+        assert!(snapshot
+            .with_start_tokens(|pid| {
+                assert_eq!(pid, 11); // unrelated shells do not need a probe
+                Err("process exited during inventory".into())
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn proc_start_time_parser_handles_spaces_and_parentheses_in_process_names() {
+        let fields = "S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 40705554 99";
+        assert_eq!(
+            linux_start_token(&format!("10 (codex (helper)) {fields}\n")).unwrap(),
+            "proc:40705554"
+        );
+        assert!(linux_start_token("10 (codex) S 1 2").is_err());
+        assert!(
+            linux_start_token(&format!("10 (codex) {}", fields.replace("40705554", "bad")))
+                .is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn current_process_probe_uses_kernel_identity_and_rejects_different_generation() {
+        let pid = std::process::id();
+        let process = AgentProcess {
+            pid,
+            started_at: process_start_token(pid).unwrap(),
+        };
+        assert!(verify_current_process(&process).is_ok());
+        assert!(verify_current_process(&AgentProcess {
+            pid,
+            started_at: "proc:0".into(),
+        })
+        .is_err());
+        // Old Codex metadata must not acquire the replacement PID's new token.
+        // Keep the token from before the metadata read, then verify it against
+        // the current process after the screen capture.
+        let stale_metadata = processes(&[(pid, 1, "codex", "codex")])
+            .with_start_tokens(|_| Ok("proc:0".into()))
+            .unwrap();
+        assert!(confirmed_process(
+            &stale_metadata,
+            pid,
+            "codex",
+            false,
+            verify_current_process,
+            || panic!("discard the mixed-generation capture"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn newly_found_process_after_absence_also_requires_current_identity() {
+        let before = processes(&[(10, 1, "bash", "bash")]);
+        let after = || {
+            processes(&[(10, 1, "bash", "bash"), (11, 10, "codex", "codex")])
+                .with_start_tokens(|_| Ok("proc:100".into()))
+        };
+        assert!(confirmed_process(
+            &before,
+            10,
+            "codex",
+            true,
+            |process| {
+                assert_eq!(process.started_at, "proc:100");
+                Err("PID now belongs to a different generation".into())
+            },
+            after,
+        )
+        .is_err());
     }
 
     #[test]
