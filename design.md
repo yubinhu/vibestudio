@@ -211,6 +211,15 @@ Its lifetime is independent of SSH/stdin and the desktop window. `--stop-host-se
 process, not an OS login/boot service: a machine restart requires starting an accessor or
 `skill-server --daemon` again.
 
+**Compatibility policy:** within a protocol version, newer servers must preserve the
+HTTP/JSON and SSE contracts used by older clients. Minor and patch releases must remain
+backward compatible. Dropping that compatibility is reserved for a major release and
+must also increment the host-service protocol version. Clients require an exact protocol
+match in addition to the server release being at least their own version; a protocol
+mismatch fails before workspace requests are enabled and reports an actionable update
+error, leaving running agents intact. A major release number alone does not enforce this
+boundary, and a major release with compatible APIs may retain the existing protocol.
+
 An explicit Stop records its intent so other clients' automatic recovery cannot restart
 the service. A new connection, Retry, or explicit daemon launch can start it again.
 Desktop updates download and verify first, then stop the local worker before replacing
