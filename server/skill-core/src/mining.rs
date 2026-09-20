@@ -310,11 +310,8 @@ fn ensure_installed_in(home: &Path, bundled: Option<&Path>) -> Result<PathBuf, S
     let bundled = bundled.filter(|s| s.join("SKILL.md").exists());
     let missing_src = || "Bundled skill-miner skill not found.".to_string();
     let mut primary: Option<PathBuf> = None;
-    for dest in &secrets::INSTALL_DESTS {
-        if !dest.triggers.iter().any(|t| home.join(t).exists()) {
-            continue;
-        }
-        let target = home.join(dest.skills_rel).join(MINER_SKILL);
+    for skills_dir in agents::install_dirs(home) {
+        let target = skills_dir.join(MINER_SKILL);
         if !target.join("SKILL.md").exists() {
             install_skill(bundled.ok_or_else(missing_src)?, &target)?;
         }
@@ -349,11 +346,8 @@ fn reinstall_miner_in(home: &Path, bundled: Option<&Path>) -> Result<Vec<String>
         .filter(|s| s.join("SKILL.md").exists())
         .ok_or_else(|| "Bundled skill-miner skill not found.".to_string())?;
     let mut restored = Vec::new();
-    for dest in &secrets::INSTALL_DESTS {
-        if !dest.triggers.iter().any(|t| home.join(t).exists()) {
-            continue;
-        }
-        let target = home.join(dest.skills_rel).join(MINER_SKILL);
+    for skills_dir in agents::install_dirs(home) {
+        let target = skills_dir.join(MINER_SKILL);
         install_skill(bundled, &target)?;
         commit_synced(&target);
         restored.push(target.to_string_lossy().into_owned());
@@ -434,9 +428,9 @@ pub fn miner_status(bundled: Option<&Path>) -> MinerStatus {
 }
 
 fn miner_status_in(home: &Path, bundled: Option<&Path>) -> MinerStatus {
-    let copies: Vec<PathBuf> = secrets::INSTALL_DESTS
+    let copies: Vec<PathBuf> = agents::install_dirs(home)
         .iter()
-        .map(|d| home.join(d.skills_rel).join(MINER_SKILL))
+        .map(|d| d.join(MINER_SKILL))
         .filter(|t| t.join("SKILL.md").exists())
         .collect();
     let installed = !copies.is_empty();

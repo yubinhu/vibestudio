@@ -54,10 +54,35 @@ pub type SessionTitleFn = fn(&std::path::Path, i64, Option<&str>) -> Option<Stri
 /// from the same store, keyed the same way. See [`crate::session_title`].
 pub type LastMessageFn = fn(&std::path::Path, i64, Option<&str>) -> Option<String>;
 
+/// Binary discovery metadata shared by terminal and capability consumers.
+#[derive(Clone, Copy)]
+pub struct CliDef {
+    pub path_name: &'static str,
+    pub supports_ide: bool,
+    pub ext_prefix: &'static str,
+    pub ext_rel: ExtRel,
+    pub cli_paths: &'static [&'static str],
+    pub install_dir_env: &'static str,
+}
+
+#[derive(Clone, Copy)]
+pub enum ExtRel {
+    File(&'static str),
+    GlobDir { dir: &'static str, file: &'static str },
+}
+
+const fn plain_cli(path_name: &'static str, cli_paths: &'static [&'static str]) -> CliDef {
+    CliDef { path_name, supports_ide: false, ext_prefix: "", ext_rel: ExtRel::File(""), cli_paths, install_dir_env: "" }
+}
+
 pub struct AgentDef {
     /// Family id — the prefix of skill-term agent ids ("claude" in "claude:cli").
     pub family: &'static str,
     pub label: &'static str,
+    pub cli: Option<CliDef>,
+    /// Config home relative to the user home (also the installation presence marker).
+    pub home_dir: &'static str,
+    pub project_marker: Option<&'static str>,
     /// The agent's OWN skill-discovery dirs, home-relative.
     pub skills_dirs: &'static [&'static str],
     /// Whether the agent also reads [`SHARED_SKILLS_DIRS`].
@@ -127,6 +152,9 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         family: "claude",
         label: "Claude Code",
+        cli: Some(CliDef { path_name: "claude", supports_ide: true, ext_prefix: "anthropic.claude-code-", ext_rel: ExtRel::File("resources/native-binary/claude"), cli_paths: &["~/.local/bin/claude", "~/.claude/local/claude"], install_dir_env: "" }),
+        home_dir: ".claude",
+        project_marker: Some(".claude"),
         skills_dirs: &[".claude/skills"],
         reads_shared: false,
         launch: Some(claude_launch),
@@ -141,6 +169,9 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         family: "codex",
         label: "Codex",
+        cli: Some(CliDef { path_name: "codex", supports_ide: false, ext_prefix: "openai.chatgpt-", ext_rel: ExtRel::GlobDir { dir: "bin", file: "codex" }, cli_paths: &["~/.codex/packages/standalone/current/codex"], install_dir_env: "CODEX_INSTALL_DIR" }),
+        home_dir: ".codex",
+        project_marker: Some(".codex"),
         skills_dirs: &[".codex/skills"],
         reads_shared: true,
         launch: Some(codex_launch),
@@ -155,6 +186,9 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         family: "cursor",
         label: "Cursor",
+        cli: None,
+        home_dir: ".cursor",
+        project_marker: Some(".cursor"),
         skills_dirs: &[".cursor/skills", ".cursor/skills-cursor"],
         reads_shared: true,
         launch: Some(cursor_launch),
@@ -180,6 +214,9 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         family: "gemini",
         label: "Gemini CLI",
+        cli: None,
+        home_dir: ".gemini",
+        project_marker: None,
         skills_dirs: &[],
         reads_shared: true,
         launch: Some(gemini_launch),
@@ -197,6 +234,9 @@ pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         family: "openclaw",
         label: "OpenClaw",
+        cli: None,
+        home_dir: ".openclaw",
+        project_marker: None,
         skills_dirs: &[".openclaw/skills"],
         reads_shared: false,
         launch: None,
@@ -216,6 +256,9 @@ pub const AGENTS: &[AgentDef] = &[
         // own entry).
         family: "opencode",
         label: "opencode",
+        cli: Some(CliDef { install_dir_env: "OPENCODE_INSTALL_DIR", ..plain_cli("opencode", &["~/.opencode/bin/opencode"]) }),
+        home_dir: ".config/opencode",
+        project_marker: Some(".opencode"),
         skills_dirs: &[".config/opencode/skills"],
         reads_shared: true,
         launch: Some(opencode_launch),
@@ -234,6 +277,30 @@ pub const AGENTS: &[AgentDef] = &[
         last_message: None,
         attention_detector: Some("opencode"),
     },
+    AgentDef {
+        family: "hermes", label: "Hermes",
+        cli: Some(plain_cli("hermes", &["~/.local/bin/hermes"])),
+        home_dir: ".hermes", project_marker: Some(".hermes"),
+        skills_dirs: &[".hermes/skills"], reads_shared: false,
+        launch: Some(hermes_launch),
+        // Hermes's latest-session lookup can fall back to a different cwd.
+        resume: None, mcp: None, connector_discovery: None, connector_runtime: None,
+        session_title: Some(crate::hermes_sessions::title),
+        last_message: Some(crate::hermes_sessions::last_message),
+        attention_detector: Some("hermes"),
+    },
+    AgentDef {
+        family: "pi", label: "Pi",
+        cli: Some(plain_cli("pi", &[])),
+        home_dir: ".pi/agent", project_marker: Some(".pi"),
+        skills_dirs: &[".pi/agent/skills"], reads_shared: true,
+        launch: Some(pi_launch), resume: Some(pi_resume),
+        mcp: None, connector_discovery: None, connector_runtime: None,
+        session_title: Some(crate::pi_sessions::title),
+        last_message: Some(crate::pi_sessions::last_message),
+        attention_detector: Some("pi"),
+    },
+
 ];
 
 /// Look up an agent by family, accepting full skill-term ids ("claude:cli").
@@ -428,6 +495,62 @@ fn opencode_resume(c: &ResumeCtx) -> String {
     cmd
 }
 
+// Hermes 0.21+ keeps `chat -q` interactive on a terminal. Pi's default
+// mode is interactive; `--` protects prompts beginning with option characters.
+fn hermes_launch(c: &LaunchCtx) -> String {
+    let mut cmd = format!("{} chat", q(c.bin));
+    if let Some(model) = c.model { cmd.push_str(&format!(" --model {}", q(model))); }
+    if let Some(effort) = c.effort { cmd.push_str(&format!(" --reasoning {}", q(effort))); }
+    cmd.push_str(&format!(" -q {}", q(c.prompt)));
+    cmd
+}
+fn pi_tune(model: Option<&str>, effort: Option<&str>) -> String {
+    let mut flags = String::new();
+    if let Some(model) = model { flags.push_str(&format!(" --model {}", q(model))); }
+    if let Some(effort) = effort { flags.push_str(&format!(" --thinking {}", q(effort))); }
+    flags
+}
+fn pi_launch(c: &LaunchCtx) -> String {
+    format!("{}{} -- {}", q(c.bin), pi_tune(c.model, c.effort), q(c.prompt))
+}
+fn pi_resume(c: &ResumeCtx) -> String {
+    format!("{}{} --continue", q(c.bin), pi_tune(c.model, c.effort))
+}
+
+impl AgentDef {
+    pub fn config_home(&self, home: &std::path::Path) -> std::path::PathBuf {
+        match self.family {
+            "hermes" => return crate::hermes_sessions::home_dir(home),
+            "pi" => return crate::pi_sessions::agent_dir(home),
+            _ => {}
+        }
+        home.join(self.home_dir)
+    }
+
+    pub fn own_skill_dirs(&self, home: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let config = self.config_home(home);
+        self.skills_dirs.iter().map(|rel| {
+            std::path::Path::new(rel).strip_prefix(self.home_dir)
+                .map(|suffix| config.join(suffix)).unwrap_or_else(|_| home.join(rel))
+        }).collect()
+    }
+}
+
+/// Deduplicated bundled-skill destinations for agents present on this host.
+pub(crate) fn install_dirs(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let present: Vec<_> = AGENTS.iter().filter(|a| a.config_home(home).exists()).collect();
+    let mut dirs = Vec::new();
+    if home.join(".agents").exists() || present.iter().any(|a| a.reads_shared) {
+        dirs.push(home.join(".agents/skills"));
+    }
+    for agent in present.into_iter().filter(|a| !a.reads_shared) {
+        if let Some(dir) = agent.own_skill_dirs(home).into_iter().next() {
+            if !dirs.contains(&dir) { dirs.push(dir); }
+        }
+    }
+    dirs
+}
+
 // ─────────────────────────────── MCP wiring recipes ───────────────────────────────
 // Each recipe was verified against the shipped CLI/schema (2026-07). Remote HTTP
 // transport only; url-only, no headers/token — VibeStudio is the OAuth client.
@@ -517,17 +640,24 @@ mod tests {
     }
 
     #[test]
-    fn every_launchable_agent_has_mcp_wiring() {
-        // "Wire up all agents" — every agent we can actually run in a terminal
-        // must know how to reach the gateway; only openclaw (no launch) opts out.
-        for a in AGENTS {
-            assert_eq!(
-                a.launch.is_some(),
-                a.mcp.is_some(),
-                "{} launch/mcp capability mismatch",
-                a.family
-            );
+    fn optional_capabilities_are_independent() {
+        for family in ["hermes", "pi"] {
+            let agent = by_family(family).unwrap();
+            assert!(agent.cli.is_some() && agent.launch.is_some());
+            assert!(agent.session_title.is_some() && agent.last_message.is_some());
+            assert!(crate::agent_detection::supports_agent(agent.attention_detector.unwrap()));
+            assert!(agent.mcp.is_none());
         }
+        assert!(by_family("hermes").unwrap().resume.is_none());
+        assert!(by_family("pi").unwrap().resume.is_some());
+    }
+
+    #[test]
+    fn new_agent_launches_keep_prompts_interactive_and_quoted() {
+        let ctx = LaunchCtx { bin: "/bin/my agent", prompt: "--don't $(touch /tmp/oops)", model: Some("provider/model"), effort: Some("high") };
+        assert_eq!(hermes_launch(&ctx), format!("{} chat --model 'provider/model' --reasoning 'high' -q {}", q(ctx.bin), q(ctx.prompt)));
+        assert_eq!(pi_launch(&ctx), format!("{} --model 'provider/model' --thinking 'high' -- {}", q(ctx.bin), q(ctx.prompt)));
+        assert_eq!(pi_resume(&ResumeCtx { bin: "pi", model: None, effort: None }), "'pi' --continue");
     }
 
     #[test]

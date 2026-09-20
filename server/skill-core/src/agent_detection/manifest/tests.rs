@@ -1057,3 +1057,102 @@ line_regex = ["^exact line$"]
         Some("line_regex")
     );
 }
+
+
+#[test]
+fn pi_current_editor_border_and_legacy_spinner_detect_working() {
+    // Pi 0.86.1's published CustomEditor embeds Loader's default frames and
+    // the exact label "Working"; previous versions displayed "Working...".
+    for screen in [
+        "Assistant output\n── ⠋ Working ───────────────────\n>\n────────────────────────────────\n/work/project\n↑ 120 ↓ 80",
+        "── ⠹ Working ─── ↑ 5 more ─────\nA multiline prompt\n──────────────────────────────",
+        "───⠼─────────────\n>\n─────────────────",
+        "── ⠏ ───── ↑ 12 more ─────\n>\n─────────────────────────",
+        " ⠋ Working...\n──────────────────────\n>\n──────────────────────",
+        " ⠙ Working\n──────────────────────\n>\n──────────────────────",
+    ] {
+        let result = explain(Agent::Pi, screen);
+        assert_eq!(result.state, AgentState::Working, "{screen}: {result:#?}");
+        assert!(result.visible_working);
+    }
+}
+
+#[test]
+fn pi_retry_and_compaction_remain_working() {
+    for status in [
+        "⠋ Retrying (1/3) in 4s... (esc to cancel)",
+        "── ⠙ Compacting context... (esc to cancel) ─────",
+        "⠹ Auto-compacting... (esc to cancel)",
+        "⠼ Context overflow detected, Auto-compacting... (esc to cancel)",
+        "⠴ Summarizing branch... (esc to cancel)",
+    ] {
+        let result = explain(Agent::Pi, status);
+        assert_eq!(result.state, AgentState::Working, "{status}: {result:#?}");
+        assert_eq!(result.matched_rule.as_ref().map(|r| r.id.as_str()), Some("retry_or_compaction"));
+    }
+}
+
+#[test]
+fn pi_working_words_in_messages_and_stale_scrollback_are_not_live_controls() {
+    for screen in [
+        "Working on the documentation is complete.\n> Next task",
+        "The UI used to say Working... but the task has finished.\n> Next task",
+        "Working\n────────────────────────────────\n>\n────────────────────────────────",
+        "── Working ─────────────────────\n>\n────────────────────────────────",
+        "⠋ Working on the documentation is complete.\n> Next task",
+    ] {
+        let result = explain(Agent::Pi, screen);
+        assert_eq!(result.state, AgentState::Idle, "{screen}: {result:#?}");
+        assert!(!result.visible_working);
+    }
+    let stale = format!("── ⠋ Working ───────────────\n{}", "Finished output\n".repeat(17));
+    assert_eq!(explain(Agent::Pi, &stale).state, AgentState::Idle);
+}
+
+#[test]
+fn hermes_current_cli_working_controls_survive_composer_input() {
+    // Hermes v2026.9.14 CLITuiMixin: the running placeholder disappears when
+    // text is entered; the caduceus persists in normal and minimal chrome.
+    for screen in [
+        "────────────────────────\n☤ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel\n────────────────────────",
+        "model · /workspace\n────────────────────────\n☤ ❯ Please also check tests\n────────────────────────",
+        "model · /workspace\n────────────────────────\n☤ Please also check tests",
+        "⠋ command in progress · input stays active; Enter queues\n────────────────────────\n⠋ Processing command...\n────────────────────────",
+        "⠹ command in progress · input temporarily disabled\n────────────────────────\n⠹ Processing command...",
+    ] {
+        let result = explain(Agent::Hermes, screen);
+        assert_eq!(result.state, AgentState::Working, "{screen}: {result:#?}");
+        assert!(result.visible_working);
+    }
+}
+
+#[test]
+fn hermes_current_cli_approval_clarification_and_credentials_block() {
+    for screen in [
+        "╭────────────────────────╮\n│ ⚠️ Dangerous Command │\n│ rm example │\n│ ❯ 1. Allow once │\n│ 2. Deny │\n╰────────────────────────╯\n↑/↓ to select, Enter to confirm\n────────────────────────\n⚠ ❯\n────────────────────────",
+        "╭─ Hermes needs your input ─╮\n│ Which workspace? │\n│ ❯ 1. Current │\n│ 2. Other (type below) │\n╰───────────────────────────╯\n↑/↓ to select, Enter to lock, Tab next question\n────────────────────────\n? ❯\n────────────────────────",
+        "Hermes needs your input\n────────────────────────\n✎ ❯ type your answer here and press Enter\n────────────────────────",
+        "🔑 Skill Setup Required\nEnter secret below (hidden), ESC or Ctrl+C to skip\n────────────────────────\n🔑 ❯ type secret (hidden), Enter to submit · ESC to skip\n────────────────────────",
+        "🔐 Unlock vault\n────────────────────────\n🔐 ❯ type password (hidden), Enter to submit · ESC to skip\n────────────────────────",
+        "🔐 Verification code for example\n────────────────────────\n🔐 ❯ type the code, Enter to submit · ESC to skip\n────────────────────────",
+        "🔐 Save login for example\n────────────────────────\n🔐 ❯ type your email / username, Enter to continue · ESC to skip\n────────────────────────",
+    ] {
+        let result = explain(Agent::Hermes, screen);
+        assert_eq!(result.state, AgentState::Blocked, "{screen}: {result:#?}");
+        assert!(result.visible_blocker);
+    }
+}
+
+#[test]
+fn hermes_idle_and_stale_running_prompt_do_not_remain_working() {
+    for screen in [
+        "Done.\nmodel · /workspace\n────────────────────────\n❯ Ask about this project\n────────────────────────",
+        "Done.\n────────────────────────\nwork ❯",
+        "☤ represents the running agent in Hermes.\n────────────────────────\n❯\n────────────────────────",
+        "────────────────────────\n☤ ❯ earlier draft\n────────────────────────\nDone.\n────────────────────────\n❯ next task\n────────────────────────",
+    ] {
+        let result = explain(Agent::Hermes, screen);
+        assert_eq!(result.state, AgentState::Idle, "{screen}: {result:#?}");
+        assert!(!result.visible_working);
+    }
+}

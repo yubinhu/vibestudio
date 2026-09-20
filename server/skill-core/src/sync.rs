@@ -6,9 +6,8 @@
 // Most agents (Codex, Cursor, Gemini CLI, …) now read the standard
 // `~/.agents/skills` directory, so one placement there reaches the whole cohort.
 // Claude Code is the holdout — it reads `~/.claude/skills` — so it's its own
-// destination. The legacy per-agent dirs (`~/.codex/skills`, `~/.cursor/skills`)
-// are still honored for *presence* detection so we never offer to add a skill an
-// agent can already see (which would make it show up twice in its picker).
+// destination. Private agent directories do not satisfy shared availability:
+// copying a private skill into the standard folder makes it reachable by peers.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,24 +29,29 @@ const MAX_TOTAL: u64 = 100 * 1024 * 1024; // 100 MB
 struct Dest {
     id: &'static str,
     label: &'static str,
-    cohort: &'static [&'static str],
-    reaches: &'static [&'static str],
+    cohort: Vec<PathBuf>,
+    reaches: Vec<&'static str>,
 }
 
-const DESTS: [Dest; 2] = [
-    Dest {
-        id: "universal",
-        label: "All agents (Agent Skills standard)",
-        cohort: &[".agents/skills", ".codex/skills", ".cursor/skills", ".config/opencode/skills"],
-        reaches: &["Codex", "Cursor", "Gemini CLI", "opencode"],
-    },
-    Dest {
-        id: "claude-code",
-        label: "Claude Code",
-        cohort: &[".claude/skills"],
-        reaches: &["Claude Code"],
-    },
-];
+fn destinations(home: &Path) -> Vec<Dest> {
+    let shared: Vec<_> = crate::agents::AGENTS.iter().filter(|a| a.reads_shared).collect();
+    // A private skill root does not make a skill available to the whole cohort.
+    let cohort = vec![home.join(".agents/skills")];
+    let mut dests = vec![Dest {
+        id: "universal", label: "Shared Agent Skills", cohort,
+        reaches: shared.iter().map(|a| a.label).collect(),
+    }];
+    for agent in crate::agents::AGENTS.iter().filter(|a| !a.reads_shared) {
+        let cohort = agent.own_skill_dirs(home);
+        if !cohort.is_empty() {
+            dests.push(Dest {
+                id: if agent.family == "claude" { "claude-code" } else { agent.family },
+                label: agent.label, cohort, reaches: vec![agent.label],
+            });
+        }
+    }
+    dests
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,23 +133,16 @@ pub struct ImportResult {
 /// manager, which installs the activation skill into each agent's own dir.
 pub fn agent_user_dir(agent: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    let rel = match agent {
-        "Claude Code" => ".claude/skills",
-        "Codex" => ".codex/skills",
-        "Cursor" => ".cursor/skills",
-        "OpenClaw" => ".openclaw/skills",
-        "opencode" => ".config/opencode/skills",
-        _ => return None,
-    };
-    Some(home.join(rel))
+    crate::agents::AGENTS.iter().find(|a| a.label == agent)?
+        .own_skill_dirs(&home).into_iter().next()
 }
 
 fn skill_dir_name(root: &Path) -> Option<String> {
     root.file_name().map(|s| s.to_string_lossy().into_owned())
 }
 
-fn dest_by_id(id: &str) -> Option<&'static Dest> {
-    DESTS.iter().find(|d| d.id == id)
+fn dest_by_id(home: &Path, id: &str) -> Option<Dest> {
+    destinations(home).into_iter().find(|d| d.id == id)
 }
 
 /// For each destination, where the skill would land and whether it's already
@@ -161,8 +158,8 @@ fn sync_targets_in(home: &Path, root: &str) -> Result<Vec<SyncTarget>, String> {
     let canon_root = std::fs::canonicalize(&root_path).unwrap_or_else(|_| root_path.clone());
 
     let mut out = Vec::new();
-    for d in &DESTS {
-        let canonical_dir = home.join(d.cohort[0]);
+    for d in destinations(home) {
+        let canonical_dir = home.join(&d.cohort[0]);
         let mut present = false;
         let mut linked = false;
         let mut is_source = false;
@@ -184,7 +181,7 @@ fn sync_targets_in(home: &Path, root: &str) -> Result<Vec<SyncTarget>, String> {
                 is_source = true;
             }
             if i != 0 {
-                reached_via = Some((*rel).to_string());
+                reached_via = Some(rel.strip_prefix(home).unwrap_or(rel).to_string_lossy().into_owned());
             }
             break;
         }
@@ -222,8 +219,8 @@ fn sync_skill_in(
         return Err("Not a skill directory (no SKILL.md).".into());
     }
     let name = skill_dir_name(&root_path).ok_or_else(|| "Invalid skill path.".to_string())?;
-    let d = dest_by_id(target).ok_or_else(|| format!("Unknown sync target: {target}"))?;
-    let dir = home.join(d.cohort[0]);
+    let d = dest_by_id(home, target).ok_or_else(|| format!("Unknown sync target: {target}"))?;
+    let dir = home.join(&d.cohort[0]);
     let dest = dir.join(&name);
 
     let canon_root = std::fs::canonicalize(&root_path).unwrap_or_else(|_| root_path.clone());
@@ -269,12 +266,12 @@ fn valid_skill_name(name: &str) -> bool {
 /// the canonical landing dir resolved to an absolute path for display.
 pub fn skill_homes() -> Result<Vec<SkillHome>, String> {
     let home = dirs::home_dir().ok_or_else(|| "No home directory.".to_string())?;
-    Ok(DESTS
+    Ok(destinations(&home)
         .iter()
         .map(|d| SkillHome {
             id: d.id.into(),
             label: d.label.into(),
-            dir: home.join(d.cohort[0]).to_string_lossy().into_owned(),
+            dir: home.join(&d.cohort[0]).to_string_lossy().into_owned(),
             reaches: d.reaches.iter().map(|s| s.to_string()).collect(),
         })
         .collect())
@@ -292,8 +289,8 @@ fn create_skill_in(home: &Path, target: &str, name: &str, content: &str) -> Resu
     if !valid_skill_name(name) {
         return Err("Name must be lowercase letters, digits and single hyphens (e.g. \"my-skill\").".into());
     }
-    let d = dest_by_id(target).ok_or_else(|| format!("Unknown skill location: {target}"))?;
-    let dir = home.join(d.cohort[0]);
+    let d = dest_by_id(home, target).ok_or_else(|| format!("Unknown skill location: {target}"))?;
+    let dir = home.join(&d.cohort[0]);
     let dest = dir.join(name);
     if dest.symlink_metadata().is_ok() {
         return Err(format!("A skill named \"{name}\" already exists in {}.", dir.display()));
@@ -357,8 +354,8 @@ fn import_from_dir(home: &Path, src: &Path, target: &str, overwrite: bool) -> Re
         "Couldn't determine a valid skill name — the SKILL.md `name` and folder name are both invalid.".to_string()
     })?;
 
-    let d = dest_by_id(target).ok_or_else(|| format!("Unknown skill location: {target}"))?;
-    let dir = home.join(d.cohort[0]);
+    let d = dest_by_id(home, target).ok_or_else(|| format!("Unknown skill location: {target}"))?;
+    let dir = home.join(&d.cohort[0]);
     let dest = dir.join(&name);
 
     // Importing an already-installed skill onto itself would copy a dir into itself.
@@ -431,8 +428,8 @@ pub(crate) fn land_cloned_skill(
                 .to_string()
         })?;
 
-    let d = dest_by_id(target).ok_or_else(|| format!("Unknown skill location: {target}"))?;
-    let dir = home.join(d.cohort[0]);
+    let d = dest_by_id(home, target).ok_or_else(|| format!("Unknown skill location: {target}"))?;
+    let dir = home.join(&d.cohort[0]);
     let dest = dir.join(&name);
 
     let env = read_env_pairs(staged);
@@ -800,22 +797,20 @@ mod tests {
     }
 
     #[test]
-    fn legacy_presence_is_union_aware() {
-        let base = std::env::temp_dir().join(format!("ass_sync_legacy_{}", std::process::id()));
+    fn private_skills_can_be_shared_with_other_agents() {
+        let base = std::env::temp_dir().join(format!("ass_sync_private_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let home = base.join("home");
-        // Skill natively lives in the legacy ~/.codex/skills dir.
-        let src = home.join(".codex/skills/legacy-skill");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("SKILL.md"), "x").unwrap();
-
-        let targets = sync_targets_in(&home, &src.to_string_lossy()).unwrap();
-        let uni = targets.iter().find(|t| t.id == "universal").unwrap();
-        // The universal cohort reads ~/.codex/skills, so it's already reachable
-        // there (and it's the source) — we must NOT offer to re-add it.
-        assert!(uni.present);
-        assert!(uni.is_source);
-        assert_eq!(uni.reached_via.as_deref(), Some(".codex/skills"));
+        for (index, rel) in [".codex/skills", ".pi/agent/skills", ".hermes/skills"].iter().enumerate() {
+            let src = home.join(rel).join(format!("private-{index}"));
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("SKILL.md"), "x").unwrap();
+            let targets = sync_targets_in(&home, &src.to_string_lossy()).unwrap();
+            let shared = targets.iter().find(|t| t.id == "universal").unwrap();
+            assert!(!shared.present && !shared.is_source);
+            sync_skill_in(&home, &src.to_string_lossy(), "universal", false, false).unwrap();
+            assert!(home.join(".agents/skills").join(format!("private-{index}/SKILL.md")).exists());
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

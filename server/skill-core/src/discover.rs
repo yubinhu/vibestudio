@@ -4,7 +4,7 @@
 //   "personal" — you authored/customized it (editable, version-controllable)
 //   "official" — vendor-bundled (Codex .system, Cursor managed/built-in, Anthropic plugins)
 //   "plugin"   — an installed third-party package (marketplaces / external / remote)
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
@@ -170,38 +170,24 @@ fn codex_kind(skill_dir: &Path) -> &'static str {
 
 #[derive(Default)]
 struct Groups {
-    claude: Vec<DiscoveredSkill>,
-    codex: Vec<DiscoveredSkill>,
-    cursor: Vec<DiscoveredSkill>,
-    openclaw: Vec<DiscoveredSkill>,
-    opencode: Vec<DiscoveredSkill>,
-    shared: Vec<DiscoveredSkill>,
+    agents: BTreeMap<String, Vec<DiscoveredSkill>>,
 }
-
 impl Groups {
-    fn into_agents(self) -> Vec<AgentSkills> {
-        // Shared standard dir first — it's the most broadly-read location.
-        vec![
-            AgentSkills { agent: "Agent Skills".into(), skills: self.shared },
-            AgentSkills { agent: "Claude Code".into(), skills: self.claude },
-            AgentSkills { agent: "Codex".into(), skills: self.codex },
-            AgentSkills { agent: "Cursor".into(), skills: self.cursor },
-            AgentSkills { agent: "OpenClaw".into(), skills: self.openclaw },
-            AgentSkills { agent: "opencode".into(), skills: self.opencode },
-        ]
+    fn skills_mut(&mut self, label: &str) -> &mut Vec<DiscoveredSkill> {
+        self.agents.entry(label.to_string()).or_default()
+    }
+    #[cfg(test)]
+    fn skills(&self, label: &str) -> &[DiscoveredSkill] {
+        self.agents.get(label).map(Vec::as_slice).unwrap_or_default()
+    }
+    fn into_agents(mut self) -> Vec<AgentSkills> {
+        std::iter::once("Agent Skills").chain(crate::agents::AGENTS.iter().map(|a| a.label))
+            .map(|label| AgentSkills { agent: label.into(), skills: self.agents.remove(label).unwrap_or_default() })
+            .collect()
     }
 }
-
 fn push_to_agent(g: &mut Groups, agent: &str, skill: DiscoveredSkill) {
-    match agent {
-        "Claude Code" => g.claude.push(skill),
-        "Codex" => g.codex.push(skill),
-        "Cursor" => g.cursor.push(skill),
-        "OpenClaw" => g.openclaw.push(skill),
-        "opencode" => g.opencode.push(skill),
-        "Agent Skills" => g.shared.push(skill),
-        _ => {}
-    }
+    g.skills_mut(agent).push(skill);
 }
 
 // --- project-scoped discovery ------------------------------------------
@@ -209,16 +195,10 @@ fn push_to_agent(g: &mut Groups, agent: &str, skill: DiscoveredSkill) {
 // where <marker> is an agent's project dotdir. We walk the home tree, pruning the
 // usual build/dependency dirs (and every non-marker dotdir), to find them.
 
-const PROJECT_MARKERS: [(&str, &str); 6] = [
-    (".claude", "Claude Code"),
-    (".cursor", "Cursor"),
-    (".codex", "Codex"),
-    (".opencode", "opencode"),
-    // Cross-agent shared standard — surfaced under "Agent Skills" to match the
-    // home-level `~/.agents`/`~/.agent` scan, not under any single agent.
-    (".agents", "Agent Skills"),
-    (".agent", "Agent Skills"), // singular variant (e.g. Antigravity)
-];
+fn project_markers() -> impl Iterator<Item = (&'static str, &'static str)> {
+    crate::agents::AGENTS.iter().filter_map(|a| a.project_marker.map(|m| (m, a.label)))
+        .chain([(".agents", "Agent Skills"), (".agent", "Agent Skills")])
+}
 
 // Non-hidden heavyweight dirs to never descend into (hidden dirs are pruned
 // wholesale below, except the markers).
@@ -235,7 +215,7 @@ const PROJECT_PRUNE: &[&str] = &[
 const HOME_TCC_DIRS: &[&str] = &["Downloads", "Music", "Movies", "Pictures"];
 
 fn is_marker(name: &str) -> bool {
-    PROJECT_MARKERS.iter().any(|(m, _)| *m == name)
+    project_markers().any(|(m, _)| m == name)
 }
 
 /// True if the walker should NOT descend into `path`.
@@ -276,7 +256,7 @@ fn project_attribution(skill_dir: &Path) -> Option<(&'static str, String)> {
         if parent.file_name().and_then(|n| n.to_str()) == Some("skills") {
             if let Some(marker_dir) = parent.parent() {
                 if let Some(marker) = marker_dir.file_name().and_then(|n| n.to_str()) {
-                    if let Some((_, agent)) = PROJECT_MARKERS.iter().find(|(m, _)| *m == marker) {
+                    if let Some((_, agent)) = project_markers().find(|(m, _)| *m == marker) {
                         let project = marker_dir
                             .parent()
                             .and_then(|r| r.file_name())
@@ -420,32 +400,26 @@ fn scan_known_projects(
 
 /// Collect only canonical global locations; these don't require a home-wide walk.
 fn collect_globals(home: &Path, g: &mut Groups, seen: &mut HashSet<PathBuf>) {
-    // Claude Code — personal skills, plugin trees, remote plugins.
-    collect(&home.join(".claude/skills"), &|_: &Path| "personal", &mut g.claude, seen);
-    collect(&home.join(".claude/plugins"), &claude_plugin_kind, &mut g.claude, seen);
-    collect(&home.join(".claude/remote/plugins"), &|_: &Path| "plugin", &mut g.claude, seen);
-
-    // Codex — ~/.codex/skills, with .system/ being the bundled set.
-    collect(&home.join(".codex/skills"), &codex_kind, &mut g.codex, seen);
-
-    // Cursor — everything in `skills-cursor/` is Cursor-provided (their own
-    // .gitignore labels it "Built-in Cursor skills"); the user's own skills live
-    // in the separate `~/.cursor/skills/`.
-    collect(&home.join(".cursor/skills-cursor"), &|_: &Path| "official", &mut g.cursor, seen);
-    collect(&home.join(".cursor/skills"), &|_: &Path| "personal", &mut g.cursor, seen);
-
-    // OpenClaw — personal/local roots (bundled skills live in the read-only install dir).
-    collect(&home.join(".openclaw/skills"), &|_: &Path| "personal", &mut g.openclaw, seen);
-
-    // opencode — its own global skills under ~/.config/opencode/skills (it also
-    // reads the shared standard and ~/.claude/skills, collected under their groups).
-    collect(&home.join(".config/opencode/skills"), &|_: &Path| "personal", &mut g.opencode, seen);
-
-    // Agent Skills standard shared dir — read by Codex, Cursor, Gemini CLI, opencode,
-    // and the broader cohort. Its own group so a skill synced here isn't mislabeled as one
-    // agent's. `.agent` (singular) is the minority variant (e.g. Antigravity).
-    collect(&home.join(".agents/skills"), &|_: &Path| "personal", &mut g.shared, seen);
-    collect(&home.join(".agent/skills"), &|_: &Path| "personal", &mut g.shared, seen);
+    for agent in crate::agents::AGENTS {
+        let mut roots = agent.own_skill_dirs(home);
+        // Classify vendor roots before aliases in personal directories. The
+        // registry keeps the writable personal root first for installation.
+        roots.sort_by_key(|root| !root.ends_with("skills-cursor"));
+        for root in roots {
+            let classifier = |path: &Path| {
+                if agent.family == "codex" { codex_kind(path) }
+                else if root.ends_with("skills-cursor") { "official" }
+                else { "personal" }
+            };
+            collect(&root, &classifier, g.skills_mut(agent.label), seen);
+        }
+    }
+    // Bundled/plugin trees have provenance rules separate from personal roots.
+    collect(&home.join(".claude/plugins"), &claude_plugin_kind, g.skills_mut("Claude Code"), seen);
+    collect(&home.join(".claude/remote/plugins"), &|_| "plugin", g.skills_mut("Claude Code"), seen);
+    for rel in crate::agents::SHARED_SKILLS_DIRS {
+        collect(&home.join(rel), &|_| "personal", g.skills_mut("Agent Skills"), seen);
+    }
 }
 
 /// Discover skills across the per-agent global/home canonical dirs, plus
@@ -548,11 +522,26 @@ mod tests {
     }
 
     #[test]
+    fn new_agents_discover_native_and_project_skills() {
+        let fixture = DiscoveryFixture::new();
+        fixture.plant(".hermes/skills/category/global", "hermes-global");
+        fixture.plant(".pi/agent/skills/global", "pi-global");
+        fixture.plant("work/app/.hermes/skills/project", "hermes-project");
+        fixture.plant("work/app/.pi/skills/project", "pi-project");
+        let (full, roots) = fixture.full();
+        for label in ["Hermes", "Pi"] {
+            assert_eq!(full.skills(label).len(), 2);
+            assert_eq!(full.skills(label).iter().filter(|s| s.project.is_some()).count(), 1);
+        }
+        assert_eq!(inventory(fixture.known(&roots)), inventory(full));
+    }
+
+    #[test]
     fn indexed_projects_match_full_discovery_with_nested_skills() {
         let fixture = DiscoveryFixture::new();
         fixture.plant(".codex/skills/.system/bundled", "bundled");
         fixture.plant(".agents/skills/personal", "global");
-        for (index, (marker, _)) in PROJECT_MARKERS.iter().enumerate() {
+        for (index, (marker, _)) in project_markers().enumerate() {
             fixture.plant(&format!("work/repo-{index}/{marker}/skills/example"), marker);
         }
         fixture.plant("work/app/.claude/skills/group/nested", "nested");
@@ -565,11 +554,11 @@ mod tests {
         assert!(roots.contains(&empty), "empty containers must be indexed");
         assert!(!roots.contains(&fixture.home.join(".agents/skills")));
         let known = fixture.known(&roots);
-        let nested = known.claude.iter().find(|s| s.name.as_deref() == Some("nested")).unwrap();
+        let nested = known.skills("Claude Code").iter().find(|s| s.name.as_deref() == Some("nested")).unwrap();
         assert_eq!(nested.project.as_deref(), Some("app"));
-        let inner = known.cursor.iter().find(|s| s.name.as_deref() == Some("inner-project")).unwrap();
+        let inner = known.skills("Cursor").iter().find(|s| s.name.as_deref() == Some("inner-project")).unwrap();
         assert_eq!(inner.project.as_deref(), Some("group"));
-        assert!(known.shared.iter().find(|s| s.name.as_deref() == Some("draft")).unwrap().proposed);
+        assert!(known.skills("Agent Skills").iter().find(|s| s.name.as_deref() == Some("draft")).unwrap().proposed);
         assert_eq!(inventory(known), inventory(full));
     }
 
@@ -585,11 +574,11 @@ mod tests {
         std::fs::remove_dir_all(removed).unwrap();
         fixture.plant("work/empty/.cursor/skills/group/added", "added");
         let known = fixture.known(&roots);
-        assert_eq!(known.claude.len(), 1);
-        assert_eq!(known.claude[0].name.as_deref(), Some("after"));
-        assert_eq!(known.claude[0].description.as_deref(), Some("Description of after"));
-        assert_eq!(known.cursor.len(), 1);
-        assert_eq!(known.cursor[0].name.as_deref(), Some("added"));
+        assert_eq!(known.skills("Claude Code").len(), 1);
+        assert_eq!(known.skills("Claude Code")[0].name.as_deref(), Some("after"));
+        assert_eq!(known.skills("Claude Code")[0].description.as_deref(), Some("Description of after"));
+        assert_eq!(known.skills("Cursor").len(), 1);
+        assert_eq!(known.skills("Cursor")[0].name.as_deref(), Some("added"));
         assert_eq!(inventory(known), inventory(fixture.full().0));
     }
 
@@ -626,9 +615,9 @@ mod tests {
         roots.extend(discovered);
 
         let known = fixture.known(&roots);
-        assert_eq!(known.claude.len(), 2, "only global and valid project skills");
-        assert_eq!(known.codex.len(), 1);
-        assert_eq!(known.codex[0].name.as_deref(), Some("at-depth-limit"));
+        assert_eq!(known.skills("Claude Code").len(), 2, "only global and valid project skills");
+        assert_eq!(known.skills("Codex").len(), 1);
+        assert_eq!(known.skills("Codex")[0].name.as_deref(), Some("at-depth-limit"));
         assert_eq!(inventory(known), inventory(full));
     }
 
@@ -658,9 +647,9 @@ mod tests {
         roots.insert(fixture.home.join("alias/.claude/skills"));
 
         let known = fixture.known(&roots);
-        assert_eq!(known.codex.len(), 1, "global discovery wins canonical deduplication");
-        assert!(known.codex[0].project.is_none());
-        assert!(known.claude.is_empty(), "cached roots must not follow directory links");
+        assert_eq!(known.skills("Codex").len(), 1, "global discovery wins canonical deduplication");
+        assert!(known.skills("Codex")[0].project.is_none());
+        assert!(known.skills("Claude Code").is_empty(), "cached roots must not follow directory links");
         assert_eq!(inventory(known), inventory(fixture.full().0));
     }
 

@@ -1,8 +1,11 @@
 id = "hermes"
-version = "2026.07.24.1"
+version = "2026.09.20.1"
 min_engine_version = 2
-updated_at = "2026-07-24T19:12:54Z"
+updated_at = "2026-09-20T00:00:00Z"
 aliases = ["hermes-agent"]
+
+# Standard Python CLI controls verified against Hermes v2026.9.14:
+# https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/hermes_cli/cli_tui_mixin.py
 
 [[rules]]
 id = "osc_title_blocked"
@@ -61,6 +64,9 @@ any = [
   { contains = ["sudo password"] },
   { contains = ["skill setup"] },
   { contains = ["🔑", "for "] },
+  { contains = ["type password (hidden)", "enter to submit", "esc to skip"] },
+  { contains = ["type the code", "enter to submit", "esc to skip"] },
+  { contains = ["type your email / username", "enter to continue", "esc to skip"] },
 ]
 
 [[rules]]
@@ -92,6 +98,37 @@ priority = 500
 region = "bottom_non_empty_lines(5)"
 visible_working = true
 contains = ["ctrl+c cancel"]
+
+# The placeholder disappears while the user types; the caduceus remains the
+# live agent-running marker. Scope it to the composer, excluding scrollback.
+[[rules]]
+id = "running_prompt"
+state = "working"
+priority = 500
+region = "prompt_box_body"
+visible_working = true
+regex = ['\A\s*☤(?:\s|$)']
+
+# Minimal chrome has only the top rule, so there is no complete prompt box.
+[[rules]]
+id = "running_compact_prompt"
+state = "working"
+priority = 500
+region = "after_last_horizontal_rule"
+visible_working = true
+regex = ['\A\s*☤(?:\s|$)']
+
+[[rules]]
+id = "local_command_working"
+state = "working"
+priority = 500
+region = "bottom_non_empty_lines(5)"
+visible_working = true
+contains = ["command in progress"]
+any = [
+  { contains = ["input temporarily disabled"] },
+  { contains = ["input stays active; enter queues"] },
+]
 
 [[rules]]
 id = "osc_title_idle"

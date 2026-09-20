@@ -418,21 +418,24 @@ locked/suspended iOS delivery still requires the APNs path in
 
 ## Agent registry (`skill-core/src/agents.rs`)
 
-Agent-agnostic: nothing outside the registry matches a family name. One `AgentDef` per CLI:
+One `AgentDef` describes each integration. Terminal executable discovery, global
+and project skill discovery, bundled-skill installation, and sync destinations
+consume this registry. Agent-specific process/session adapters remain separate.
 
-- **skills_dirs / reads_shared** — where it discovers skills (own folders + the shared
-  `~/.agents/skills`).
-- **launch** — the *interactive TUI* with the prompt pre-submitted (claude/codex/cursor:
-  positional; gemini: `-i`; opencode: `--prompt`). An app-driven run is an ordinary session
-  (same approvals/lifetime; the previewed prompt is the *whole* prompt); the caller brings the
-  user to its terminal. (Headless modes dropped — claude `-p` ends the run at turn end.)
-- **resume** — reopen the run dir's latest conversation (claude/opencode: `--continue`; codex:
-  `resume --last`; gemini: `--resume` — all cwd-scoped, so each run gets a stable dir).
+- **cli** — executable name, off-PATH install locations and optional editor bundle.
+- **home_dir / project_marker / skills_dirs / reads_shared** — configuration and
+  skill locations; shared readers use one `~/.agents/skills` install.
+- **launch / resume** — interactive prompt submission and optional cwd-scoped
+  continuation. A missing capability disables that action; a globally scoped
+  "latest session" is not a safe substitute for resume.
+- **session_title / last_message / attention_detector** — native metadata and
+  terminal status. Session identities come from the terminal integration; local
+  display-name overrides work independently of native rename support.
+- **mcp / connector_discovery / connector_runtime** — independent optional
+  connector capabilities. An agent can support interactive work without MCP.
 
-Features consume capabilities, not names (mining = `launch` + navigate; "continue" = `resume`;
-`canMine` = `can_launch`); the UI degrades when a capability is `None` (no TUI launch → not
-offered for mining; no cwd-scoped resume, e.g. Cursor → can't revive). **New agent = one
-entry**; leave a capability `None` if undocumented.
+See [agent integrations](docs/agents.md) for the supported contracts and the
+implementation/validation checklist for a new agent.
 
 ## Connectors
 

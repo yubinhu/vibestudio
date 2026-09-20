@@ -13,6 +13,8 @@ pub mod filetypes;
 pub mod github;
 pub mod gitops;
 pub mod gpu;
+pub mod hermes_sessions;
+pub mod pi_sessions;
 pub mod keystore;
 pub mod mining;
 pub mod paths;

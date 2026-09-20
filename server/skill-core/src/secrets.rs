@@ -21,44 +21,6 @@ const BOOTSTRAP_SKILL: &str = "load-secrets";
 /// surface in the UI as the user's own "personal" skills).
 const LEGACY_SKILL_NAMES: [&str; 1] = ["skill-studio"];
 
-/// An agent and the skills dirs (relative to home) it reads. Cohort agents list
-/// the shared `.agents/skills` standard dir first, so one copy there reaches all
-/// of them; Claude Code and OpenClaw read only their own folders.
-struct Agent {
-    name: &'static str,
-    /// Existence of this home dotdir = the agent is installed on this machine.
-    home_dotdir: &'static str,
-    /// Dirs (relative to home) where the activation skill would be reachable.
-    skill_dirs: &'static [&'static str],
-}
-
-const AGENTS: [Agent; 6] = [
-    Agent { name: "Claude Code", home_dotdir: ".claude", skill_dirs: &[".claude/skills"] },
-    Agent { name: "Codex", home_dotdir: ".codex", skill_dirs: &[".agents/skills", ".codex/skills"] },
-    Agent { name: "Cursor", home_dotdir: ".cursor", skill_dirs: &[".agents/skills", ".cursor/skills"] },
-    Agent { name: "Gemini CLI", home_dotdir: ".gemini", skill_dirs: &[".agents/skills", ".gemini/skills"] },
-    Agent { name: "OpenClaw", home_dotdir: ".openclaw", skill_dirs: &[".openclaw/skills"] },
-    // opencode's config home is ~/.config/opencode; it reads the shared standard
-    // (one copy there covers it) plus its own ~/.config/opencode/skills.
-    Agent { name: "opencode", home_dotdir: ".config/opencode", skill_dirs: &[".agents/skills", ".config/opencode/skills"] },
-];
-
-/// Canonical locations bundled skills are installed into, each gated by the
-/// presence of any "trigger" home dotdir. The shared `.agents/skills` dir covers
-/// the whole standard cohort in a single copy; Claude Code and OpenClaw read
-/// only their own folders. Shared with `mining` so skill-miner installs to the
-/// same set of places as the activation skill.
-pub(crate) struct InstallDest {
-    pub(crate) skills_rel: &'static str,
-    pub(crate) triggers: &'static [&'static str],
-}
-
-pub(crate) const INSTALL_DESTS: [InstallDest; 3] = [
-    InstallDest { skills_rel: ".agents/skills", triggers: &[".agents", ".codex", ".cursor", ".gemini", ".config/opencode"] },
-    InstallDest { skills_rel: ".claude/skills", triggers: &[".claude"] },
-    InstallDest { skills_rel: ".openclaw/skills", triggers: &[".openclaw"] },
-];
-
 /// Per-agent legacy dirs now superseded by `.agents/skills`. A stale activation
 /// skill here is removed once the shared copy is in place, so agents that read
 /// both don't see it twice (and an older copy can't linger with outdated content).
@@ -348,21 +310,21 @@ fn home() -> Result<PathBuf, String> {
 
 /// The activation skill is reachable by `a` if it's present in any dir it reads
 /// (the shared `.agents/skills` standard dir, or the agent's own folder).
-fn agent_has_skill(home: &Path, a: &Agent) -> bool {
-    a.skill_dirs
-        .iter()
-        .any(|d| home.join(d).join(BOOTSTRAP_SKILL).join("SKILL.md").exists())
+fn agent_has_skill(home: &Path, a: &crate::agents::AgentDef) -> bool {
+    let mut roots = a.own_skill_dirs(home);
+    if a.reads_shared { roots.extend(crate::agents::SHARED_SKILLS_DIRS.iter().map(|p| home.join(p))); }
+    roots.iter().any(|d| d.join(BOOTSTRAP_SKILL).join("SKILL.md").exists())
 }
 
 pub fn secrets_status() -> Result<SecretsStatus, String> {
     let store = store_path()?;
     let env = env_path()?;
     let home = home()?;
-    let agents = AGENTS
+    let agents = crate::agents::AGENTS
         .iter()
         .map(|a| AgentInstall {
-            agent: a.name.to_string(),
-            installed: home.join(a.home_dotdir).exists(),
+            agent: a.label.to_string(),
+            installed: a.config_home(&home).exists(),
             has_skill: agent_has_skill(&home, a),
         })
         .collect();
@@ -388,11 +350,7 @@ fn install_bootstrap_skill_in(home: &Path, skill_src: &Path) -> Result<Vec<Strin
         return Err("Bundled load-secrets skill not found.".into());
     }
     // Install into each canonical location whose cohort is present on this machine.
-    for dest in &INSTALL_DESTS {
-        if !dest.triggers.iter().any(|t| home.join(t).exists()) {
-            continue;
-        }
-        let skills_dir = home.join(dest.skills_rel);
+    for skills_dir in crate::agents::install_dirs(home) {
         let target = skills_dir.join(BOOTSTRAP_SKILL);
         install_skill(skill_src, &target)?;
         // Clear copies installed under a former name in the same location.
@@ -415,10 +373,10 @@ fn install_bootstrap_skill_in(home: &Path, skill_src: &Path) -> Result<Vec<Strin
             }
         }
     }
-    Ok(AGENTS
+    Ok(crate::agents::AGENTS
         .iter()
-        .filter(|a| home.join(a.home_dotdir).exists() && agent_has_skill(home, a))
-        .map(|a| a.name.to_string())
+        .filter(|a| a.config_home(home).exists() && agent_has_skill(home, a))
+        .map(|a| a.label.to_string())
         .collect())
 }
 
@@ -468,6 +426,10 @@ mod tests {
         // Agents present: Codex (cohort → shared dir) and Claude Code (holdout).
         std::fs::create_dir_all(home.join(".codex")).unwrap();
         std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(home.join(".hermes/profiles/work")).unwrap();
+        std::fs::write(home.join(".hermes/profiles/work/config.yaml"), "").unwrap();
+        std::fs::write(home.join(".hermes/active_profile"), "work").unwrap();
+        std::fs::create_dir_all(home.join(".pi/agent")).unwrap();
         // A stale per-agent copy from an older install lives in ~/.codex/skills.
         let stale = home.join(".codex/skills/load-secrets");
         std::fs::create_dir_all(&stale).unwrap();
@@ -493,6 +455,11 @@ mod tests {
         assert!(!renamed.exists(), "old-name skill-studio copy must be cleared");
         assert!(covered.iter().any(|a| a == "Codex"), "Codex covered via shared dir");
         assert!(covered.iter().any(|a| a == "Claude Code"));
+        assert!(covered.iter().any(|a| a == "Hermes"));
+        assert!(covered.iter().any(|a| a == "Pi"));
+        assert!(home.join(".hermes/profiles/work/skills/load-secrets/SKILL.md").exists());
+        assert!(!home.join(".hermes/skills/load-secrets").exists());
+        assert!(!home.join(".pi/agent/skills/load-secrets").exists(), "Pi uses the shared copy");
         let _ = std::fs::remove_dir_all(&base);
     }
 

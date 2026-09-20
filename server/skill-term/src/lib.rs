@@ -638,7 +638,7 @@ fn unique_codex_rollout_session_id<'a>(paths: impl Iterator<Item = &'a PathBuf>)
 /// failure as "every session is gone" and reap the whole registry.
 pub fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
     // The wire carries ONLY safe alphabets — a minted [a-z0-9-] name and two
-    // numeric fields, space-separated — so no locale, sanitizer, tmux version,
+    // numeric fields and an OS-owned pane TTY, space-separated — so no locale, sanitizer, tmux version,
     // or user session name can corrupt the parse. Free text used to ride this
     // line and got ASCII-mangled on locale-less hosts; it lives in the session
     // registry now (see `mod registry`).
@@ -649,7 +649,7 @@ pub fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
     // are single-window by construction, so the current window's activity is the
     // session's activity.
     let out = tmux()
-        .args(["list-sessions", "-F", "#{session_name} #{window_activity} #{@ass_bell_at}"])
+        .args(["list-sessions", "-F", "#{session_name} #{window_activity} #{pane_tty} #{@ass_bell_at}"])
         .output()
         .ok()?;
     // Non-zero exit just means "no tmux server running yet" → no sessions.
@@ -665,10 +665,15 @@ pub fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
             continue; // not ours (user sessions can be named anything)
         }
         let activity = f.next().unwrap_or("").to_string();
+        let tty = f.next().unwrap_or("");
         // Empty (→ "0" on the client) for sessions created before the bell
         // hook existed, or any that haven't belled yet.
         let bell_at = f.next().unwrap_or("").to_string();
         let meta = registry::read(name).or_else(|| backfill_legacy(name)).unwrap_or_default();
+        let session_id = if meta.agent == "hermes" {
+            skill_core::hermes_sessions::session_id_for_terminal(tty, meta.created.parse().unwrap_or(0))
+                .unwrap_or_default()
+        } else { meta.session_id };
         sessions.push(SessionInfo {
             id: name.to_string(),
             label: if meta.label.is_empty() { name.to_string() } else { meta.label },
@@ -678,7 +683,7 @@ pub fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
             activity,
             bell_at,
             // Empty for shells / resumed / pre-existing sessions (no forced id).
-            session_id: meta.session_id,
+            session_id,
         });
     }
     Some(sessions)
@@ -958,6 +963,32 @@ fn configure_claude_session(argv: &mut Vec<String>, extra: &[String]) -> Option<
     Some(id)
 }
 
+/// Pi 0.86.1 supports a caller-selected ID. Preserve explicit session choices
+/// and avoid adding conflicting flags to continue/resume or nonpersistent runs.
+fn configure_pi_session(argv: &mut Vec<String>, extra: &[String], version: Option<&str>) -> Option<String> {
+    let options = &extra[..extra.iter().position(|arg| arg == "--").unwrap_or(extra.len())];
+    let unavailable = || Some(skill_core::pi_sessions::UNTRACKED_SESSION_ID.to_string());
+    if options.iter().any(|arg| arg == "--no-session") { return unavailable(); }
+    if let Some(index) = options.iter().rposition(|arg| arg == "--session") {
+        return options.get(index + 1).filter(|path| PathBuf::from(path).is_absolute()).cloned().or_else(unavailable);
+    }
+    if options.iter().any(|arg| arg == "--session-dir") { return unavailable(); }
+    if let Some(index) = options.iter().rposition(|arg| arg == "--session-id") {
+        return options.get(index + 1).cloned().or_else(unavailable);
+    }
+    if options.iter().any(|arg| matches!(arg.as_str(), "--continue" | "-c" | "--resume" | "-r")) {
+        return unavailable();
+    }
+    let supports_id = version.and_then(|v| {
+        let mut parts = v.split('.');
+        Some((parts.next()?.parse::<u32>().ok()?, parts.next()?.parse::<u32>().ok()?, parts.next()?.split('-').next()?.parse::<u32>().ok()?))
+    }).is_some_and(|version| version >= (0, 86, 1));
+    if !supports_id { return None; }
+    let id = new_uuid();
+    argv.extend(["--session-id".into(), id.clone()]);
+    Some(id)
+}
+
 /// Create a detached tmux session running the chosen agent in `cwd`, tagged so
 /// it can be listed from any backend. The session is persistent: nothing about
 /// it dies with this process (see the module docs for the lifetime model).
@@ -1021,6 +1052,9 @@ pub fn create_session(
             argv.push("-c".into());
             argv.push(r#"tui.notification_condition="always""#.into());
         }
+        if opt.agent == "pi" {
+            session_id = configure_pi_session(&mut argv, extra_args, opt.version.as_deref());
+        }
         for a in extra_args {
             if !a.trim().is_empty() {
                 argv.push(a.clone());
@@ -1058,9 +1092,10 @@ pub fn create_session_resume(
         .and_then(|d| d.resume)
         .ok_or_else(|| format!("{} can't resume a recorded session yet.", opt.label))?;
     let cmd = resume(&skill_core::agents::ResumeCtx { bin: &opt.bin, model, effort });
-    // No forced session id on resume: `--continue` reopens the existing transcript
-    // (which is also the newest, so the fallback resolves it correctly).
-    create_session_inner(&opt, cwd, cols, rows, cmd, None)
+    // Pi's resumed transcript predates this terminal; disable its new-session
+    // timestamp fallback rather than matching a concurrent neighboring launch.
+    let identity = (opt.agent == "pi").then_some(skill_core::pi_sessions::UNTRACKED_SESSION_ID);
+    create_session_inner(&opt, cwd, cols, rows, cmd, identity)
 }
 
 /// Create a session whose agent command is a caller-built shell LINE — e.g.
@@ -1317,72 +1352,7 @@ pub fn save_pasted_image(data_b64: &str, mime: &str) -> Result<String, String> {
 
 // ───────────────────────────── agent detection ─────────────────────────────
 
-enum ExtRel {
-    /// A fixed relative file inside the extension dir.
-    File(&'static str),
-    /// A `<dir>/<arch>/<file>` layout — glob the single arch subdir.
-    GlobDir { dir: &'static str, file: &'static str },
-}
-
-struct Spec {
-    agent: &'static str,
-    label: &'static str,
-    path_name: &'static str,
-    supports_ide: bool,
-    ext_prefix: &'static str,
-    ext_rel: ExtRel,
-    /// Fixed, non-PATH install locations to also probe (agent-specific; `~` ok).
-    /// Catches installs that aren't on the current shell's PATH — native
-    /// standalone, the curl-installer dir, a different node manager, etc.
-    cli_paths: &'static [&'static str],
-    /// Env var naming an install dir to also probe (`<dir>/<name>`); "" if none.
-    install_dir_env: &'static str,
-}
-
-fn agent_specs() -> Vec<Spec> {
-    vec![
-        Spec {
-            agent: "claude",
-            label: "Claude Code",
-            path_name: "claude",
-            supports_ide: true,
-            ext_prefix: "anthropic.claude-code-",
-            ext_rel: ExtRel::File("resources/native-binary/claude"),
-            // The native installer's current target (~/.local/bin/claude) and
-            // its older location; covers shells whose login PATH we can't read.
-            cli_paths: &["~/.local/bin/claude", "~/.claude/local/claude"],
-            install_dir_env: "",
-        },
-        Spec {
-            agent: "codex",
-            label: "Codex",
-            path_name: "codex",
-            supports_ide: false,
-            ext_prefix: "openai.chatgpt-",
-            ext_rel: ExtRel::GlobDir {
-                dir: "bin",
-                file: "codex",
-            },
-            // The native/standalone managed install (curl installer / IDE-managed).
-            cli_paths: &["~/.codex/packages/standalone/current/codex"],
-            install_dir_env: "CODEX_INSTALL_DIR",
-        },
-        Spec {
-            agent: "opencode",
-            label: "opencode",
-            path_name: "opencode",
-            supports_ide: false,
-            // No CLI-bundling editor extension to probe; an empty prefix is the
-            // signal `ext_finds` uses to skip the editor-roots scan entirely.
-            ext_prefix: "",
-            ext_rel: ExtRel::File(""),
-            // The install script's default target ($HOME/.opencode/bin); other
-            // install paths land on PATH or in the dirs `resolve_cli` already probes.
-            cli_paths: &["~/.opencode/bin/opencode"],
-            install_dir_env: "OPENCODE_INSTALL_DIR",
-        },
-    ]
-}
+use skill_core::agents::{CliDef as Spec, ExtRel};
 
 fn editor_roots() -> Vec<(&'static str, &'static str)> {
     vec![
@@ -1513,31 +1483,32 @@ fn compute_agents() -> Vec<AgentOption> {
         can_mine: false,
     });
 
-    for spec in agent_specs() {
+    for def in skill_core::agents::AGENTS {
+        let Some(spec) = def.cli else { continue };
         if let Some(bin) = resolve_cli(&spec) {
             out.push(AgentOption {
-                id: format!("{}:cli", spec.agent),
-                agent: spec.agent.into(),
-                label: spec.label.into(),
+                id: format!("{}:cli", def.family),
+                agent: def.family.into(),
+                label: def.label.into(),
                 flavor: "cli".into(),
                 flavor_label: "CLI".into(),
                 version: bin_version(&bin),
                 bin,
                 supports_ide: spec.supports_ide,
-                can_mine: skill_core::agents::can_launch(spec.agent),
+                can_mine: skill_core::agents::can_launch(def.family),
             });
         }
         for (editor, bin) in ext_finds(&spec) {
             out.push(AgentOption {
-                id: format!("{}:ext:{}", spec.agent, slug(editor)),
-                agent: spec.agent.into(),
-                label: spec.label.into(),
+                id: format!("{}:ext:{}", def.family, slug(editor)),
+                agent: def.family.into(),
+                label: def.label.into(),
                 flavor: "extension".into(),
                 flavor_label: format!("{editor} extension"),
                 version: bin_version(&bin),
                 bin,
                 supports_ide: spec.supports_ide,
-                can_mine: skill_core::agents::can_launch(spec.agent),
+                can_mine: skill_core::agents::can_launch(def.family),
             });
         }
     }
@@ -1556,6 +1527,27 @@ pub fn detect_agents() -> Vec<AgentOption> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_identity_respects_resume_and_older_versions() {
+        let mut argv = vec!["pi".into()];
+        let id = configure_pi_session(&mut argv, &[], Some("0.86.1")).unwrap();
+        assert_eq!(argv, ["pi", "--session-id", &id]);
+        for args in [vec!["--continue"], vec!["-c"], vec!["--resume"]] {
+            let extra = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            let mut argv = vec!["pi".into()];
+            assert_eq!(configure_pi_session(&mut argv, &extra, Some("0.86.1")).as_deref(), Some(skill_core::pi_sessions::UNTRACKED_SESSION_ID));
+            assert_eq!(argv, ["pi"]);
+        }
+        for args in [vec!["--no-session", "--session-id", "old"], vec!["--session-dir", "/custom", "--session-id", "old"]] {
+            let extra = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            assert_eq!(configure_pi_session(&mut vec![], &extra, Some("0.86.1")).as_deref(), Some(skill_core::pi_sessions::UNTRACKED_SESSION_ID));
+        }
+        assert_eq!(configure_pi_session(&mut vec![], &["--session-id".into(), "first".into(), "--session-id".into(), "last".into()], Some("0.86.1")).as_deref(), Some("last"));
+        assert!(configure_pi_session(&mut vec![], &[], Some("0.60.0")).is_none());
+        assert_eq!(configure_pi_session(&mut vec![], &["--session-id".into(), "My.Session-1".into()], Some("0.86.1")).as_deref(), Some("My.Session-1"));
+        assert!(configure_pi_session(&mut vec![], &["--".into(), "--continue".into()], Some("0.86.1")).is_some());
+    }
 
     #[test]
     fn claude_session_ids_do_not_conflict_with_resume_or_explicit_ids() {
