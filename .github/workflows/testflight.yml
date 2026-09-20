@@ -1,0 +1,169 @@
+name: TestFlight
+run-name: TestFlight ${{ inputs.tag || github.event.release.tag_name }}
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable release tag to send to internal TestFlight
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# Keep every published release queued, and let upload/processing finish together.
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  release:
+    if: github.event_name == 'release' || github.ref == 'refs/heads/master'
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      RELEASE_STATE_DIR: ${{ github.workspace }}/testflight-state
+      RELEASE_SOURCE_DIR: ${{ github.workspace }}/release-source
+      TESTFLIGHT_APP_ID: '6789766775'
+      TESTFLIGHT_GROUP_ID: 22cb9d8d-337b-4c4c-a5dd-5333eaa71607
+    steps:
+      # Tooling comes from this workflow's immutable revision. The app checkout
+      # below is separate so manual runs can release older, published app tags.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tools
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Validate source and restore this run's retry records
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node release-tools/scripts/testflight-release.mjs preflight
+      - name: Save immutable build allocation
+        if: steps.plan.outputs.allocation_exists != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: testflight-allocation
+          path: |
+            ${{ env.RELEASE_STATE_DIR }}/allocation.json
+            ${{ env.RELEASE_STATE_DIR }}/beta-notes.txt
+            ${{ env.RELEASE_STATE_DIR }}/prior-uploads.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Check Apple state before building or uploading
+        id: apple
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: node release-tools/scripts/testflight-apple.mjs check
+      - uses: actions/checkout@v6
+        if: steps.apple.outputs.existing != 'true' && steps.plan.outputs.ipa_exists != 'true'
+        with:
+          ref: ${{ steps.plan.outputs.commit }}
+          path: release-source
+          persist-credentials: false
+      - name: Select supported stable Xcode
+        if: steps.apple.outputs.existing != 'true'
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.apple.outputs.existing != 'true' && steps.plan.outputs.ipa_exists != 'true'
+        with:
+          targets: aarch64-apple-ios
+      - uses: swatinem/rust-cache@v2
+        if: steps.apple.outputs.existing != 'true' && steps.plan.outputs.ipa_exists != 'true'
+        with:
+          workspaces: release-source/client/desktop -> target
+          key: ios-testflight
+      - name: Build frontend and stamp release version
+        if: steps.apple.outputs.existing != 'true' && steps.plan.outputs.ipa_exists != 'true'
+        working-directory: release-source
+        env:
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          npm ci
+          npm run build
+          bash scripts/stamp-version.sh "$RELEASE_VERSION"
+      - name: Archive the tagged iOS app
+        if: steps.apple.outputs.existing != 'true' && steps.plan.outputs.ipa_exists != 'true'
+        working-directory: release-source
+        run: |
+          npm run tauri -- ios build --target aarch64 --ci --archive-only --no-sign \
+            --config "$RELEASE_STATE_DIR/release.json"
+      - name: Prepare temporary distribution signing
+        if: steps.apple.outputs.existing != 'true' && steps.plan.outputs.ipa_exists != 'true'
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+        run: python3 release-tools/scripts/testflight-signing.py prepare
+      - name: Export signed internal-only IPA
+        if: steps.apple.outputs.existing != 'true' && steps.plan.outputs.ipa_exists != 'true'
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RELEASE_SOURCE_DIR/client/desktop/gen/apple/build/vibestudio_iOS.xcarchive" \
+            -exportPath "$RELEASE_STATE_DIR/ipa" \
+            -exportOptionsPlist "$RELEASE_STATE_DIR/ExportOptions.plist"
+      - name: Verify IPA identity, signature, profile, and retry hash
+        if: steps.apple.outputs.existing != 'true'
+        run: python3 release-tools/scripts/testflight-signing.py verify
+      # Save before uploading: a retry uses the exact signed bytes, never a rebuild.
+      - name: Save signed package for upload retries
+        if: steps.apple.outputs.existing != 'true' && steps.plan.outputs.ipa_exists != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: testflight-ipa
+          path: |
+            ${{ env.RELEASE_STATE_DIR }}/ipa/VibeStudio.ipa
+            ${{ env.RELEASE_STATE_DIR }}/package.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload to App Store Connect
+        id: upload
+        if: steps.apple.outputs.existing != 'true'
+        # Lost acknowledgements can still mean a successful upload. The next step
+        # reconciles the same build and is the authoritative success/failure gate.
+        continue-on-error: true
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: node release-tools/scripts/testflight-release.mjs upload
+      - name: Wait for processing and verify Alpha tester availability
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: node release-tools/scripts/testflight-apple.mjs deliver
+      - name: Remove signing credentials and restore keychain state
+        if: always()
+        run: python3 release-tools/scripts/testflight-signing.py cleanup
+      - name: Save release evidence
+        if: always() && steps.plan.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: testflight-evidence-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 90
+          path: |
+            ${{ env.RELEASE_STATE_DIR }}/allocation.json
+            ${{ env.RELEASE_STATE_DIR }}/package.json
+            ${{ env.RELEASE_STATE_DIR }}/apple-state.json
+            ${{ env.RELEASE_STATE_DIR }}/upload-state.json
+            ${{ env.RELEASE_STATE_DIR }}/prior-uploads.json
+            ${{ env.RELEASE_STATE_DIR }}/receipt.json
+            ${{ env.RELEASE_STATE_DIR }}/beta-notes.txt
+            ${{ env.RELEASE_STATE_DIR }}/upload.json
+            ${{ env.RELEASE_STATE_DIR }}/upload.log

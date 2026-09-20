@@ -170,71 +170,97 @@ verification files are supporting assets.
 
 ## iOS / TestFlight
 
-The desktop tag workflow does not upload iOS builds. The `iOS simulator` job in
-`ci.yml` builds the actual arm64 simulator app without distribution credentials,
-installs it on a disposable virtual iPhone, authenticates with simulated Face ID,
-verifies the connection screen, and checks the one-minute background grace,
-cancellation/retry, and app-switcher privacy. The separate XCTest harness handles
-the simulator's first-use Face ID permission; no authentication bypass is added
-to the application. Screenshots and startup diagnostics are saved with the run.
-This checks native compilation, linking and startup; device signing, remote SSH
-sessions and TestFlight delivery still need separate verification.
+[`.github/workflows/testflight.yml`](.github/workflows/testflight.yml) builds and
+releases an **internal-only TestFlight build when a stable GitHub release is
+published**. Routine releases use GitHub-hosted macOS 26 runners with Xcode 26.6;
+this Mac does not need to be online. The existing **Alpha** tester group receives
+the build. No public App Store submission or external testing is performed.
 
-For TestFlight, use a Mac with a supported Xcode/iOS SDK and access to the existing
-App Store Connect app for `one.vibestudio.app`. Supply an Apple Distribution
-certificate/private key and matching App Store Connect provisioning profile, plus
-credentials allowed to upload builds. The desktop Developer ID/notarization
-secrets are separate. For manual signing, Tauri accepts a base64-encoded `.p12`
-in `IOS_CERTIFICATE`, its password in `IOS_CERTIFICATE_PASSWORD`, and a
-base64-encoded profile in `IOS_MOBILE_PROVISION`. Alternatively, configure Xcode
-automatic signing with a suitable account or the complete `APPLE_API_KEY`
-(key ID), `APPLE_API_ISSUER` and `APPLE_API_KEY_PATH` trio. The checked-in release
-Xcode configuration uses manual signing: for automatic signing, change that
-configuration in the build checkout first. See [Tauri's signing guide](https://v2.tauri.app/distribute/sign/ios/).
+The workflow verifies that the release is public, its tag is on `master`, and
+repository CI succeeded for the exact source commit. It builds that immutable
+commit in a separate checkout from the release tooling. The existing simulator
+CI remains the native launch, authentication, and privacy gate.
 
-Build from a clean checkout of the desktop release tag. Keep the Cargo manifests'
-committed `0.0.0` placeholders. `tauri.ios.conf.json` currently overrides the app
-version, so Cargo stamping alone does not version an iOS release. Merge a
-temporary config with the release version and a build number unused in App Store
-Connect. For example, after setting `IOS_RELEASE_VERSION` and `IOS_BUILD_NUMBER`:
+To release an already published tag or start a fresh build after a terminal
+Apple rejection:
 
 ```bash
-npm ci
-npm run build # iOS resolves bundled resources before beforeBuildCommand
-rustup target add aarch64-apple-ios
-export IOS_RELEASE_VERSION IOS_BUILD_NUMBER
-bash scripts/stamp-version.sh "$IOS_RELEASE_VERSION"
-ios_release_dir=$(mktemp -d -t vibestudio-ios)
-ios_release_config="$ios_release_dir/release.json"
-python3 - "$ios_release_config" <<'PY'
-import json, os, sys
-with open(sys.argv[1], "w") as destination:
-    json.dump({"version": os.environ["IOS_RELEASE_VERSION"],
-               "bundle": {"iOS": {"bundleVersion": os.environ["IOS_BUILD_NUMBER"]}}},
-              destination)
-PY
-npm run tauri -- ios build --target aarch64 --ci \
-  --export-method app-store-connect --config "$ios_release_config"
-rm "$ios_release_config"
-rmdir "$ios_release_dir"
+gh workflow run testflight.yml --ref master -f tag=v1.2.11
+gh run list -w testflight.yml --limit 5
 ```
 
-The explicit export method overrides the checked-in `debugging` setting. Inspect
-the resulting `.ipa` version, bundle ID and provisioning before uploading. With
-API-key authentication, place the private key in an `altool` search directory as
-`AuthKey_<KEY_ID>.p8` (for example `~/.appstoreconnect/private_keys/`), then run:
+A manual run must target `master`. A tag push still creates only the desktop/server
+draft; TestFlight starts after publication. If a future workflow publishes using
+`GITHUB_TOKEN`, it must explicitly dispatch `testflight.yml`: that token's release
+events do not trigger another workflow. Do not convert TestFlight to
+`workflow_call` without replacing its workflow-specific build-number allocator.
 
-```bash
-xcrun altool --upload-app --type ios \
-  --file client/desktop/gen/apple/build/arm64/VibeStudio.ipa \
-  --apiKey "$APPLE_API_KEY" --apiIssuer "$APPLE_API_ISSUER"
-```
+### Hosted signing configuration
 
-Wait for Apple processing, check the build's TestFlight status, and add it to the
-intended tester group. External testing can require Beta App Review. Upload
-success alone does not confirm testers can install it. See the
-[Tauri build/upload guide](https://v2.tauri.app/distribute/app-store/) and
+Configure these repository Actions secrets once, using `gh secret set` with
+values supplied on stdin. Never commit, print, or attach credential files.
+
+| Secret | Value |
+| --- | --- |
+| `IOS_CERTIFICATE` | Base64 Apple Distribution `.p12`, including its private key |
+| `IOS_CERTIFICATE_PASSWORD` | Password for that `.p12` |
+| `IOS_MOBILE_PROVISION` | Base64 App Store Connect provisioning profile for `one.vibestudio.app`, matching the certificate |
+| `APPLE_API_KEY` | App Store Connect API key ID |
+| `APPLE_API_ISSUER` | API issuer ID |
+| `APPLE_API_PRIVATE_KEY` | `.p8` private-key contents |
+
+The existing macOS Developer ID/notarization secrets are separate. The workflow
+pins app ID `6789766775`, bundle `one.vibestudio.app`, developer team `5J5PGFKG9H`,
+and the existing internal Alpha group. Its API key needs access to the app and
+permission to upload builds and manage beta metadata/groups.
+
+The app is archived unsigned with the checked-in native project; never regenerate
+it with `tauri ios init`, which would lose custom native startup and app-lock code.
+The signing helper imports the distribution identity into a temporary runner
+keychain, then exports using the matching profile and certificate. It explicitly
+sets `testFlightInternalTestingOnly=true` and
+`manageAppVersionAndBuildNumber=false`. It does not use the older signing identity
+pinned in the native project. The keychain and credential files are removed on
+completion, including failed runs. No personal/login keychain password is needed.
+
+Certificate and profile expiry are checked before signing; expiration fails the
+run and expiry within 30 days produces a warning. Renew the matching pair and
+update the two certificate secrets and profile secret together. Replace the API
+secrets when rotating its key. Keep the selected Xcode version compatible with
 [Apple's upload requirements](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds).
+
+### Build identity, retries, and verification
+
+Marketing versions match the release tag. The workflow stamps Cargo and a
+temporary Tauri config, overriding the committed `tauri.ios.conf.json` version.
+Apple build numbers are `1000 + github.run_number`; rerunning a run preserves its
+number. Builds are serialized with a queue, and allocation refuses an existing
+or superseded number. Before reaching 9999, migrate the allocator explicitly.
+
+The `testflight-allocation` artifact records the tag, source SHA, versions, run
+identity, and beta notes. The `testflight-ipa` artifact records signed bytes and
+their SHA-256 **before upload**. Both are retained for 90 days. Use **Re-run failed
+jobs** for transient failures: a retry restores the original allocation and IPA,
+or resumes distribution if Apple already has that build. It never silently
+rebuilds an IPA that may already have been uploaded. Expired or inconsistent
+retry records fail closed; reconcile the Apple build before a fresh dispatch.
+
+A lost upload acknowledgement still proceeds to processing checks for that exact
+build. The job succeeds only after Apple processing is `VALID`, audience is
+`INTERNAL_ONLY`, Alpha membership and existing testers are verified, beta notes
+are saved, and the internal state is `IN_BETA_TESTING`. Processing is polled for
+up to 20 minutes; a timeout can be resumed with the same run. Evidence and the
+verified receipt are attached to the Actions run. Upload success alone is not
+delivery success.
+
+For emergency local releases, use the same unsigned archive followed by a manual
+App Store Connect export with an explicitly configured distribution identity and
+profile. Preserve the internal-only export flag and select a build number above
+existing Apple builds. Resume hosted releases with a fresh dispatch afterward;
+never reuse an accepted version/build combination. See the
+[implementation notes](docs/testflight-ci-plan.md),
+[Tauri signing guide](https://v2.tauri.app/distribute/sign/ios/), and
+[Apple internal-testing guide](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers).
 
 ## Screenshot harness (headless, never touches the live app)
 
