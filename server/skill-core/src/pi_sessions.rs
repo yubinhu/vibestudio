@@ -2,9 +2,9 @@
 //!
 //! Contract verified against @earendil-works/pi-coding-agent 0.86.1:
 //! https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts
-//! Pi's `--session-id` gives normal launches an exact identity. Mining sessions
-//! without one can only match a unique session created alongside that terminal;
-//! a missing exact ID never falls back to another session in the same directory.
+//! Pi's `--session-id` gives normal launches an exact identity. Without a known
+//! ID or explicit session file, return no native metadata: matching cwd and
+//! creation time cannot prove that a neighboring terminal owns the session.
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -26,7 +26,6 @@ const MAX_CANDIDATES: usize = 8192;
 struct Header {
     id: String,
     cwd: PathBuf,
-    started: Option<i64>,
 }
 
 #[derive(Clone, Default)]
@@ -60,12 +59,14 @@ pub fn last_message(cwd: &Path, created_unix: i64, session_id: Option<&str>) -> 
 }
 
 fn display(cwd: &Path, created: i64, id: Option<&str>) -> Option<Display> {
-    if id == Some(UNTRACKED_SESSION_ID) {
-        return None;
-    }
+    let id = exact_id(id)?;
     let home = dirs::home_dir()?;
     let dir = session_dir(cwd, &home, &agent_dir(&home));
-    from_dir(&dir, cwd, created, id)
+    from_dir(&dir, cwd, created, Some(id))
+}
+
+fn exact_id(id: Option<&str>) -> Option<&str> {
+    id.filter(|id| !id.is_empty() && *id != UNTRACKED_SESSION_ID)
 }
 
 fn expand_home(path: &Path, home: &Path) -> PathBuf {
@@ -130,17 +131,16 @@ fn same_cwd(a: &Path, b: &Path) -> bool {
     a == b || matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
-fn from_dir(dir: &Path, cwd: &Path, created: i64, id: Option<&str>) -> Option<Display> {
+fn from_dir(dir: &Path, cwd: &Path, _created: i64, id: Option<&str>) -> Option<Display> {
+    let id = exact_id(id)?;
     // A recorded explicit --session file can be read directly. Other IDs are
     // compared as data; never concatenate an untrusted ID into a native path.
-    if let Some(path) = id.filter(|id| Path::new(id).is_absolute()).map(Path::new) {
+    let path = Path::new(id);
+    if path.is_absolute() {
         let header = read_header(path)?;
         return same_cwd(&header.cwd, cwd)
             .then(|| cached_display(path))
             .flatten();
-    }
-    if id.is_some_and(str::is_empty) || (id.is_none() && created <= 0) {
-        return None;
     }
     let mut candidate = None;
     for (count, entry) in fs::read_dir(dir).ok()?.enumerate() {
@@ -157,16 +157,9 @@ fn from_dir(dir: &Path, cwd: &Path, created: i64, id: Option<&str>) -> Option<Di
         if !same_cwd(&header.cwd, cwd) {
             continue;
         }
-        let matches = if let Some(id) = id {
-            header.id == id
-        } else {
-            header.started.is_some_and(|started| {
-                started >= created.saturating_sub(2) && started <= created.saturating_add(30)
-            })
-        };
-        if matches {
+        if header.id == id {
             if candidate.is_some() {
-                // Concurrent launches and duplicate IDs cannot be disambiguated.
+                // Duplicate IDs cannot be disambiguated.
                 return None;
             }
             candidate = Some(path);
@@ -211,10 +204,6 @@ fn parse_header(path: &Path) -> Option<Header> {
     Some(Header {
         id: value.get("id")?.as_str()?.to_owned(),
         cwd: PathBuf::from(value.get("cwd")?.as_str()?),
-        started: value
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(iso_utc_seconds),
     })
 }
 
@@ -360,48 +349,6 @@ fn shorten(text: &str, max: usize) -> String {
     format!("{cut}…")
 }
 
-/// Pi writes JavaScript Date.toISOString(): UTC, with optional milliseconds.
-fn iso_utc_seconds(text: &str) -> Option<i64> {
-    let bytes = text.as_bytes();
-    if bytes.len() < 20
-        || bytes.get(4) != Some(&b'-')
-        || bytes.get(7) != Some(&b'-')
-        || bytes.get(10) != Some(&b'T')
-        || bytes.get(13) != Some(&b':')
-        || bytes.get(16) != Some(&b':')
-        || bytes.last() != Some(&b'Z')
-    {
-        return None;
-    }
-    if bytes.len() != 20
-        && (bytes.get(19) != Some(&b'.')
-            || !bytes[20..bytes.len() - 1].iter().all(u8::is_ascii_digit))
-    {
-        return None;
-    }
-    let number = |start, end| text.get(start..end)?.parse::<i64>().ok();
-    let (mut year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
-    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let max_day = match month {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        1..=12 => 31,
-        _ => return None,
-    };
-    if !(1..=max_day).contains(&day) || hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    year -= i64::from(month <= 2);
-    let era = year.div_euclid(400);
-    let yoe = year - era * 400;
-    let shifted_month = month + if month > 2 { -3 } else { 9 };
-    let doy = (153 * shifted_month + 2) / 5 + day - 1;
-    let days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
-    Some(days * 86400 + hour * 3600 + minute * 60 + second)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,8 +402,10 @@ mod tests {
 
     #[test]
     fn untracked_launches_never_read_a_native_store() {
-        assert!(title(Path::new("/work"), 1789891200, Some(UNTRACKED_SESSION_ID)).is_none());
-        assert!(last_message(Path::new("/work"), 1789891200, Some(UNTRACKED_SESSION_ID)).is_none());
+        for id in [None, Some(""), Some(UNTRACKED_SESSION_ID)] {
+            assert!(title(Path::new("/work"), 1789891200, id).is_none());
+            assert!(last_message(Path::new("/work"), 1789891200, id).is_none());
+        }
     }
 
     #[test]
@@ -492,33 +441,28 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_fallback_requires_unique_session_close_to_launch() {
+    fn missing_identity_never_borrows_a_unique_neighbor_regardless_of_launch_time() {
         let f = Fixture::new();
-        let started = iso_utc_seconds("2026-09-20T08:00:00Z").unwrap();
-        f.write("old.jsonl", "old", "/work", "2026-09-20T07:59:57Z", &[]);
-        f.write(
-            "ours.jsonl",
-            "ours",
-            "/work",
-            "2026-09-20T08:00:04.123Z",
-            &[message("u", None, "user", "Ours")],
-        );
-        assert_eq!(
-            from_dir(&f.0, Path::new("/work"), started, None)
-                .unwrap()
-                .title
-                .as_deref(),
-            Some("Ours")
-        );
-        assert!(from_dir(&f.0, Path::new("/work"), started + 90, None).is_none());
-        f.write(
-            "concurrent.jsonl",
+        let path = f.write(
+            "neighbor.jsonl",
             "theirs",
             "/work",
-            "2026-09-20T08:00:05Z",
-            &[],
+            "2026-09-20T08:00:00.000Z",
+            &[
+                message("u", None, "user", "Neighbor's task"),
+                message("a", Some("u"), "assistant", "Neighbor's answer"),
+            ],
         );
-        assert!(from_dir(&f.0, Path::new("/work"), started, None).is_none());
+        let native = cached_display(&path).unwrap();
+        assert_eq!(native.title.as_deref(), Some("Neighbor's task"));
+        assert_eq!(native.last_message.as_deref(), Some("Neighbor's answer"));
+        // The only file may belong to a neighbor while our launch is still in
+        // setup. Even an identical creation second cannot establish ownership.
+        for created in [0, 1789891199, 1789891200, 1789891201, 1789891290] {
+            for id in [None, Some(""), Some(UNTRACKED_SESSION_ID)] {
+                assert!(from_dir(&f.0, Path::new("/work"), created, id).is_none());
+            }
+        }
     }
 
     #[test]
@@ -639,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn native_path_encoding_and_utc_dates_match_pi() {
+    fn native_path_encoding_matches_pi() {
         assert_eq!(
             default_session_dir(Path::new("/work/project"), Path::new("/config")),
             PathBuf::from("/config/sessions/--work-project--")
@@ -652,9 +596,5 @@ mod tests {
             expand_home(Path::new("~/pi-config"), Path::new("/fake-home")),
             PathBuf::from("/fake-home/pi-config")
         );
-        assert_eq!(iso_utc_seconds("1970-01-01T00:00:00.000Z"), Some(0));
-        assert_eq!(iso_utc_seconds("2026-09-20T08:00:00Z"), Some(1789891200));
-        assert_eq!(iso_utc_seconds("2024-02-29T00:00:00Z"), Some(1709164800));
-        assert_eq!(iso_utc_seconds("2025-02-29T00:00:00Z"), None);
     }
 }

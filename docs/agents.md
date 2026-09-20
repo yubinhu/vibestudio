@@ -27,9 +27,11 @@ Hermes access: that requires the user's explicit external-directory configuratio
 
 Current Pi launches receive `--session-id`; older detected versions retain their
 normal CLI arguments. Explicit continue/resume, custom session directories, and
-nonpersistent sessions retain the user's arguments. Native titles can be absent
-when the store cannot be correlated uniquely. Pi's explicit absolute `--session`
-file is readable; arbitrary CLI storage overrides are not inferred. Hermes's
+nonpersistent sessions retain the user's arguments. Pi's automatic titles and
+assistant previews require a known session ID or explicit absolute `--session`
+file. Older, unmapped and mining sessions still support persistent VibeStudio
+names; they never borrow native metadata based on directory or launch time.
+Arbitrary CLI storage overrides are not inferred. Hermes's
 optional Node TUI uses a different identity channel; native titles currently
 cover its standard Python CLI. Persistent VibeStudio names work in either mode.
 
