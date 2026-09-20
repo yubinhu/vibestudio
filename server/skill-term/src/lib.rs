@@ -1376,6 +1376,113 @@ pub fn detect_agents() -> Vec<AgentOption> {
 mod tests {
     use super::*;
 
+    /// Re-run stateful cases alone so their config, paste cache and tmux server
+    /// belong to the test even when the surrounding suite runs in parallel.
+    fn in_isolated_process(name: &str, needs_tmux: bool) -> bool {
+        const CHILD: &str = "VIBESTUDIO_TERM_TEST_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+
+        struct Fixture {
+            root: PathBuf,
+            tmux: Option<PathBuf>,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                if let Some(binary) = &self.tmux {
+                    let _ = hidden_command(binary)
+                        .env("TMUX_TMPDIR", self.root.join("tmux"))
+                        .env_remove("TMUX")
+                        .args(["kill-server"])
+                        .output();
+                }
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+
+        let tmux = needs_tmux.then(|| {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|dir| dir.join("tmux"))
+                .find(|path| path.is_file())
+                .expect("terminal integration tests require tmux on PATH")
+                .canonicalize().unwrap()
+        });
+        // Keep Unix socket paths short on macOS too.
+        let base = if cfg!(unix) { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+        let fixture = Fixture {
+            root: base.join(format!("vs-test-{}-{}", std::process::id(), &new_uuid()[..8])),
+            tmux,
+        };
+        std::fs::create_dir(&fixture.root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fixture.root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        for dir in ["home", "config", "cache", "tmux", "bin", "tmp"] {
+            std::fs::create_dir(fixture.root.join(dir)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/bin/bash", fixture.root.join("bin/bash")).unwrap();
+            if let Some(binary) = &fixture.tmux {
+                std::os::unix::fs::symlink(binary, fixture.root.join("bin/tmux")).unwrap();
+            }
+        }
+        let mut search_path = vec![fixture.root.join("bin")];
+        if needs_tmux {
+            search_path.extend([PathBuf::from("/usr/bin"), PathBuf::from("/bin")]);
+        }
+        let search_path = std::env::join_paths(search_path).unwrap();
+        std::fs::write(
+            fixture.root.join("home/.bash_profile"),
+            format!("export PATH={}\n", shell_quote(&search_path.to_string_lossy())),
+        ).unwrap();
+
+        let log_path = fixture.root.join("output.log");
+        let log = std::fs::File::create(&log_path).unwrap();
+        let mut command = hidden_command(std::env::current_exe().unwrap());
+        command.env_clear();
+        // Windows needs these to load its system libraries in the child.
+        for key in ["SystemRoot", "WINDIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        let mut child = command
+            .args(["--exact", &format!("tests::{name}"), "--include-ignored", "--nocapture"])
+            .env(CHILD, name)
+            .env("HOME", fixture.root.join("home"))
+            .env("USERPROFILE", fixture.root.join("home"))
+            .env("XDG_CONFIG_HOME", fixture.root.join("config"))
+            .env("APPDATA", fixture.root.join("config"))
+            .env("XDG_CACHE_HOME", fixture.root.join("cache"))
+            .env("LOCALAPPDATA", fixture.root.join("cache"))
+            .env("TMUX_TMPDIR", fixture.root.join("tmux"))
+            .env("TMPDIR", fixture.root.join("tmp"))
+            .env("PATH", search_path)
+            .env("SHELL", "/bin/bash")
+            .env("TERM", "xterm-256color")
+            .current_dir(&fixture.root)
+            .stdin(std::process::Stdio::null())
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() { break status; }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{name} exceeded 30 seconds:\n{}", std::fs::read_to_string(&log_path).unwrap());
+            }
+            thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(status.success(), "{name} failed:\n{}", std::fs::read_to_string(log_path).unwrap());
+        true
+    }
+
     #[test]
     fn shell_quote_handles_quotes() {
         assert_eq!(shell_quote("a b"), "'a b'");
@@ -1478,12 +1585,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Windows known-folder profile paths cannot be isolated with child environment variables")]
     fn detect_includes_shell() {
+        if in_isolated_process("detect_includes_shell", false) { return; }
+        assert_eq!(dirs::home_dir(), Some(PathBuf::from(std::env::var_os("HOME").unwrap())));
         assert!(detect_agents().iter().any(|o| o.agent == "shell"));
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Windows known-folder profile paths cannot be isolated with child environment variables")]
     fn resume_requires_a_registry_resume_capability() {
+        if in_isolated_process("resume_requires_a_registry_resume_capability", false) { return; }
+        assert_eq!(dirs::home_dir(), Some(PathBuf::from(std::env::var_os("HOME").unwrap())));
         // "shell" has no agent-registry entry, so the error comes before any
         // tmux work — no session may be spawned for an unresumable agent.
         let err = match create_session_resume("shell", "/tmp", 80, 24, None, None) {
@@ -1540,6 +1653,7 @@ mod tests {
 
     #[test]
     fn registry_roundtrip_and_traversal_guard() {
+        if in_isolated_process("registry_roundtrip_and_traversal_guard", false) { return; }
         let name = format!("ass-{}-1-1", std::process::id());
         let meta = registry::Meta {
             label: "Claude Code · skillviewer".into(),
@@ -1585,11 +1699,9 @@ mod tests {
     // vanished (older-backend create, wiped dir) must be backfilled from the
     // legacy @ass_* options and keep its label.
     #[test]
+    #[cfg_attr(windows, ignore = "requires a Unix tmux host")]
     fn tmux_list_backfills_registry_from_legacy_options() {
-        if which("tmux").is_none() {
-            eprintln!("tmux not installed — skipping");
-            return;
-        }
+        if in_isolated_process("tmux_list_backfills_registry_from_legacy_options", true) { return; }
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
         let s = create_session("shell", &cwd, 80, 24, false, false, false, &[]).expect("create");
         let _guard = SessionGuard(s.id.clone());
@@ -1645,7 +1757,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "Windows known-folder cache paths cannot be isolated with child environment variables")]
     fn save_pasted_image_roundtrip() {
+        if in_isolated_process("save_pasted_image_roundtrip", false) { return; }
+        let config = PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").unwrap());
+        assert!(paste_dir().starts_with(config.parent().unwrap()), "paste cleanup must stay inside the fixture");
         let bytes = b"\x89PNG\r\n\x1a\nfakepng";
         let path = save_pasted_image(&b64_encode(bytes), "image/png").expect("save");
         assert!(path.ends_with(".png"));
@@ -1671,42 +1787,11 @@ mod tests {
         }
     }
 
-    // tmux-gated: attach → write keystrokes → read echoed output.
-    #[test]
-    fn tmux_attach_roundtrip() {
-        if which("tmux").is_none() {
-            eprintln!("tmux not installed — skipping");
-            return;
-        }
-        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
-        let s = create_session("shell", &cwd, 100, 30, false, false, false, &[]).expect("create");
-        let _guard = SessionGuard(s.id.clone());
-        let (att, rx) = attach(&s.id, 100, 30).expect("attach");
-        std::thread::sleep(std::time::Duration::from_millis(600)); // let the shell start
-        write(&s.id, b"echo HELLO_RT\n").expect("write");
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        let mut seen = String::new();
-        while std::time::Instant::now() < deadline {
-            if let Ok(b) = rx.recv_timeout(std::time::Duration::from_millis(300)) {
-                seen.push_str(&String::from_utf8_lossy(&b));
-                if seen.contains("HELLO_RT") {
-                    break;
-                }
-            }
-        }
-        drop(att);
-        let _ = kill_session(&s.id);
-        assert!(seen.contains("HELLO_RT"), "should see echoed output; got {} bytes", seen.len());
-    }
-
     // tmux-gated end-to-end of session creation + the persistence/GC policy.
     #[test]
+    #[cfg_attr(windows, ignore = "requires a Unix tmux host")]
     fn tmux_session_lifecycle_and_stale_gc() {
-        if which("tmux").is_none() {
-            eprintln!("tmux not installed — skipping");
-            return;
-        }
+        if in_isolated_process("tmux_session_lifecycle_and_stale_gc", true) { return; }
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
         let s = create_session("shell", &cwd, 80, 24, false, false, false, &[]).expect("create");
         let _guard = SessionGuard(s.id.clone());
@@ -1760,11 +1845,9 @@ mod tests {
     // tmux-gated: the GC must never take a session with a live process or a
     // watching client — only explicit kills end those.
     #[test]
+    #[cfg_attr(windows, ignore = "requires a Unix tmux host")]
     fn tmux_gc_spares_live_and_attached_sessions() {
-        if which("tmux").is_none() {
-            eprintln!("tmux not installed — skipping");
-            return;
-        }
+        if in_isolated_process("tmux_gc_spares_live_and_attached_sessions", true) { return; }
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
 
         // A non-shell foreground process (stand-in for a running agent).

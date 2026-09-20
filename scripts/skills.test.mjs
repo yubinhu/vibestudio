@@ -226,7 +226,7 @@ test("the last unmount cancels polling and an in-flight response cannot restart 
 
 test("the adapter accepts legacy arrays and tags Studio skills in both response formats", async () => {
   const legacy = groups("/load-secrets", "/personal");
-  const replies = [legacy, { groups: legacy, scanning: true }, legacy];
+  const replies = [legacy, { groups: legacy, scanning: true }];
   const urls = [];
   const exports = {};
   vm.runInNewContext(compile("api"), {
@@ -248,12 +248,9 @@ test("the adapter accepts legacy arrays and tags Studio skills in both response 
   const current = await exports.discoverSkillSnapshot(true);
   assert.equal(current.scanning, true);
   assert.equal(current.groups[0].skills[0].kind, "studio");
-  const original = await exports.discoverSkills();
-  assert.equal(original[0].skills[0].kind, "studio");
   assert.equal(legacy[0].skills[0].kind, "personal", "retagging must not mutate the response cache");
   assert.deepEqual(urls, [
     "/api/skills/discover?progressive=true",
     "/api/skills/discover?progressive=true&refresh=true",
-    "/api/skills/discover",
   ]);
 });

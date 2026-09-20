@@ -3,12 +3,6 @@
 
 use super::*;
 
-// Upstream wraps this bundled-only fixture in its override-directory isolation
-// helper. This port has no filesystem/config loader to isolate.
-fn with_manifest_dirs<T>(_name: &str, f: impl FnOnce() -> T) -> T {
-    f()
-}
-
 #[test]
 fn known_agent_no_match_defaults_to_idle_fallback() {
     let explain = explain(Agent::Codex, "ordinary prompt text");
@@ -670,9 +664,7 @@ fn claude_mcp_elicitation_is_blocked() {
         "MCP server \u{201c}my-server\u{201d} requests your input\n\nGrant temporary access to the demo gateway for 15 minutes?\n\n\u{276f} Accept    Decline\n\nEsc to cancel \u{b7} \u{2191}/\u{2193} to navigate\n",
         "MCP server \"my-server\" requests your input\n\nserver-supplied message\n\n\u{276f} Accept    Decline\n\nEsc to cancel \u{b7} \u{2191}/\u{2193} to navigate\n",
     ] {
-        let result = with_manifest_dirs("claude-mcp-elicitation", || {
-            osc_explain(Agent::Claude, screen, "\u{2733} Claude Code", "")
-        });
+        let result = osc_explain(Agent::Claude, screen, "\u{2733} Claude Code", "");
         assert_eq!(result.state, AgentState::Blocked, "{result:#?}");
         assert!(result.visible_blocker, "{result:#?}");
         assert_eq!(

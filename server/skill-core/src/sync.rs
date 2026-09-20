@@ -694,6 +694,15 @@ mod tests {
         std::fs::write(src.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
         std::fs::write(src.join("scripts/run.py"), "print(1)").unwrap();
 
+        #[cfg(unix)]
+        {
+            let outside = base.join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("secret.txt"), "must not be copied").unwrap();
+            std::os::unix::fs::symlink(outside.join("secret.txt"), src.join("linked-file")).unwrap();
+            std::os::unix::fs::symlink(&outside, src.join("linked-dir")).unwrap();
+        }
+
         let dst = base.join("dst");
         let mut total = 0;
         copy_tree(&src, &dst, &mut total).unwrap();
@@ -701,6 +710,10 @@ mod tests {
         assert!(dst.join("SKILL.md").exists());
         assert!(dst.join("scripts/run.py").exists());
         assert!(!dst.join(".git").exists(), ".git must be skipped");
+        #[cfg(unix)]
+        for name in ["linked-file", "linked-dir"] {
+            assert!(std::fs::symlink_metadata(dst.join(name)).is_err(), "copied symlink: {name}");
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

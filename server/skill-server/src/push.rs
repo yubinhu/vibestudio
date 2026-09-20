@@ -508,7 +508,9 @@ mod tests {
     #[test]
     fn vapid_jwt_verifies_and_has_correct_claims() {
         let _env = TempConfig::new();
+        let before = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
         let jwt = vapid_jwt("https://web.push.apple.com/QLpq/abc").unwrap();
+        let after = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
         let parts: Vec<&str> = jwt.split('.').collect();
         assert_eq!(parts.len(), 3);
 
@@ -519,7 +521,9 @@ mod tests {
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
         assert_eq!(claims["aud"], "https://web.push.apple.com");
         assert!(claims["sub"].as_str().unwrap().starts_with("mailto:"));
-        assert!(claims["exp"].as_u64().unwrap() > 1_700_000_000);
+        let expires = claims["exp"].as_u64().unwrap();
+        assert!(expires > after, "JWT must still be valid when returned");
+        assert!(expires <= before + 24 * 3600, "VAPID validity must not exceed 24 hours");
 
         // Verify the signature against the advertised public key.
         let pubkey = URL_SAFE_NO_PAD.decode(public_key().unwrap()).unwrap();

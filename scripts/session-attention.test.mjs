@@ -1,25 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-import ts from "typescript";
+import { loadWebModule } from "./test-helpers.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function load(name, globals = {}, dependencies = {}) {
-  const source = readFileSync(new URL(`../client/web/lib/${name}.ts`, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  });
-  const exports = {};
-  vm.runInNewContext(outputText, {
-    exports, Date, ...globals,
+  return loadWebModule(`lib/${name}.ts`, {
+    Date, ...globals,
     require: (id) => {
       if (id in dependencies) return dependencies[id];
       if (id === "react") return { useSyncExternalStore: (_subscribe, get) => get() };
       throw new Error(`Unexpected import ${id}`);
     },
-  }, { filename: `${name}.ts` });
-  return exports;
+  });
 }
 const attention = load("sessionAttention");
 const state = (counter, status, kind = null, boot = "boot") => ({
@@ -290,7 +282,7 @@ test("a pre-detection snapshot without attention cannot erase a live SSE state",
   assert.deepEqual(h.sounds, []);
 });
 
-test("older servers retain bell notifications and one done sound", async () => {
+test("sessions without detector attention retain bell notifications and one done sound", async () => {
   const initial = session("a", undefined);
   const h = harness([initial]);
   h.focus(false); h.connect(); await h.settle();

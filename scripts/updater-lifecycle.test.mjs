@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-import ts from "typescript";
+import { loadWebModule } from "./test-helpers.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() {
@@ -11,19 +9,13 @@ function deferred() {
   return { promise, resolve, reject };
 }
 function load(path, dependencies, globals = {}) {
-  const source = readFileSync(new URL(`../client/web/${path}.ts`, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  });
-  const exports = {};
-  vm.runInNewContext(outputText, {
-    exports, Error, Promise, Set, queueMicrotask, ...globals,
+  return loadWebModule(`${path}.ts`, {
+    Error, Promise, Set, queueMicrotask, ...globals,
     require: (id) => {
       if (id in dependencies) return dependencies[id];
       throw new Error(`Unexpected import ${id}`);
     },
-  }, { filename: `${path}.ts` });
-  return exports;
+  });
 }
 const storeReact = { useSyncExternalStore: (_subscribe, snapshot) => snapshot() };
 function unloadEvent() {

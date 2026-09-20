@@ -3,12 +3,14 @@
 //! detect (uname over russh) → provision (reuse the pre-placed binary) → launch the server on
 //! the remote → russh `-L` forward → the remote server answers HTTP through the tunnel.
 //!
-//! Opt-in (needs a live sshd + a pre-placed `skill-server`), so `cargo test` in CI is a no-op.
-//! Driven by the harness documented in the Mac handoff; in short:
+//! Explicitly ignored: needs a disposable local SSH account and a matching `skill-server`.
+//! Prepare the account's versioned install using the version printed by the built binary:
 //!   cargo build -p skill-server
-//!   cp target/debug/skill-server ~/.vibestudio/server/e2e-test/skill-server
+//!   target/debug/skill-server --version
+//!   # Place that binary at ~/.vibestudio/server/<printed-version>/skill-server in the SSH account.
 //!   RUSSH_E2E=1 RUSSH_IT_HOST=127.0.0.1 RUSSH_IT_PORT=2222 RUSSH_IT_USER=$USER \
-//!     RUSSH_IT_KEY=<key> cargo test -p skill-server --features russh-transport --test russh_e2e -- --nocapture
+//!     RUSSH_IT_KEY=<key> cargo test -p skill-server --features russh-transport --test russh_e2e -- --ignored --nocapture
+//! The owning harness must stop the detached host afterward; disconnect only closes the tunnel.
 #![cfg(feature = "russh-transport")]
 
 use std::io::{Read, Write};
@@ -19,26 +21,27 @@ use std::time::{Duration, Instant};
 use skill_server::{RemoteControl, SecureStore, SshProfile, SshRemoteControl};
 
 /// Must match the version dir the harness places the binary under.
-const VERSION: &str = "e2e-test";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn env() -> Option<(String, String, String, String)> {
-    if std::env::var("RUSSH_E2E").ok().as_deref() != Some("1") {
-        return None;
-    }
-    Some((
-        std::env::var("RUSSH_IT_HOST").ok()?,
-        std::env::var("RUSSH_IT_PORT").ok()?,
-        std::env::var("RUSSH_IT_USER").ok()?,
-        std::env::var("RUSSH_IT_KEY").ok()?,
-    ))
+fn env() -> (String, String, String, String) {
+    assert_eq!(std::env::var("RUSSH_E2E").ok().as_deref(), Some("1"),
+        "set RUSSH_E2E=1 to run against the disposable SSH fixture");
+    let required = |name| {
+        std::env::var(name).ok().filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| panic!("{name} is required for the real-SSH test"))
+    };
+    (
+        required("RUSSH_IT_HOST"),
+        required("RUSSH_IT_PORT"),
+        required("RUSSH_IT_USER"),
+        required("RUSSH_IT_KEY"),
+    )
 }
 
 #[test]
+#[ignore = "requires RUSSH_E2E=1, RUSSH_IT_* and a disposable SSH host with the matching server binary"]
 fn full_switchboard_over_russh() {
-    let Some((host, port, user, key)) = env() else {
-        eprintln!("skipping: set RUSSH_E2E=1 + RUSSH_IT_HOST/PORT/USER/KEY (see the handoff)");
-        return;
-    };
+    let (host, port, user, key) = env();
 
     // Force the russh transport (creds_for reads these); this is exactly what the mobile
     // switchboard does, minus the stored-profile lookup.
@@ -82,11 +85,9 @@ fn full_switchboard_over_russh() {
 /// fallback yields `None` for it — the connection can ONLY succeed via the store. If the store
 /// thread-through ever regresses, this test fails instead of silently passing on leaked env creds.
 #[test]
+#[ignore = "requires RUSSH_E2E=1, RUSSH_IT_* and a disposable SSH host with the matching server binary"]
 fn full_switchboard_from_a_stored_profile() {
-    let Some((host, port, user, key)) = env() else {
-        eprintln!("skipping: set RUSSH_E2E=1 + RUSSH_IT_HOST/PORT/USER/KEY (see the handoff)");
-        return;
-    };
+    let (host, port, user, key) = env();
 
     struct OneProfile {
         profile: SshProfile,

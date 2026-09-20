@@ -40,8 +40,8 @@ impl NotifyControl for Capture {
 
 #[test]
 fn notify_routes_gate_on_notifier_and_locality() {
-    // The real watcher starts with each HTTP server. Its notification store must
-    // be empty here so an unrelated live agent cannot push to the user's phone.
+    // These listeners have no PhoneControl, so spawn does not start the watcher.
+    // Keep notification state private if this fixture later subscribes to events.
     let config =
         std::env::temp_dir().join(format!("vibestudio-notify-smoke-{}", std::process::id()));
     std::fs::create_dir_all(&config).expect("isolated notification config");

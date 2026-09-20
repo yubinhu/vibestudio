@@ -4,17 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
-import vm from "node:vm";
-import ts from "typescript";
+import { loadWebModule } from "./test-helpers.mjs";
 
 function load(name, globals = {}) {
-  const source = readFileSync(new URL(`../client/web/lib/${name}.ts`, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  });
-  const exports = {};
-  vm.runInNewContext(outputText, { exports, ...globals }, { filename: `${name}.ts` });
-  return exports;
+  return loadWebModule(`lib/${name}.ts`, globals);
 }
 
 const { sshKeyInstallCommands } = load("sshKeyCommands");

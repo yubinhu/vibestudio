@@ -606,30 +606,33 @@ mod tests {
     }
 }
 
-// Integration test against a REAL OpenSSH server. Skipped unless RUSSH_IT_* are set, so
-// `cargo test` in CI (no sshd) is a no-op; run it by pointing the vars at a live host:
+// Explicitly ignored integration tests against a disposable local OpenSSH fixture.
+// Select the transport case (the separate soak also requires RUSSH_IT_SOAK=1):
 //   RUSSH_IT_HOST=127.0.0.1 RUSSH_IT_PORT=2222 RUSSH_IT_USER=$USER \
-//   RUSSH_IT_KEY=/path/to/key cargo test -p skill-server --features russh-transport -- --nocapture
+//   RUSSH_IT_KEY=/path/to/key cargo test -p skill-server --features russh-transport \
+//     --lib sshmgr::russh_tx::it::russh_transport_end_to_end -- --exact --ignored --nocapture
 #[cfg(test)]
 mod it {
     use super::*;
     use std::io::Read;
 
-    fn target() -> Option<(String, u16, String, String)> {
-        Some((
-            std::env::var("RUSSH_IT_HOST").ok()?,
-            std::env::var("RUSSH_IT_PORT").ok()?.parse().ok()?,
-            std::env::var("RUSSH_IT_USER").ok()?,
-            std::env::var("RUSSH_IT_KEY").ok()?,
-        ))
+    fn target() -> (String, u16, String, String) {
+        let required = |name| {
+            std::env::var(name).ok().filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| panic!("{name} is required for the real-SSH test"))
+        };
+        (
+            required("RUSSH_IT_HOST"),
+            required("RUSSH_IT_PORT").parse().expect("RUSSH_IT_PORT must be a valid port"),
+            required("RUSSH_IT_USER"),
+            required("RUSSH_IT_KEY"),
+        )
     }
 
     #[test]
+    #[ignore = "requires RUSSH_IT_HOST/PORT/USER/KEY and a disposable SSH fixture"]
     fn russh_transport_end_to_end() {
-        let Some((host, port, user, key)) = target() else {
-            eprintln!("skipping: set RUSSH_IT_HOST/PORT/USER/KEY to run against a live sshd");
-            return;
-        };
+        let (host, port, user, key) = target();
         let key = KeyMaterial::Path { path: key.into(), passphrase: None };
         let sess = RusshSession::connect(&host, port, &user, &key).expect("connect+auth");
 
@@ -655,7 +658,7 @@ mod it {
         conn.read_exact(&mut banner).expect("read banner through forward");
         assert_eq!(&banner, b"SSH-2.0-", "forwarded banner was {:?}", String::from_utf8_lossy(&banner));
 
-        // 5. the lifeline: read a READY marker while holding stdin open, like spawn_session.
+        // 5. the tunnel lifetime channel: read READY while holding stdin open.
         let life = sess.open_lifeline("echo SKILL_SERVER_READY; cat", "SKILL_SERVER_READY").expect("lifeline");
         drop(life); // closing it must not hang the runtime
     }
@@ -665,15 +668,11 @@ mod it {
     // an 18s silent gap (past keepalive_interval=15s) and requiring the post-gap event to
     // still arrive. Opt-in (RUSSH_IT_SOAK=1) since it costs ~20s of wall time.
     #[test]
+    #[ignore = "requires RUSSH_IT_*, RUSSH_IT_SOAK=1 and local SSH forwarding; takes about 20 seconds"]
     fn russh_forward_survives_idle_gap() {
-        let Some((host, port, user, key)) = target() else {
-            eprintln!("skipping: set RUSSH_IT_* to run against a live sshd");
-            return;
-        };
-        if std::env::var("RUSSH_IT_SOAK").is_err() {
-            eprintln!("skipping soak: set RUSSH_IT_SOAK=1 (~20s)");
-            return;
-        }
+        let (host, port, user, key) = target();
+        assert_eq!(std::env::var("RUSSH_IT_SOAK").ok().as_deref(), Some("1"),
+            "set RUSSH_IT_SOAK=1 to run the approximately 20-second soak");
 
         // A local "SSE-like" server: on one connection, send EVENT-A, go silent past the
         // keepalive window, then send EVENT-B.

@@ -1,26 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
 import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToReadableStream } from "react-dom/server";
-import ts from "typescript";
+import { loadWebModule } from "./test-helpers.mjs";
 
 function load(path, dependencies) {
-  const source = readFileSync(new URL(`../client/web/${path}.tsx`, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
-  });
-  const exports = {};
-  vm.runInNewContext(outputText, {
-    exports,
+  return loadWebModule(`${path}.tsx`, {
     require: (id) => {
       if (id in dependencies) return dependencies[id];
       throw new Error(`Unexpected import ${id}`);
     },
-  }, { filename: `${path}.tsx` });
-  return exports;
+  });
 }
 
 // Render the real shell and recovery dialog with React. Stub the workspace
@@ -86,7 +77,7 @@ for (const mobile of [true, false]) {
 }
 
 for (const pathname of ["/sessions", "/skills/example"]) {
-  test(`${pathname} preserves and locks its remote workspace during recovery`, async () => {
+  test(`${pathname} renders workspace content with recovery input gating`, async () => {
     for (const mobile of [true, false]) {
       for (const state of ["reconnecting", "error"]) {
         const html = await shell({ pathname, mobile, state });
@@ -110,7 +101,7 @@ test("connected remote workspaces are unlocked on every route", async () => {
   }
 });
 
-test("disconnected mobile opens its connection screen without mounting a workspace", async () => {
+test("disconnected mobile renders its connection screen without workspace content", async () => {
   for (const state of ["idle", "error"]) {
     const html = await shell({ state, host: null });
     assertUnlocked(html);

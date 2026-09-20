@@ -1,22 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-import ts from "typescript";
+import { loadWebModule } from "./test-helpers.mjs";
 
 function load(path, dependencies = {}) {
-  const source = readFileSync(new URL(`../client/web/${path}`, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  });
-  const exports = {};
-  vm.runInNewContext(outputText, {
-    exports, require: (id) => {
+  return loadWebModule(path, {
+    require: (id) => {
       if (id in dependencies) return dependencies[id];
       throw new Error(`Unexpected import ${id}`);
     },
   });
-  return exports;
 }
 const { filterSkillGroups } = load("pages/home/skillSearch.ts", { "@/lib/agents": load("lib/agents.ts") });
 const skill = (name, fields = {}) => ({ name, description: "", root: `/skills/${name}`, kind: "personal", proposed: false, ...fields });
@@ -46,7 +38,7 @@ test("search combines terms across names, descriptions, agents, scopes, and proj
   assert.deepEqual(names(filterSkillGroups(inventory, "codex storybook")), []);
 });
 
-test("search matches displayed kinds and proposals, including normally collapsed skills", () => {
+test("search matches displayed kinds and proposals in the full inventory", () => {
   assert.deepEqual(names(filterSkillGroups(inventory, "official")), ["skill-creator"]);
   assert.deepEqual(names(filterSkillGroups(inventory, "plugin export")), ["reports"]);
   assert.deepEqual(names(filterSkillGroups(inventory, "VibeStudio")), ["load-secrets"]);
@@ -81,12 +73,4 @@ test("filtering preserves group and skill order without mutating the shared disc
   assert.deepEqual(names(result), ["deploy", "shared-review"]);
   assert.equal(result[0].skills[0], inventory[0].skills[1]);
   assert.equal(JSON.stringify(inventory), before);
-});
-
-test("the same active query includes project matches arriving in progressive discovery", () => {
-  const initial = [{ agent: "Codex", skills: [inventory[0].skills[0]] }];
-  assert.deepEqual(names(filterSkillGroups(initial, "project review")), []);
-  const later = [{ ...initial[0], skills: [...initial[0].skills, inventory[0].skills[1]] }];
-  assert.deepEqual(names(filterSkillGroups(later, "project review")), ["deploy"]);
-  assert.deepEqual(names(initial), ["browser-check"]);
 });

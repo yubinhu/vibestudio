@@ -171,24 +171,32 @@ mod tests {
     #[test]
     fn request_and_done_are_distinct_deduplicated_transitions() {
         let now = Instant::now();
-        let mut tracker = Tracker::new();
-        tracker.observe(detect("codex", "", "⠋ project", ""), now, false);
-        let blocked = detect("codex", "", "Action Required", "");
-        let request = tracker.observe(blocked.clone(), now, false).unwrap();
-        assert_eq!(request.attention, Some(AttentionKind::Request));
-        assert!(tracker.observe(blocked.clone(), now, false).is_none());
-        let refresh = tracker
-            .observe(blocked, now + Duration::from_millis(800), false)
-            .unwrap();
-        assert_eq!(refresh.attention, None);
-        let done = tracker
-            .observe(
-                detect("codex", "", "project", ""),
-                now + Duration::from_secs(1),
-                false,
-            )
-            .unwrap();
-        assert_eq!(done.attention, Some(AttentionKind::Done));
+        for (title, initial_state) in [
+            ("project", AgentState::Idle),
+            ("⠋ project", AgentState::Working),
+        ] {
+            let mut tracker = Tracker::new();
+            tracker.observe(detect("codex", "", title, ""), now, false);
+            assert_eq!(tracker.state(), Some(initial_state));
+            let blocked = detect("codex", "", "Action Required", "");
+            let request = tracker.observe(blocked.clone(), now, false).unwrap();
+            assert_eq!(request.state, AgentState::Blocked);
+            assert!(request.detection.visible_blocker);
+            assert_eq!(request.attention, Some(AttentionKind::Request));
+            assert!(tracker.observe(blocked.clone(), now, false).is_none());
+            let refresh = tracker
+                .observe(blocked, now + Duration::from_millis(800), false)
+                .unwrap();
+            assert_eq!(refresh.attention, None);
+            let done = tracker
+                .observe(
+                    detect("codex", "", "project", ""),
+                    now + Duration::from_secs(1),
+                    false,
+                )
+                .unwrap();
+            assert_eq!(done.attention, Some(AttentionKind::Done));
+        }
     }
 
     #[test]
@@ -222,10 +230,16 @@ mod tests {
     #[test]
     fn pending_idle_cap_and_confirmed_idle_match_upstream() {
         let now = Instant::now();
-        for (delay, title) in [(700, ""), (1, "project")] {
+        for (plain_idle_first, delay, title) in [
+            (true, 700, ""),
+            (true, 1, "project"),
+            (false, 0, "project"),
+        ] {
             let mut tracker = Tracker::new();
             tracker.observe(detect("codex", "", "⠋ project", ""), now, false);
-            tracker.observe(detect("codex", "", "", ""), now, false);
+            if plain_idle_first {
+                tracker.observe(detect("codex", "", "", ""), now, false);
+            }
             let done = tracker
                 .observe(
                     detect("codex", "", title, ""),
@@ -234,6 +248,9 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(done.attention, Some(AttentionKind::Done));
+            assert_eq!(tracker.state(), Some(AgentState::Idle));
+            assert_eq!(done.detection.visible_idle, !title.is_empty());
+            assert!(!tracker.needs_recheck());
         }
     }
 

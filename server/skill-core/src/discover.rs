@@ -791,8 +791,9 @@ mod tests {
     }
 
     // Real discovery against this machine; run with:
-    // cargo test -p skill-core -- --nocapture live_discovery_smoke
+    // cargo test -p skill-core live_discovery_smoke -- --ignored --nocapture
     #[test]
+    #[ignore = "manual diagnostic: scans the real home directory and prints discovered skill paths"]
     fn live_discovery_smoke() {
         let groups = discover_all().expect("discovery should not error");
         assert_eq!(groups.len(), 6, "one group per agent + the shared Agent Skills dir");

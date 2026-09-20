@@ -246,11 +246,22 @@ mod tests {
 
     #[test]
     fn disabled_env_forces_cpu() {
-        // Can't toggle process env safely in parallel tests; assert the gate when
-        // it happens to be set.
         if std::env::var_os("VIBESTUDIO_DISABLE_GPU").is_some() {
             assert!(matches!(gpu_plan(), GpuPlan::Cpu));
+            return;
         }
+        // Set the override only in a child so parallel tests retain their env.
+        let output = crate::process::hidden_command(std::env::current_exe().unwrap())
+            .args(["--exact", "gpu::tests::disabled_env_forces_cpu", "--nocapture"])
+            .env("VIBESTUDIO_DISABLE_GPU", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "GPU override probe failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[cfg(target_os = "macos")]

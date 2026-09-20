@@ -677,7 +677,9 @@ mod tests {
 
     #[test]
     fn name_variants_are_platform_shaped() {
-        let v = name_variants("claude");
-        assert!(v.contains(&"claude".to_string()) || v.iter().any(|s| s.starts_with("claude")));
+        #[cfg(windows)]
+        assert_eq!(name_variants("claude"), ["claude.cmd", "claude.exe", "claude.bat", "claude"]);
+        #[cfg(not(windows))]
+        assert_eq!(name_variants("claude"), ["claude"]);
     }
 }

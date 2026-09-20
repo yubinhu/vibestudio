@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-import ts from "typescript";
+import { loadWebModule } from "./test-helpers.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => {
@@ -11,21 +9,14 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 function load(name, globals = {}, dependencies = {}) {
-  const source = readFileSync(new URL(`../client/web/lib/${name}.ts`, import.meta.url), "utf8")
-    .replaceAll("import.meta.env.VITE_API_BASE", "undefined");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  });
-  const exports = {};
-  vm.runInNewContext(outputText, {
-    exports, Date, TextEncoder, Uint8Array, ...globals,
+  return loadWebModule(`lib/${name}.ts`, {
+    Date, TextEncoder, Uint8Array, ...globals,
     require: (id) => {
       if (id in dependencies) return dependencies[id];
       if (id === "react") return { useSyncExternalStore: (_subscribe, get) => get() };
       throw new Error(`Unexpected import ${id}`);
     },
-  }, { filename: `${name}.ts` });
-  return exports;
+  }, (source) => source.replaceAll("import.meta.env.VITE_API_BASE", "undefined"));
 }
 function connection() {
   return load("workspaceConnection", { window: { dispatchEvent() {} }, Event: class { constructor(type) { this.type = type; } } });

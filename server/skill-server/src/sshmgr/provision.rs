@@ -498,59 +498,33 @@ mod tests {
     }
 
     #[test]
-    fn pipe_checksum_mismatch_aborts_without_installing_or_retrying() {
+    fn rejected_pipe_checksums_abort_without_installing_or_retrying() {
         let urls = candidate_urls("1.2.1", TARGETS[0].0, None);
-        let remote = MockRemote::default();
-        let mut requested = Vec::new();
-        let error = install_via_pipe_with_fetch(&remote, "1.2.1", &urls, |url| {
-            requested.push(url.to_string());
-            Ok(if url.ends_with(".sha256") { format!("{}  server-payload\n", "0".repeat(64)).into_bytes() } else { b"payload".to_vec() })
-        }).unwrap_err();
-        assert!(error.contains("checksum check"));
-        assert_eq!(requested, vec![urls[0].clone(), format!("{}.sha256", urls[0])]);
-        assert!(remote.piped.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn missing_or_invalid_pipe_checksums_abort_without_installing_or_retrying() {
-        let urls = candidate_urls("1.2.1", TARGETS[0].0, None);
-        let malformed = [
-            Vec::new(),
-            b"invalid checksum".to_vec(),
-            b"0".repeat(63),
-            b"z".repeat(64),
-            vec![0xff],
-            format!("{0}  first\n{0}  second\n", "0".repeat(64)).into_bytes(),
+        let cases = [
+            ("mismatch", Ok(format!("{}  server-payload\n", "0".repeat(64)).into_bytes()), "checksum check"),
+            ("missing", Err("404"), "Couldn't read the skill-server checksum"),
+            ("empty", Ok(Vec::new()), "checksum is invalid"),
+            ("malformed", Ok(b"invalid checksum".to_vec()), "checksum is invalid"),
+            ("short", Ok(b"0".repeat(63)), "checksum is invalid"),
+            ("non-hex", Ok(b"z".repeat(64)), "checksum is invalid"),
+            ("invalid UTF-8", Ok(vec![0xff]), "checksum is invalid"),
+            ("multiple hashes", Ok(format!("{0}  first\n{0}  second\n", "0".repeat(64)).into_bytes()), "checksum is invalid"),
+            ("unreadable", Err("connection closed mid-body"), "Couldn't read the skill-server checksum"),
         ];
-        for checksum in std::iter::once(None).chain(malformed.into_iter().map(Some)) {
+        for (name, checksum, expected_error) in cases {
             let remote = MockRemote::default();
             let mut requested = Vec::new();
             let error = install_via_pipe_with_fetch(&remote, "1.2.1", &urls, |url| {
                 requested.push(url.to_string());
                 if url.ends_with(".sha256") {
-                    checksum.clone().ok_or_else(|| "404".into())
+                    checksum.clone().map_err(str::to_string)
                 } else { Ok(b"payload".to_vec()) }
             }).unwrap_err();
-            assert!(error.contains("checksum"));
-            assert!(error.contains("Aborted"));
-            assert_eq!(requested, vec![urls[0].clone(), format!("{}.sha256", urls[0])]);
-            assert!(remote.piped.lock().unwrap().is_empty());
+            assert!(error.contains(expected_error), "{name}: {error}");
+            assert!(error.contains("Aborted"), "{name}: {error}");
+            assert_eq!(requested, vec![urls[0].clone(), format!("{}.sha256", urls[0])], "{name}");
+            assert!(remote.piped.lock().unwrap().is_empty(), "{name} must not install");
         }
-    }
-
-    #[test]
-    fn unreadable_checksum_aborts_without_installing_or_retrying() {
-        let urls = candidate_urls("1.2.1", TARGETS[0].0, None);
-        let remote = MockRemote::default();
-        let mut requested = Vec::new();
-        let error = install_via_pipe_with_fetch(&remote, "1.2.1", &urls, |url| {
-            requested.push(url.to_string());
-            if url.ends_with(".sha256") { Err("connection closed mid-body".into()) }
-            else { Ok(b"payload".to_vec()) }
-        }).unwrap_err();
-        assert!(error.contains("Couldn't read the skill-server checksum"));
-        assert_eq!(requested, vec![urls[0].clone(), format!("{}.sha256", urls[0])]);
-        assert!(remote.piped.lock().unwrap().is_empty());
     }
 
     #[cfg(unix)]

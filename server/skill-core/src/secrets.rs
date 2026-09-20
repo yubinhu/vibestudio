@@ -517,9 +517,27 @@ mod tests {
 
     #[test]
     fn set_list_render_delete_roundtrip() {
-        let tmp = std::env::temp_dir().join(format!("ass_secrets_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::env::set_var("XDG_CONFIG_HOME", &tmp);
+        const PROBE: &str = "VIBESTUDIO_TEST_SECRET_STORE";
+        if std::env::var_os(PROBE).is_none() {
+            let dir = crate::state_store::tests::TempDir::new();
+            let output = crate::process::hidden_command(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "secrets::tests::set_list_render_delete_roundtrip",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .env("XDG_CONFIG_HOME", &dir.0)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Secret store probe failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
 
         secret_set("OPENAI_API_KEY", "sk-test'x").unwrap();
         secret_set("FOO", "bar baz").unwrap();
@@ -548,8 +566,5 @@ mod tests {
         // Empty store renders an empty env file (so activate.sh reports "none").
         secret_delete("OPENAI_API_KEY").unwrap();
         assert!(std::fs::read_to_string(env_path().unwrap()).unwrap().is_empty());
-
-        std::env::remove_var("XDG_CONFIG_HOME");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
