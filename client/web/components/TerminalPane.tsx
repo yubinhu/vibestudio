@@ -9,6 +9,7 @@ import * as api from "@/lib/api";
 import { log } from "@/lib/log";
 import { fileLinkProvider, parseFileLink, webLinkUrl, type FileLinkTarget } from "@/lib/terminalLinks";
 import { guardTerminalUnload } from "@/lib/terminalUnload";
+import { attachTerminalTouch, type TouchPoint } from "@/lib/terminalTouch";
 
 const TerminalFilePreview = lazy(() => import("./TerminalFilePreview"));
 
@@ -23,22 +24,10 @@ const COPY_STASH_MS = 60_000;
 
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent);
 
-/** Touch panning: xterm 6 has no touch support, so vertical pans are converted
- *  into synthetic wheel ticks — one per this many pixels of pan. */
-const TOUCH_SCROLL_PX = 25;
-/** A pan must move this far before committing to an axis (vertical = scroll,
- *  horizontal = ignored). */
-const TOUCH_AXIS_LOCK_PX = 6;
 /** Within this many px of the terminal's top/bottom edge, a select drag nudges
  *  xterm's own drag-scroll so the selection can reach into off-screen scrollback —
  *  a finger is already selecting, so there's no second gesture free to scroll. */
 const SELECT_EDGE_SCROLL_PX = 40;
-/** Flick-to-coast (iOS-style momentum): after the finger lifts, keep scrolling at
- *  the release velocity and decay it each frame. All three are feel knobs — tune
- *  on-device. Velocities are px/ms (signed like the pan delta). */
-const TOUCH_FLING_MIN_VELOCITY = 0.2; // below this at release, don't coast at all
-const TOUCH_FLING_FRICTION = 0.95; // fraction of velocity kept per 16ms frame
-const TOUCH_FLING_STOP_VELOCITY = 0.02; // coast ends once velocity decays past this
 
 /** No real pane is ever this small — below it is a transient layout artifact.
  *  skill-term enforces the same floor as a backstop. */
@@ -95,6 +84,9 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
   // Refreshed on each (re)attach; invoked when the pane becomes visible again.
   const refitRef = useRef<() => void>(() => {});
   const termRef = useRef<Terminal | null>(null);
+  const touchRef = useRef<ReturnType<typeof attachTerminalTouch> | null>(null);
+  const touchMenuRef = useRef<HTMLDivElement>(null);
+  const [touchMenu, setTouchMenu] = useState<{ x: number; y: number } | null>(null);
   const [connectionState, setConnectionState] = useState<api.TerminalConnectionState>("connecting");
   const inputTokenRef = useRef<() => string | null>(() => null);
   const visibleRef = useRef(visible);
@@ -138,8 +130,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     }
   }, []);
 
-  // Coarse-pointer tap affordances: chords and native clipboard events don't
-  // exist under a finger. The attach effect publishes the pieces they need.
+  // Contextual touch actions share the terminal's text/image clipboard paths.
   const [canCopy, setCanCopy] = useState(false);
   const tapOpsRef = useRef<{
     copySource: () => string;
@@ -160,8 +151,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     } else {
       copyText(text, () => term.focus());
     }
-    term.clearSelection();
-    term.focus();
+    touchRef.current?.reset();
   }, []);
 
   /** The tap is the user gesture clipboard.read() demands. Images ride the same
@@ -171,6 +161,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     const ops = tapOpsRef.current;
     const token = inputTokenRef.current();
     if (!term || !ops || !token) return;
+    touchRef.current?.reset();
     const current = () => inputTokenRef.current() === token;
     void (async () => {
       try {
@@ -270,7 +261,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     // OSC 52 write — honor it so copy-mode copies land on the system clipboard.
     // Releasing a mouse-drag IS the copy in tmux: there is no Ctrl+C step.
     let lastCopy = { text: "", at: 0 };
-    // canCopy shows the coarse-pointer Copy button: a native selection, or a
+    // canCopy enables the contextual Copy action: a native selection, or a
     // stash that hasn't aged out yet — re-checked when it does.
     let staleTimer: ReturnType<typeof setTimeout> | undefined;
     const updateCanCopy = () => {
@@ -308,6 +299,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
       // Esc leaves select mode (mirrors tmux copy-mode's q/Esc) without reaching the
       // agent; outside select mode it passes through untouched.
       if (e.key === "Escape" && selectModeRef.current) {
+        touchRef.current?.reset();
         applySelectMode(false);
         return false;
       }
@@ -428,7 +420,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     // (where the agent runs — possibly a remote host with no access to this
     // machine's clipboard) and paste the returned file path, the same shape
     // drag-and-drop produces in a native terminal. Shared by the paste event
-    // below and the coarse-pointer Paste button.
+    // below and the touch context menu.
     let gone = false;
     const note = (msg: string) => {
       if (!gone) term.write(`\r\n\x1b[2m[${msg}]\x1b[0m\r\n`);
@@ -492,179 +484,63 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     };
     document.addEventListener("copy", onCopy);
 
-    // xterm 6 has no touch handling, so we translate touch gestures ourselves.
-    // The Select toggle picks the mode at gesture start:
-    //  • normal — vertical pans become synthetic wheel ticks (one per
-    //    TOUCH_SCROLL_PX) on the screen element, riding the wheel → tmux copy-mode
-    //    scroll path. DOM_DELTA_LINE dodges the trackpad damping in xterm's
-    //    consumeWheelEvent; pan down ⇒ deltaY < 0 ⇒ back into history.
-    //  • select — the drag becomes synthetic mouse events so xterm builds a NATIVE
-    //    selection (shouldForceSelection is true in select mode, so mousedown wins
-    //    over tmux's mouse mode). xterm's selection is mouse-only, so without this
-    //    it's unreachable by finger — a phone can't select at all.
     const asMouse = (
       type: "mousedown" | "mousemove" | "mouseup",
-      p: { clientX: number; clientY: number },
+      point: TouchPoint,
       buttons: number,
-    ) =>
-      new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        button: 0,
-        buttons,
-        detail: type === "mousedown" ? 1 : 0,
-        clientX: p.clientX,
-        clientY: p.clientY,
-      });
-    // v/t are the smoothed release velocity (px/ms) and its timestamp, read at
-    // touchend to decide whether the flick coasts.
-    let pan: { x: number; y: number; acc: number; axis: "v" | "h" | null; v: number; t: number } | null = null;
-    let selecting = false;
-    // A synthetic mousedown makes xterm attach its own mousemove/mouseup listeners
-    // on document — we MUST emit a matching mouseup or they leak and the next real
-    // drag keeps extending the selection.
-    const endSelect = (p: { clientX: number; clientY: number }) => {
-      if (!selecting) return;
-      selecting = false;
-      document.dispatchEvent(asMouse("mouseup", p, 0));
-    };
-    // Drain travel into wheel ticks (one per TOUCH_SCROLL_PX) forwarded to xterm →
-    // tmux copy-mode — tmux owns the scrollback, so term.scrollLines() is wrong
-    // here. Returns the leftover sub-tick travel so nothing is dropped between calls.
-    const emitScrollTicks = (acc: number, clientX: number, clientY: number): number => {
-      const screen = host.querySelector(".xterm-screen");
-      if (!screen) return 0;
-      while (Math.abs(acc) >= TOUCH_SCROLL_PX) {
-        const back = acc > 0;
-        acc -= back ? TOUCH_SCROLL_PX : -TOUCH_SCROLL_PX;
-        screen.dispatchEvent(
-          new WheelEvent("wheel", {
-            bubbles: true,
-            cancelable: true,
-            clientX,
-            clientY,
-            deltaY: back ? -1 : 1,
-            deltaMode: WheelEvent.DOM_DELTA_LINE,
-          }),
-        );
-      }
-      return acc;
-    };
-    // Momentum after release: keep feeding ticks at the release velocity, decaying
-    // it per frame (normalized to 16ms so it's frame-rate independent) until it
-    // drops below the stop threshold. A new touch cancels it (stopFling below).
-    let flingRaf = 0;
-    let fling: { v: number; acc: number; x: number; y: number; t: number } | null = null;
-    const stopFling = () => {
-      if (flingRaf) cancelAnimationFrame(flingRaf);
-      flingRaf = 0;
-      fling = null;
-    };
-    const startFling = (v: number, clientX: number, clientY: number) => {
-      fling = { v, acc: 0, x: clientX, y: clientY, t: performance.now() };
-      const tick = (now: number) => {
-        if (!fling) return;
-        const dt = Math.min(now - fling.t, 32); // clamp a big gap (backgrounded tab)
-        fling.t = now;
-        fling.acc = emitScrollTicks(fling.acc + fling.v * dt, fling.x, fling.y);
-        fling.v *= Math.pow(TOUCH_FLING_FRICTION, dt / 16);
-        if (Math.abs(fling.v) < TOUCH_FLING_STOP_VELOCITY) return stopFling();
-        flingRaf = requestAnimationFrame(tick);
-      };
-      flingRaf = requestAnimationFrame(tick);
-    };
-    const onTouchStart = (e: TouchEvent) => {
-      stopFling(); // any new touch halts a coast already in flight
-      // A second finger ends any in-progress selection and is never a scroll.
-      if (e.touches.length !== 1) {
-        endSelect(e.touches[0] ?? { clientX: 0, clientY: 0 });
-        pan = null;
-        return;
-      }
-      const t = e.touches[0];
-      if (selectModeRef.current) {
-        pan = null;
-        selecting = true;
-        host.querySelector(".xterm-screen")?.dispatchEvent(asMouse("mousedown", t, 1));
-        return;
-      }
-      pan = { x: t.clientX, y: t.clientY, acc: 0, axis: null, v: 0, t: performance.now() };
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return;
-      const t = e.touches[0];
-      if (selecting) {
-        e.preventDefault(); // hold the page still while dragging out a selection
-        // In the edge margin, shift the synthetic point past the edge so xterm's
-        // drag-scroll engages and the selection extends into off-screen scrollback.
-        // The shift grows from 0 at the margin's inner boundary to the full margin
-        // at the terminal edge (and beyond, if the finger leaves the terminal), so
-        // the scroll speed tracks how far into the margin the finger is.
+      detail = type === "mousedown" ? 1 : 0,
+    ) => new MouseEvent(type, {
+      bubbles: true, cancelable: true, view: window, button: 0, buttons, detail,
+      clientX: point.clientX, clientY: point.clientY,
+    });
+    const screen = host.querySelector(".xterm-screen");
+    const touch = attachTerminalTouch(host, {
+      active: () => visibleRef.current && !gone,
+      tap: (point) => {
+        if (!handle?.inputToken()) return;
+        // Resolve links before pressing so a link tap never reaches tmux's mouse
+        // mode. Holds never take this path, even when selecting a link's text.
+        screen?.dispatchEvent(asMouse("mousemove", point, 0));
+        touchLinkGesture = hoveringLink;
+        screen?.dispatchEvent(asMouse("mousedown", point, 1));
+        screen?.dispatchEvent(asMouse("mouseup", point, 0));
+        touchLinkGesture = false;
+      },
+      scroll: (direction, point) => {
+        term.textarea?.blur();
+        // tmux owns history. Line-mode wheels follow its copy-mode path without
+        // xterm's trackpad damping; scrolling the local buffer would diverge.
+        screen?.dispatchEvent(new WheelEvent("wheel", {
+          bubbles: true, cancelable: true, ...point,
+          deltaY: direction, deltaMode: WheelEvent.DOM_DELTA_LINE,
+        }));
+      },
+      startSelection: (point) => {
+        setLinkHint(null);
+        applySelectMode(true);
+        // A double press selects a word and lets xterm extend it while dragging.
+        screen?.dispatchEvent(asMouse("mousedown", point, 1, 2));
+      },
+      moveSelection: (point) => {
         const rect = host.getBoundingClientRect();
-        let y = t.clientY;
+        let y = point.clientY;
         if (y < rect.top + SELECT_EDGE_SCROLL_PX) y -= SELECT_EDGE_SCROLL_PX;
         else if (y > rect.bottom - SELECT_EDGE_SCROLL_PX) y += SELECT_EDGE_SCROLL_PX;
-        document.dispatchEvent(asMouse("mousemove", { clientX: t.clientX, clientY: y }, 1));
-        return;
-      }
-      if (!pan || !handle) return;
-      const dx = t.clientX - pan.x;
-      const dy = t.clientY - pan.y;
-      if (pan.axis === null) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) < TOUCH_AXIS_LOCK_PX) return;
-        pan.axis = Math.abs(dy) >= Math.abs(dx) ? "v" : "h";
-        // Starting a vertical scroll dismisses the soft keyboard (mobile
-        // convention): blur xterm's input so iOS closes the keyboard, releasing
-        // the visual-viewport clamp so the terminal grows back as history scrolls.
-        if (pan.axis === "v") term.textarea?.blur();
-      }
-      if (pan.axis === "h") return; // horizontal pans are not ours
-      e.preventDefault(); // ours: keep the page from scrolling / pull-to-refresh
-      // Smooth the release velocity from each move so a flick can coast; a pause
-      // before lift pulls it toward zero (endPan then declines to coast).
-      const now = performance.now();
-      const dt = now - pan.t;
-      if (dt > 0) pan.v = (dy / dt) * 0.6 + pan.v * 0.4;
-      pan.t = now;
-      pan.acc = emitScrollTicks(pan.acc + dy, t.clientX, t.clientY);
-      pan.x = t.clientX;
-      pan.y = t.clientY;
-    };
-    const endPan = (e: TouchEvent) => {
-      endSelect(e.changedTouches[0] ?? { clientX: 0, clientY: 0 });
-      // A tap (a one-finger touch that lifts without committing to a scroll axis;
-      // select mode leaves `pan` null, so it's skipped) forwards a click to the
-      // pty — the only way a phone with no arrow keys can pick an option out of a
-      // mouse-mode TUI (Claude Code's menus). We own the gesture (touch-pinch-zoom),
-      // so iOS won't synthesize a dependable compat click; emit the press/release
-      // ourselves (xterm reports it to tmux like a trackpad click) and preventDefault
-      // drops any compat click the browser does fire, so the option isn't picked twice.
-      if (e.type === "touchend" && pan && pan.axis === null && handle) {
-        const p = e.changedTouches[0] ?? { clientX: pan.x, clientY: pan.y };
-        e.preventDefault();
-        const screen = host.querySelector(".xterm-screen");
-        // xterm's link providers resolve synchronously. Establish a hover at the
-        // tap before pressing; its linkifier needs both events on the terminal.
-        screen?.dispatchEvent(asMouse("mousemove", p, 0));
-        touchLinkGesture = hoveringLink;
-        screen?.dispatchEvent(asMouse("mousedown", p, 1));
-        screen?.dispatchEvent(asMouse("mouseup", p, 0));
-        touchLinkGesture = false;
-      }
-      // A vertical flick coasts; a slow drag or a hold-then-lift (stale velocity,
-      // >60ms since the last move) just stops with the finger.
-      if (pan && pan.axis === "v" && performance.now() - pan.t < 60 && Math.abs(pan.v) >= TOUCH_FLING_MIN_VELOCITY) {
-        const lift = e.changedTouches[0];
-        startFling(pan.v, lift?.clientX ?? pan.x, lift?.clientY ?? pan.y);
-      }
-      pan = null;
-    };
-    host.addEventListener("touchstart", onTouchStart, { passive: true });
-    // passive:false — the preventDefault above must be honored mid-gesture.
-    host.addEventListener("touchmove", onTouchMove, { passive: false });
-    host.addEventListener("touchend", endPan);
-    host.addEventListener("touchcancel", endPan);
+        document.dispatchEvent(asMouse("mousemove", { clientX: point.clientX, clientY: y }, 1));
+      },
+      endSelection: (point) => document.dispatchEvent(asMouse("mouseup", point, 0)),
+      showMenu: (point) => {
+        const rect = host.parentElement!.getBoundingClientRect();
+        setTouchMenu({ x: point.clientX - rect.left, y: point.clientY - rect.top });
+      },
+      dismissSelection: () => {
+        setTouchMenu(null);
+        // Do not affect a desktop Select toggle unless a touch selection owns it.
+        if (selectModeRef.current) applySelectMode(false);
+        term.clearSelection();
+      },
+    });
+    touchRef.current = touch;
 
     let raf = 0;
     const ro = new ResizeObserver(() => {
@@ -690,15 +566,12 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
       gone = true;
       host.removeEventListener("paste", onPaste, true);
       document.removeEventListener("copy", onCopy);
-      host.removeEventListener("touchstart", onTouchStart);
-      host.removeEventListener("touchmove", onTouchMove);
-      host.removeEventListener("touchend", endPan);
-      host.removeEventListener("touchcancel", endPan);
+      touch.dispose();
+      touchRef.current = null;
       window.removeEventListener("beforeunload", guardUnload);
       clearTimeout(staleTimer);
       selSub.dispose();
       cancelAnimationFrame(raf);
-      stopFling();
       themeObs.disconnect();
       ro.disconnect();
       dataSub?.dispose();
@@ -713,11 +586,22 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     };
   }, [id, applySelectMode]);
 
+  useEffect(() => {
+    if (!touchMenu) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!touchMenuRef.current?.contains(target) && !hostRef.current?.contains(target)) touchRef.current?.reset();
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [touchMenu]);
+
   // Kept alive across navigation via display:none, where the host has zero size
   // and fit() can't measure; re-fit (and resize the pty) once shown again.
   useEffect(() => {
     if (visible) requestAnimationFrame(() => refitRef.current());
     else {
+      touchRef.current?.reset();
       linkVisibilityEpoch.current++;
       setLinkedFile(null);
       setLinkHint(null);
@@ -745,31 +629,39 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
             : connectionState === "reconnecting" ? "Reconnecting terminal… Input is paused." : "Connecting terminal…"}
         </div>
       )}
-      {/* pointer-events-none on the row (the property inherits) so the overlay
-          never blocks the terminal; each button opts back in. Copy/Paste are
-          coarse-pointer only — mouse-and-keyboard users have the chords. */}
-      <div className="pointer-events-none absolute right-2 top-2 z-10 flex gap-1.5">
-        {canCopy && (
+      {touchMenu && (
+        <div
+          ref={touchMenuRef}
+          role="group"
+          aria-label="Terminal selection actions"
+          onContextMenu={(event) => event.preventDefault()}
+          className="absolute z-30 flex w-40 overflow-hidden rounded-xl border border-border bg-surface text-sm font-medium text-fg shadow-lg"
+          style={{
+            left: `clamp(8px, ${touchMenu.x - 80}px, calc(100% - 168px))`,
+            top: `clamp(8px, ${touchMenu.y - 60}px, calc(100% - 52px))`,
+          }}
+        >
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
             onClick={tapCopy}
-            title="Copy the selection (or the last tmux copy)"
-            className="pointer-events-auto hidden rounded-md border border-border bg-surface/85 px-2 py-0.5 text-xs font-medium text-muted shadow-sm backdrop-blur pointer-coarse:block"
+            disabled={!canCopy}
+            className="min-h-11 flex-1 hover:bg-panel focus-visible:bg-panel disabled:text-muted disabled:opacity-50"
           >
             Copy
           </button>
-        )}
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={tapPaste}
-          disabled={connectionState !== "ready"}
-          title="Paste from the clipboard"
-          className="pointer-events-auto hidden rounded-md border border-border bg-surface/85 px-2 py-0.5 text-xs font-medium text-muted shadow-sm backdrop-blur pointer-coarse:block"
-        >
-          Paste
-        </button>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={tapPaste}
+            disabled={connectionState !== "ready"}
+            className="min-h-11 flex-1 border-l border-border hover:bg-panel focus-visible:bg-panel disabled:text-muted disabled:opacity-50"
+          >
+            Paste
+          </button>
+        </div>
+      )}
+      <div className="pointer-events-none absolute right-2 top-2 z-10 flex gap-1.5 pointer-coarse:hidden">
         <button
           type="button"
           // preventDefault keeps the click from stealing focus / starting a drag in
@@ -784,7 +676,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
           className={`rounded-md px-2 py-0.5 text-xs font-medium shadow-sm transition ${
             selectMode
               ? "pointer-events-auto bg-action text-action-fg"
-              : "pointer-events-none border border-border bg-surface/85 text-muted opacity-0 backdrop-blur hover:bg-panel hover:text-fg focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100"
+              : "pointer-events-none border border-border bg-surface/85 text-muted opacity-0 backdrop-blur hover:bg-panel hover:text-fg focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
           }`}
         >
           {selectMode ? "Selecting…" : "Select"}
@@ -798,7 +690,7 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
             commit a slow drag to a rubber-band / URL-bar scroll that fights the
             synthetic wheel→tmux scroll below (the mid-scroll "hop") — the gesture
             handler owns every one-finger pan; two-finger zoom still works. */}
-        <div ref={hostRef} className={`h-full w-full touch-pinch-zoom ${selectMode ? "[&_.xterm-screen]:!cursor-text" : ""}`} />
+        <div ref={hostRef} className={`h-full w-full touch-pinch-zoom [-webkit-touch-callout:none] ${selectMode ? "[&_.xterm-screen]:!cursor-text" : ""}`} />
       </div>
     </div>
   );

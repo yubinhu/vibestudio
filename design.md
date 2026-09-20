@@ -310,6 +310,13 @@ leave this optional device-access guard unset.
 Agent terminals are tmux sessions (`ass-*`); the backend is only a **bridge** (`tmux attach`
 in a PTY).
 
+On touch devices, hold terminal text to select a word, keep dragging to extend
+the selection, then release for contextual Copy/Paste actions. A tap elsewhere
+dismisses the selection; ordinary swipes still scroll with momentum. Desktop
+retains the Select toggle and keyboard shortcuts. Touch selection and its menu
+are implemented in the client because xterm renders text on a canvas; clipboard
+access uses the same text/image paste paths and browser permissions as before.
+
 The server raises its Unix open-file **soft** limit at startup toward 8192,
 bounded by the inherited hard limit and macOS's `kern.maxfilesperproc` ceiling.
 New agent panes also raise their own soft limit after login-shell startup: an
