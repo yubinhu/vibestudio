@@ -170,6 +170,12 @@ verification files are supporting assets.
 
 ## iOS / TestFlight
 
+The iOS deployment target is set in
+[`tauri.ios.conf.json`](client/desktop/tauri.ios.conf.json); keep the checked-in
+XcodeGen project, Xcode build configurations and Podfile aligned with it. Xcode
+derives the built app's `MinimumOSVersion` from that target. Inspect the exported
+IPA to confirm it matches the configured minimum before delivery.
+
 [`.github/workflows/testflight.yml`](.github/workflows/testflight.yml) builds and
 releases an **internal-only TestFlight build when a stable GitHub release is
 published**. Routine releases use GitHub-hosted macOS 26 runners with Xcode 26.6;
