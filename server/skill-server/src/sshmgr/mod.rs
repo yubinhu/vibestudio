@@ -104,9 +104,35 @@ impl SshRemoteControl {
     }
 
     /// Drop this client's tunnel on app exit; the host service keeps running.
-    /// `forget=false`: keep the remembered host so the next launch resumes it.
+    /// Retain the selection until exit, so polling clients cannot mistake
+    /// teardown for switching to Local and reload their unsaved workspace.
+    /// WSL pipe drains can outlive their launcher: cleanup is best-effort and
+    /// bounded so the Windows updater can hand off to its installer promptly.
     pub fn shutdown(&self) {
-        let _ = self.disconnect(false);
+        let session = {
+            let mut state = self.state.lock().unwrap();
+            state.generation += 1;
+            state.busy = true;
+            state.recovering = false;
+            state.unlock_intent = None;
+            state.target = None;
+            if state.status.host.is_some() {
+                state.status.state = "reconnecting".into();
+                state.status.message = Some("VibeStudio is closing…".into());
+            }
+            state.session.take()
+        };
+        if let Some(mut session) = session {
+            let (finished, completion) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                session.teardown();
+                drop(session);
+                let _ = finished.send(());
+            });
+            if completion.recv_timeout(std::time::Duration::from_secs(1)).is_err() {
+                log::warn!("Client tunnel cleanup exceeded the exit budget; continuing app exit. Host services and tmux sessions remain running.");
+            }
+        }
     }
 
     /// Reconnect after an OS suspend (the mobile shell calls this on resume: iOS
@@ -359,6 +385,46 @@ mod tests {
         assert!(!state.busy);
         assert!(!state.recovering);
         assert_eq!(state.last_host.as_deref(), Some("workbox"));
+    }
+
+    #[test]
+    fn app_exit_does_not_wait_for_blocked_pipe_cleanup_or_switch_to_local() {
+        struct BlockedTunnel(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>);
+        impl conn::SessionHandle for BlockedTunnel {
+            fn is_alive(&self) -> bool { true }
+            fn teardown(&mut self) {
+                self.0.recv().unwrap();
+                self.1.send(()).unwrap();
+            }
+        }
+        let control = disconnected_controller();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (finished, cleanup) = std::sync::mpsc::channel();
+        {
+            let mut state = control.state.lock().unwrap();
+            state.status.state = "connected".into();
+            state.session = Some(session::Session::with_test_handle(Box::new(BlockedTunnel(blocked, finished))));
+            state.target = Some(RemoteTarget { base_url: "http://127.0.0.1:1".into(), token: String::new() });
+        }
+        // Keep the pipe drain blocked until shutdown returns: a synchronous
+        // join would hang this test and prevent the installer from launching.
+        let (returned, complete) = std::sync::mpsc::channel();
+        let control = Arc::new(control);
+        let exiting = control.clone();
+        let shutdown = std::thread::spawn(move || { exiting.shutdown(); returned.send(()).unwrap(); });
+        let completed = complete.recv_timeout(std::time::Duration::from_secs(3));
+        release.send(()).unwrap();
+        shutdown.join().unwrap();
+        completed.expect("app exit must finish without waiting for blocked tunnel pipes");
+        cleanup.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        assert!(matches!(control.route(), crate::RemoteRoute::Unavailable(_)));
+        assert_eq!(control.status().host.as_deref(), Some("workbox"));
+        let state = control.state.lock().unwrap();
+        assert_eq!(state.generation, 11);
+        assert_eq!(state.last_host.as_deref(), Some("workbox"));
+        assert!(state.session.is_none());
+        assert!(state.busy);
+        assert!(!state.recovering);
     }
 
     #[test]

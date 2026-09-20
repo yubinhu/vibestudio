@@ -6,8 +6,9 @@
 //! `/api/editor/*` route (never proxied), same one-way rule as `ShellNotifier`.
 //!
 //! When a remote is connected the folder lives on the remote, so we open it via
-//! VS Code Remote-SSH (`code --remote ssh-remote+<host> <path>`) — a LOCAL window
-//! attached over the same SSH the tunnel uses — instead of a local `code <path>`.
+//! VS Code's matching remote extension: `ssh-remote+<host>` for SSH or
+//! `wsl+<distro>` for a WSL connection. Both open a LOCAL editor window attached
+//! to the selected host, instead of treating its path as a local `code <path>`.
 //!
 //! Locating `code` can't lean on PATH alone: a packaged desktop app is launched
 //! from the dock/menu with a stripped login PATH (notably macOS — `/usr/bin:/bin`
@@ -33,28 +34,38 @@ impl skill_server::EditorControl for ShellEditor {
 
     /// Launch VS Code on `path` (a session's working directory). Non-blocking — we
     /// spawn and return; the editor window is the user's feedback. When `remote_host`
-    /// is set the path is on that remote, so open it over VS Code Remote-SSH.
+    /// is set the path is on that remote, so use its SSH or WSL authority.
     fn open(&self, path: &str, remote_host: Option<&str>) -> Result<(), String> {
-        let path = path.trim();
-        if path.is_empty() {
-            return Err("no folder to open".into());
-        }
         let (bin, name) =
             locate().ok_or("VS Code (the `code` command) was not found on this machine")?;
-        let mut cmd = spawn_command(&bin);
-        if let Some(host) = remote_host {
-            // `ssh-remote+<host>` is VS Code's remote authority; <host> is the same
-            // ssh destination the tunnel uses (already validated at connect time,
-            // so no option injection). A `:port` in the destination isn't honored
-            // here — non-default ports belong in the user's ssh config. Requires the
-            // Remote-SSH extension; without it VS Code opens and prompts to install.
-            cmd.arg("--remote").arg(format!("ssh-remote+{host}"));
-        }
-        cmd.arg(path)
+        editor_command(&bin, path, remote_host)?
             .spawn()
             .map_err(|e| format!("failed to launch {name}: {e}"))?;
         Ok(())
     }
+}
+
+/// Shared by session folders and linked-file previews. Keep the path as one
+/// literal CLI argument; spaces, Unicode and file-name punctuation are not URLs
+/// and must not be percent-encoded or stripped from the supplied path.
+fn editor_command(bin: &Path, path: &str, remote_host: Option<&str>) -> Result<Command, String> {
+    if path.trim().is_empty() {
+        return Err("no file or folder to open".into());
+    }
+    let mut command = spawn_command(bin);
+    if let Some(host) = remote_host {
+        // VS Code documents `code --remote wsl+<distro> <path in WSL>`:
+        // https://code.visualstudio.com/docs/remote/wsl
+        // VibeStudio's `wsl:` connection prefix is not an SSH hostname.
+        let authority = match host.strip_prefix("wsl:") {
+            Some("") => return Err("The WSL connection has no distribution name.".into()),
+            Some(distro) => format!("wsl+{distro}"),
+            None => format!("ssh-remote+{host}"),
+        };
+        command.arg("--remote").arg(authority);
+    }
+    command.arg(path);
+    Ok(command)
 }
 
 /// The first recognized editor's resolved binary, with its display name.
@@ -150,4 +161,49 @@ fn spawn_command(bin: &Path) -> Command {
         }
     }
     hidden_command(bin)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(path: &str, host: Option<&str>) -> Vec<String> {
+        editor_command(Path::new("code"), path, host).unwrap()
+            .get_args().map(|arg| arg.to_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn folders_and_linked_files_use_the_selected_transport_authority() {
+        for path in ["/home/harvey/repos/vibestudio", "/home/harvey/repos/vibestudio/plans/terminal-links-research.md"] {
+            assert_eq!(args(path, None), [path]);
+            assert_eq!(args(path, Some("workbox")), ["--remote", "ssh-remote+workbox", path]);
+            assert_eq!(args(path, Some("user@workbox")), ["--remote", "ssh-remote+user@workbox", path]);
+            assert_eq!(args(path, Some("wsl:Ubuntu")), ["--remote", "wsl+Ubuntu", path]);
+            assert_eq!(args(path, Some("wsl:Ubuntu-24.04")), ["--remote", "wsl+Ubuntu-24.04", path]);
+        }
+    }
+
+    #[test]
+    fn editor_arguments_preserve_spaces_unicode_and_punctuation() {
+        let path = "/home/harvey/Project notes/目录/[draft] a&b#1%HOME% 'quote' $(literal).md ";
+        assert_eq!(args(path, Some("wsl:Ubuntu")), ["--remote", "wsl+Ubuntu", path]);
+        assert!(editor_command(Path::new("code"), "   ", None).is_err());
+        assert!(editor_command(Path::new("code"), path, Some("wsl:")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawned_editor_receives_literal_arguments_without_opening_an_editor() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("vibestudio-editor-test-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let stub = dir.join("code");
+        std::fs::write(&stub, "#!/bin/sh\nprintf '%s\\0' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = "/home/harvey/Project notes/目录/[draft] a&b#1%HOME% 'quote' $(literal).md ";
+        let result = editor_command(&stub, path, Some("wsl:Ubuntu")).unwrap().output().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(result.status.success());
+        assert_eq!(result.stdout, format!("--remote\0wsl+Ubuntu\0{path}\0").as_bytes());
+    }
 }

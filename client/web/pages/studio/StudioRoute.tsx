@@ -180,15 +180,17 @@ export function Component() {
       const cur = dataRef.current;
       if (!cur || transitionRef.current) return; // drop a click while one is in flight
       transitionRef.current = true;
-      await flushEditor();
-      holdAutosave();
+      let held = false;
       try {
+        await flushEditor();
+        holdAutosave();
+        held = true;
         await gitEnterVersion(cur.root, sha);
         setPreview({ sha, number });
         await reloadAsync(true);
       } finally {
         transitionRef.current = false;
-        setTimeout(releaseAutosave, 0);
+        if (held) setTimeout(releaseAutosave, 0);
       }
     },
     [reloadAsync],
@@ -216,15 +218,17 @@ export function Component() {
       // so doCommit surfaces it instead of reporting a phantom success.
       if (transitionRef.current) throw new Error("Another version action is in progress — try again.");
       transitionRef.current = true;
-      await flushEditor();
-      holdAutosave();
+      let held = false;
       try {
+        await flushEditor();
+        holdAutosave();
+        held = true;
         await gitKeepVersion(cur.root, message);
         setPreview(null);
         await reloadAsync(true);
       } finally {
         transitionRef.current = false;
-        setTimeout(releaseAutosave, 0);
+        if (held) setTimeout(releaseAutosave, 0);
       }
     },
     [reloadAsync],

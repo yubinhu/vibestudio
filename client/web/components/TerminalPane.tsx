@@ -8,6 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 import * as api from "@/lib/api";
 import { log } from "@/lib/log";
 import { fileLinkProvider, parseFileLink, webLinkUrl, type FileLinkTarget } from "@/lib/terminalLinks";
+import { guardTerminalUnload } from "@/lib/terminalUnload";
 
 const TerminalFilePreview = lazy(() => import("./TerminalFilePreview"));
 
@@ -376,14 +377,9 @@ export default function TerminalPane({ id, visible = true }: { id: string; visib
     const userSub = coreInput?.onUserInput?.(() => { userInput = true; }) ??
       term.onKey(() => { userInput = true; });
     let sent = { cols: 0, rows: 0 };
-    // Ctrl+W is readline delete-word but also the browser's tab-close chord,
-    // which no key handler can intercept — make the close ask first. Safe to
-    // register unconditionally: the Tauri desktop webview ignores beforeunload,
-    // and tmux keeps the session alive either way (this guards accidents only).
-    const guardUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
+    // Each attachment owns a distinct listener so closing one pane cannot
+    // remove the accidental-close protection of another mounted terminal.
+    const guardUnload = (event: BeforeUnloadEvent) => guardTerminalUnload(event);
     const syncSize = (why: string) => {
       const w = host.clientWidth;
       const h = host.clientHeight;

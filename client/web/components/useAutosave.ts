@@ -87,29 +87,37 @@ export function useAutosave(
   // before a deliberate working-tree swap (version preview) so pending edits are
   // saved — and thus stashed — rather than dropped when the editor remounts.
   const flush = useCallback(async () => {
-    if (!enabledRef.current || isAutosaveHeld()) return;
-    if (valueRef.current === savedRef.current) {
-      await inFlightRef.current?.catch(() => {});
-      return;
+    while (enabledRef.current) {
+      const pending = inFlightRef.current;
+      if (pending) {
+        await pending.catch(() => {});
+        continue;
+      }
+      if (valueRef.current === savedRef.current) return;
+      if (isAutosaveHeld()) throw new Error("Wait for the current file operation to finish, then try again.");
+      const v = valueRef.current;
+      setSaving(true);
+      const p = Promise.resolve()
+        .then(() => saveImplRef.current(v))
+        .then(() => {
+          setSavedValue(v);
+          savedRef.current = v;
+          setError(null);
+          onSavedRef.current?.();
+        })
+        .catch((e) => {
+          setError(e instanceof Error ? e.message : "Save failed");
+          throw e;
+        })
+        .finally(() => {
+          setSaving(false);
+          if (inFlightRef.current === p) inFlightRef.current = null;
+        });
+      inFlightRef.current = p;
+      await p;
+      // Edits can arrive while a save is in flight. An intentional restart must
+      // wait for the latest buffer, not just the value captured before that save.
     }
-    const v = valueRef.current;
-    const prev = inFlightRef.current ?? Promise.resolve();
-    setSaving(true);
-    const p = prev
-      .then(() => saveImplRef.current(v))
-      .then(() => {
-        setSavedValue(v);
-        savedRef.current = v;
-        setError(null);
-        onSavedRef.current?.();
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Save failed"))
-      .finally(() => {
-        setSaving(false);
-        if (inFlightRef.current === p) inFlightRef.current = null;
-      });
-    inFlightRef.current = p;
-    await p;
   }, []);
 
   // A pending error is moot once the buffer matches disk again (e.g. the user

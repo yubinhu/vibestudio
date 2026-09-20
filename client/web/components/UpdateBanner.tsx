@@ -20,7 +20,12 @@ export default function UpdateBanner() {
 
   return (
     <div className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-border bg-panel p-3 text-sm shadow-lg">
-      {status.phase === "downloading" ? (
+      {status.phase === "saving" ? (
+        <div className="flex items-center gap-2 text-fg">
+          <Spinner className="h-3.5 w-3.5" />
+          <span>Saving changes…</span>
+        </div>
+      ) : status.phase === "downloading" ? (
         <div className="flex items-center gap-2 text-fg">
           <Spinner className="h-3.5 w-3.5" />
           <span>Downloading…{status.progress != null ? ` ${status.progress}%` : ""}</span>
@@ -28,7 +33,7 @@ export default function UpdateBanner() {
       ) : status.phase === "ready" ? (
         <div className="flex items-center gap-2 text-fg">
           <Spinner className="h-3.5 w-3.5" />
-          <span>Restarting…</span>
+          <span>Installing and restarting…</span>
         </div>
       ) : status.phase === "error" ? (
         <div className="flex flex-col items-start gap-2">
@@ -43,6 +48,11 @@ export default function UpdateBanner() {
               ✕
             </button>
           </div>
+          {status.canAuto && (
+            <button type="button" className={btnPrimary} onClick={() => void applyUpdate()}>
+              Try again
+            </button>
+          )}
           <a
             href={status.releaseUrl}
             target="_blank"

@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 import * as api from "./api";
 import { flushEditor } from "./editorState";
 import { setWorkspaceAvailable } from "./workspaceConnection";
+import { isUpdateInProgress } from "./updates";
 
 const CONNECTING: ReadonlySet<api.RemoteState> = new Set([
   "detecting",
@@ -119,7 +120,7 @@ export async function refresh(): Promise<void> {
     // Any later host change must invalidate all host-owned caches together.
     if ((boundHost && host !== boundHost) || (!boundHost && (wasObserved || pendingConnect))) {
       setWorkspaceAvailable(false);
-      window.location.reload();
+      if (!isUpdateInProgress()) window.location.reload();
       return;
     }
     pendingConnect = false;
@@ -130,8 +131,10 @@ export async function refresh(): Promise<void> {
   }
   if (boundHost && status.state === "idle") {
     // An explicit disconnect from another viewer also changes the environment.
+    // Native updater teardown can produce the same transient idle status; its
+    // intentional restart must not trigger an intervening webview reload.
     setWorkspaceAvailable(false);
-    window.location.reload();
+    if (!isUpdateInProgress()) window.location.reload();
     return;
   }
   const interrupted = boundHost !== null;

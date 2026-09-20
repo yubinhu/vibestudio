@@ -189,24 +189,40 @@ async fn install_update(
                 let pct = total.filter(|t| *t > 0).map(|t| (received * 100 / t).min(100) as u8);
                 skill_core::update::report_progress(pct);
             },
-            || skill_core::update::report_ready(),
+            // The plugin invokes this before verifying the package signature.
+            // Only report ready after download() returns verified bytes.
+            || {},
         )
         .await
         .map_err(|e| format!("Couldn't download the update: {e}"))?;
+    skill_core::update::report_ready();
+    let stop_started = std::time::Instant::now();
     let stopping = local_host.clone();
     let stopped = tauri::async_runtime::spawn_blocking(move || stopping.stop())
         .await
         .map_err(|e| e.to_string())
         .and_then(|result| result);
+    if stop_started.elapsed() > std::time::Duration::from_secs(2) {
+        log::warn!("Stopping the local host for the update took {:?}", stop_started.elapsed());
+    }
     if let Err(error) = stopped {
         // Stop may have succeeded before its acknowledgement was lost. Clear
         // any durable stop intent and restore the host when aborting installation.
         return Err(restore_after_failed_update(local_host, format!("Couldn't stop the host for the update: {error}")).await);
     }
-    if let Err(error) = update.install(bytes) {
+    // Extraction, platform installer startup and tunnel cleanup are synchronous.
+    // Keep them off the async executor that drives the rest of the desktop.
+    let installed = tauri::async_runtime::spawn_blocking(move || update.install(bytes).map_err(|error| error.to_string()))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+    if let Err(error) = installed {
         return Err(restore_after_failed_update(local_host, format!("Couldn't install the update: {error}")).await);
     }
-    app.restart() // macOS/Linux: relaunch into the new build (Windows exited above)
+    // macOS/Linux: request event-loop shutdown without parking an async worker
+    // indefinitely. Windows has already handed off to NSIS and exited above.
+    app.request_restart();
+    Ok(())
 }
 
 #[cfg(desktop)]

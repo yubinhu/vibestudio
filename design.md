@@ -226,6 +226,16 @@ Desktop updates download and verify first, then stop the local worker before rep
 its executable and restart it through the new app. Installation failure restores the
 host; tmux agents are never terminated by the updater.
 
+The update button flushes pending editor changes before starting; a failed save leaves
+the editor open and reports the failure. While an update is in progress, persistent
+terminals do not request a browser reload confirmation, and connection polling cannot
+trigger a workspace reload. Editors retain their own protection for failed saves.
+Synchronous installation runs off the async executor. App exit preserves the selected
+remote as unavailable and gives tunnel cleanup at most one second: a stalled WSL pipe
+must not hold up the Windows installer. This closes only this client's connections;
+the detached remote host and tmux pane processes keep running. After relaunch the client
+reattaches to those same sessions.
+
 The native switchboard retains only client capabilities (SSH profiles, updates, notifications,
 external-editor launch). Its `LocalBackendControl` supplies the local worker target, with
 off-thread health/recovery. A selected but unavailable host returns **503**, including on

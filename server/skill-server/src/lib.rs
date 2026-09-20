@@ -255,9 +255,8 @@ pub trait NotifyControl: Send + Sync {
 pub trait EditorControl: Send + Sync {
     /// The reachable editor's display name (`Some` → show the button), or `None`.
     fn detect(&self) -> Option<String>;
-    /// Open `path` in the editor. `remote_host` set → the folder is on that SSH
-    /// remote, so open it over VS Code Remote-SSH (a local window attached over the
-    /// same SSH the tunnel uses); `None` → open the local path directly.
+    /// Open `path` in the editor. `remote_host` selects VS Code Remote-SSH or
+    /// WSL (`wsl:<distro>`); `None` opens the local path directly.
     fn open(&self, path: &str, remote_host: Option<&str>) -> Result<(), String>;
 }
 
@@ -1814,8 +1813,8 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
         },
         (Method::Post, "/api/editor/open") => match &ctx.editor {
             Some(ed) => {
-                // A connected remote → the folder lives there; open it over Remote-SSH
-                // rather than on this machine. The ssh destination comes from the
+                // A connected remote → the file or folder lives there; the shell
+                // selects the matching SSH or WSL extension. The host comes from the
                 // switchboard (authoritative + already validated), NEVER the request
                 // body, so a caller can't smuggle ssh options in via a fake host.
                 let status = ctx.remote.as_ref().map(|remote| remote.status());

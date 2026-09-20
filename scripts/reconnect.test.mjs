@@ -188,7 +188,7 @@ test("an old server without ready stays read-only instead of sending tokenless i
 
 async function remote(initial) {
   const workspace = connection();
-  let status = initial, reloads = 0, retries = 0, disconnects = 0;
+  let status = initial, reloads = 0, retries = 0, disconnects = 0, updating = false;
   const api = {
     remoteStatus: async () => { if (status instanceof Error) throw status; return status; },
     sshProfiles: async () => null,
@@ -199,10 +199,24 @@ async function remote(initial) {
   const store = load("remote", {
     window: { location: { hostname: "remote.example", reload() { reloads++; } } },
     setInterval: () => 1, clearInterval() {}, setTimeout,
-  }, { "./api": api, "./editorState": { flushEditor: async () => {} }, "./workspaceConnection": workspace });
+  }, { "./api": api, "./editorState": { flushEditor: async () => {} }, "./workspaceConnection": workspace,
+    "./updates": { isUpdateInProgress: () => updating } });
   await tick();
-  return { store, workspace, set: (next) => { status = next; }, reloads: () => reloads, retries: () => retries, disconnects: () => disconnects };
+  return { store, workspace, set: (next) => { status = next; }, updating: (active) => { updating = active; },
+    reloads: () => reloads, retries: () => retries, disconnects: () => disconnects };
 }
+
+test("updater tunnel teardown cannot trigger a reload, while ordinary recovery still updates", async () => {
+  const h = await remote({ state: "connected", host: "workstation" });
+  h.updating(true);
+  h.set({ state: "reconnecting", host: "workstation" }); await h.store.refresh();
+  assert.equal(h.store.useRemote().status.state, "reconnecting", "downloads must not freeze remote status updates");
+  h.set({ state: "idle" }); await h.store.refresh();
+  assert.equal(h.reloads(), 0, "native updater shutdown must not reload the webview");
+  assert.equal(h.workspace.workspaceConnection().available, false);
+  h.updating(false); await h.store.refresh();
+  assert.equal(h.reloads(), 1, "a failed/finished updater restores normal workspace rebind behavior");
+});
 
 test("same host reconnect and attention error retain the mounted workspace", async () => {
   const h = await remote({ state: "connected", host: "workstation" });

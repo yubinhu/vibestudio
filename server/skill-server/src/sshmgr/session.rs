@@ -24,6 +24,23 @@ pub struct Session {
 }
 
 impl Session {
+    #[cfg(test)]
+    pub(super) fn with_test_handle(handle: Box<dyn super::conn::SessionHandle>) -> Self {
+        Self {
+            local_port: 1,
+            token: String::new(),
+            handle,
+            record: ServiceRecord {
+                protocol: 1,
+                instance_id: "0".repeat(32),
+                pid: 1,
+                port: 1,
+                version: env!("CARGO_PKG_VERSION").into(),
+                explicitly_stopped: false,
+            },
+        }
+    }
+
     pub fn health_probe(&self) -> HealthProbe {
         HealthProbe { local_port: self.local_port, record: self.record.clone() }
     }
