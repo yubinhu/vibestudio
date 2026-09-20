@@ -8,6 +8,8 @@ import { Spinner } from "@/components/ui";
 import PhoneModal from "@/components/PhoneModal";
 import { RemoteDialog } from "@/components/RemoteMenu";
 import NewSessionDialog from "@/components/NewSessionDialog";
+import RenameSessionDialog from "@/components/RenameSessionDialog";
+import { useSessionTitleMenu } from "@/components/useSessionTitleMenu";
 import RecentStrip from "@/components/RecentStrip";
 import SkillGallery from "@/pages/home/SkillGallery";
 import * as api from "@/lib/api";
@@ -92,19 +94,26 @@ function Heading({ children, count, action, level = 2 }: { children: ReactNode; 
   );
 }
 
-function SessionCard({ s, waiting, onClick }: { s: TermSession; waiting: boolean; onClick: () => void }) {
+function SessionCard({ s, waiting, onClick, titleMenu }: {
+  s: TermSession;
+  waiting: boolean;
+  onClick: () => void;
+  titleMenu: ReturnType<typeof useSessionTitleMenu>;
+}) {
   const meta = agentMeta(s.agent);
   return (
     <button
       type="button"
       onClick={onClick}
+      onKeyDown={(e) => titleMenu.onTitleKeyDown(s, e)}
+      aria-keyshortcuts="Shift+F10 F2"
       className={`flex flex-col gap-2 rounded-xl border p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)] ${
         waiting ? infoTint : "border-border bg-surface hover:border-border-strong hover:bg-panel"
       }`}
     >
       <div className="flex items-center gap-2">
         <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: meta.color }} aria-hidden />
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg" title={sessionTitle(s)}>{sessionTitle(s)}</span>
+        <span {...titleMenu.titleProps(s)} className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">{sessionTitle(s)}</span>
         {waiting && (
           <span className="shrink-0 rounded-full bg-[color-mix(in_srgb,var(--info)_16%,transparent)] px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-info">
             Your turn
@@ -240,6 +249,8 @@ export function Component() {
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
+  const [renaming, setRenaming] = useState<TermSession | null>(null);
+  const titleMenu = useSessionTitleMenu(setRenaming);
 
   const connectorStore = useConnectors();
   const connectors = connectorStore.inventory?.connectors;
@@ -428,7 +439,7 @@ export function Component() {
             </Heading>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {[...waiting, ...running].map((s) => (
-                <SessionCard key={s.id} s={s} waiting={waitingIds.has(s.id)} onClick={() => openSession(s.id)} />
+                <SessionCard key={s.id} s={s} waiting={waitingIds.has(s.id)} onClick={() => openSession(s.id)} titleMenu={titleMenu} />
               ))}
               <button
                 type="button"
@@ -479,6 +490,8 @@ export function Component() {
         />
       )}
       {openDialogOpen && <OpenSkillDialog onClose={() => setOpenDialogOpen(false)} />}
+      {renaming && <RenameSessionDialog session={renaming} onClose={() => setRenaming(null)} />}
+      {titleMenu.menu}
     </div>
   );
 }

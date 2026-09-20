@@ -41,8 +41,11 @@ underlying file or skill.
 
 ## Session titles
 
-The sessions rail and compact picker display a user override, the agent's saved
-title, or the launch label, in that order. `POST /api/terminal/rename` accepts a
+The sessions rail, compact picker and Home cards display a user override, the
+agent's saved title, or the launch label, in that order. Right-click or hold the
+title to choose **Rename**; a focused session also supports Shift+F10/Menu and F2.
+The compact picker includes **Rename current session…** without a separate toolbar
+button. `POST /api/terminal/rename` accepts a
 terminal `id` and a single-line `title` of up to 200 Unicode characters. An explicit
 `null` removes the VibeStudio override. The host verifies that the terminal exists
 and validates the name before making a change.

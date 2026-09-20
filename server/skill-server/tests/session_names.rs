@@ -331,4 +331,31 @@ fn names_persist_across_http_servers_and_proxy_without_changing_other_sessions()
     let remaining = get(&client, &other);
     assert_eq!(remaining.as_array().unwrap().len(), 1);
     assert_eq!(remaining[0]["id"], first_id);
+
+    // Every registered agent can use a durable local name, even when its CLI
+    // exposes no native rename API. Only change private metadata on our shell;
+    // no agent process is launched and no native conversation ID is supplied.
+    let metadata_file = fixture.root.join("config/terminals").join(format!("{first_id}.json"));
+    let original_metadata = fs::read(&metadata_file).unwrap();
+    let mut metadata: Value = serde_json::from_slice(&original_metadata).unwrap();
+    for agent in skill_core::agents::AGENTS {
+        metadata["agent"] = json!(agent.family);
+        fs::write(&metadata_file, metadata.to_string()).unwrap();
+        let title = format!("Review {} session", agent.label);
+        assert_eq!(
+            post(&client, &base, "rename", json!({"id":first_id,"title":title})).unwrap(),
+            json!({"customTitle":title,"savedIn":"vibestudio"}),
+            "{} must support local rename without a native API", agent.family
+        );
+        let persisted: Value = serde_json::from_slice(&fs::read(&durable).unwrap()).unwrap();
+        assert_eq!(persisted[&first_id], title);
+        assert_eq!(
+            post(&client, &other, "rename", json!({"id":first_id,"title":null})).unwrap(),
+            json!({"customTitle":null,"savedIn":"vibestudio"})
+        );
+    }
+    // Restore shell metadata before inventory enrichment so this fixture never
+    // opens the user's agent stores while checking the reset result.
+    fs::write(metadata_file, original_metadata).unwrap();
+    assert!(session(&get(&client, &other), &first_id).get("customTitle").is_none());
 }

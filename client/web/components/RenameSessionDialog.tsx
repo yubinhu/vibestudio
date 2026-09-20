@@ -29,13 +29,9 @@ export default function RenameSessionDialog({
   useEffect(() => {
     return () => {
       alive.current = false;
-      // The rail action hides again when focus leaves its row. Restore the row
-      // first so the action is focusable for the next keyboard interaction.
+      // Return to the originating session row, Home card or compact picker.
       const trigger = opener.current;
-      if (trigger?.isConnected) {
-        trigger.closest("li")?.querySelector("button")?.focus();
-        trigger.focus();
-      }
+      if (trigger?.isConnected) trigger.focus();
     };
   }, []);
 

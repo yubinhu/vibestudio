@@ -918,6 +918,46 @@ fn new_uuid() -> String {
     )
 }
 
+/// Current Claude rejects a forced --session-id with resume/continue unless the
+/// session is being forked. Respect explicit identities and record exact resume
+/// UUIDs without changing the user's launch semantics.
+fn configure_claude_session(argv: &mut Vec<String>, extra: &[String]) -> Option<String> {
+    let options = &extra[..extra.iter().position(|arg| arg == "--").unwrap_or(extra.len())];
+    let mut explicit = None;
+    let mut resume = None;
+    let mut continuing = false;
+    let mut fork = false;
+    for (index, arg) in options.iter().enumerate() {
+        let (flag, inline) = if let Some(value) = arg.strip_prefix("-r").filter(|value| !value.is_empty()) {
+            ("-r", Some(value.strip_prefix('=').unwrap_or(value)))
+        } else {
+            arg.split_once('=').map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)))
+        };
+        let value = || inline.or_else(|| options.get(index + 1).map(String::as_str));
+        match flag {
+            "--session-id" => explicit = Some(value()),
+            "--resume" | "-r" => resume = Some(value()),
+            "--continue" | "-c" => continuing = true,
+            "--fork-session" => fork = true,
+            _ => {}
+        }
+    }
+    let uuid = |value: &str| {
+        (value.len() == 36 && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) { byte == b'-' } else { byte.is_ascii_hexdigit() }
+        })).then(|| value.to_string())
+    };
+    if let Some(id) = explicit {
+        return id.and_then(uuid);
+    }
+    if !fork && (continuing || resume.is_some()) {
+        return if continuing { None } else { resume.flatten().and_then(uuid) };
+    }
+    let id = new_uuid();
+    argv.extend(["--session-id".into(), id.clone()]);
+    Some(id)
+}
+
 /// Create a detached tmux session running the chosen agent in `cwd`, tagged so
 /// it can be listed from any backend. The session is persistent: nothing about
 /// it dies with this process (see the module docs for the lifetime model).
@@ -967,10 +1007,7 @@ pub fn create_session(
             // ~/.claude/projects/<enc-cwd>/<uuid>.jsonl. Without it, several Claude
             // sessions in one cwd all resolve to the newest transcript and show a
             // single shared title. Claude names the file after the id we pass.
-            let sid = new_uuid();
-            argv.push("--session-id".into());
-            argv.push(sid.clone());
-            session_id = Some(sid);
+            session_id = configure_claude_session(&mut argv, extra_args);
         } else if opt.agent == "codex" {
             // Same goal for Codex: force a real BEL on turn-completion. Its default
             // `auto` method prefers an OSC-9 desktop notification tmux's bell
@@ -1519,6 +1556,31 @@ pub fn detect_agents() -> Vec<AgentOption> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_session_ids_do_not_conflict_with_resume_or_explicit_ids() {
+        let id = "12345678-1234-4234-8234-123456789ABC";
+        let configure = |extra: &[&str]| {
+            let mut argv = vec![];
+            let extra: Vec<_> = extra.iter().map(|arg| arg.to_string()).collect();
+            let recorded = configure_claude_session(&mut argv, &extra);
+            (argv, recorded)
+        };
+        for extra in [&["--continue"][..], &["-c"], &["--resume"], &["-r", "Task name"]] {
+            assert_eq!(configure(extra), (vec![], None));
+        }
+        for extra in [vec!["--resume", id], vec!["--session-id", id]] {
+            assert_eq!(configure(&extra), (vec![], Some(id.to_string())));
+        }
+        assert_eq!(configure(&[&format!("--resume={id}")]), (vec![], Some(id.to_string())));
+        assert_eq!(configure(&[&format!("-r{id}")]), (vec![], Some(id.to_string())));
+        assert_eq!(configure(&[&format!("--session-id={id}")]), (vec![], Some(id.to_string())));
+        for extra in [&[][..], &["--continue", "--fork-session"], &["--", "--resume"]] {
+            let (argv, recorded) = configure(extra);
+            assert_eq!(argv, vec!["--session-id".into(), recorded.unwrap()]);
+        }
+        assert_eq!(configure(&["--session-id", "../invalid"]), (vec![], None));
+    }
 
     #[test]
     fn codex_processes_are_scoped_to_their_own_terminal() {
