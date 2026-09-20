@@ -54,7 +54,8 @@ Upstream contracts: [Hermes CLI](https://hermes-agent.nousresearch.com/docs/refe
 3. Add any agent-specific home/profile resolution, native session reader and
    exact terminal identity mapping. Never substitute another session when a
    recorded ID is missing. Add a status detector only if one is not already bundled.
-4. Add optional frontend color/path identity hints in `client/web/lib/agents.ts`.
+4. Add optional frontend color/path identity hints in `client/web/lib/agents.ts`
+   and the Home session-card label mapping in `DashboardRoute.tsx`.
    Existing HTTP terminal, mining, skill and rename routes serve the integration.
 5. Validate isolated fixtures for concurrent sessions, renames, malformed stores,
    launch flags and skill locations. Exercise the picker, native title and local

@@ -34,6 +34,8 @@ const AGENT_META: Record<string, { label: string; color: string }> = {
   cursor: { label: "Cursor", color: "#7c83ff" },
   opencode: { label: "opencode", color: "#f59e0b" },
   openclaw: { label: "OpenClaw", color: "#a855f7" },
+  hermes: { label: "Hermes", color: "#c17d3f" },
+  pi: { label: "Pi", color: "#ab70d6" },
   shell: { label: "Shell", color: "var(--muted)" },
 };
 const agentMeta = (a: string) => AGENT_META[a] ?? { label: a || "Shell", color: "var(--muted)" };
