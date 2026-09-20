@@ -23,6 +23,7 @@ pub mod recents;
 pub mod remotesync;
 pub mod reveal;
 pub mod secrets;
+pub mod session_names;
 pub mod session_title;
 pub mod skill;
 mod state_store;

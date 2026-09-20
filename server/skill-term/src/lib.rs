@@ -120,10 +120,10 @@ pub struct SessionInfo {
     /// "finished a turn / waiting for you" — what the rail's unread dot keys off.
     /// "0" until the first bell.
     pub bell_at: String,
-    /// The agent session id we forced at launch (`claude --session-id`), so this
-    /// terminal maps to its OWN transcript even when several share a cwd. Empty
-    /// for shells, resumed sessions, and terminals created before this existed —
-    /// title extraction then falls back to newest-activity in the cwd.
+    /// The agent session id, forced at launch (`claude --session-id`) or resolved
+    /// from a live Codex process's open rollout, including resumed sessions.
+    /// This keeps terminals mapped to their own transcript even when several
+    /// share a cwd. Empty when unknown.
     pub session_id: String,
 }
 
@@ -486,7 +486,151 @@ fn valid_session_name(n: &str) -> bool {
 /// List the app's live sessions (queries tmux, so this is correct within the
 /// current backend lifetime regardless of in-process attachment state).
 pub fn list_sessions() -> Result<Vec<SessionInfo>, String> {
-    Ok(list_sessions_checked().unwrap_or_default())
+    let mut sessions = list_sessions_checked().unwrap_or_default();
+    resolve_codex_session_ids(&mut sessions);
+    Ok(sessions)
+}
+
+/// Codex chooses its own UUID. Its native process keeps the current rollout
+/// open, including on resume, so process ancestry provides an exact mapping
+/// without guessing from cwd or activity. Do this only for the HTTP inventory;
+/// the attention watcher's more frequent `list_sessions_checked` needs no titles.
+fn resolve_codex_session_ids(sessions: &mut [SessionInfo]) {
+    if !sessions.iter().any(|s| s.agent == "codex") {
+        return;
+    }
+    let Ok(panes) = tmux().args([
+        "list-panes", "-a", "-F", "#{session_name} #{pane_pid}",
+    ]).output() else { return };
+    let Ok(processes) = hidden_command("ps").args(["-eo", "pid=,ppid=,comm="]).output()
+        else { return };
+    if !panes.status.success() || !processes.status.success() {
+        return;
+    }
+    let by_session = codex_pids_by_session(
+        &String::from_utf8_lossy(&panes.stdout),
+        &String::from_utf8_lossy(&processes.stdout),
+    );
+    let pids: HashSet<u32> = sessions.iter().filter(|s| s.agent == "codex")
+        .filter_map(|s| by_session.get(&s.id)).flatten().copied().collect();
+    let paths = open_rollout_paths(&pids);
+    for session in sessions.iter_mut().filter(|s| s.agent == "codex") {
+        let candidates = by_session.get(&session.id).into_iter().flatten()
+            .filter_map(|pid| paths.get(pid)).flatten();
+        if let Some(id) = unique_codex_rollout_session_id(candidates) {
+            session.session_id = id;
+        }
+    }
+}
+
+fn codex_pids_by_session(panes: &str, processes: &str) -> HashMap<String, Vec<u32>> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut codex = HashSet::new();
+    for line in processes.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(parent)) = (
+            fields.next().and_then(|n| n.parse::<u32>().ok()),
+            fields.next().and_then(|n| n.parse::<u32>().ok()),
+        ) else { continue };
+        let name = fields.collect::<Vec<_>>().join(" ");
+        children.entry(parent).or_default().push(pid);
+        if skill_core::agent_detection::matches_process("codex", &name, &name) {
+            codex.insert(pid);
+        }
+    }
+    let mut result: HashMap<String, Vec<u32>> = HashMap::new();
+    for line in panes.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(session), Some(pane)) = (
+            fields.next(), fields.next().and_then(|n| n.parse::<u32>().ok()),
+        ) else { continue };
+        if !valid_session_name(session) { continue; }
+        let mut queue = vec![pane];
+        let mut seen = HashSet::new();
+        while let Some(pid) = queue.pop() {
+            if !seen.insert(pid) { continue; }
+            if codex.contains(&pid) {
+                result.entry(session.to_string()).or_default().push(pid);
+                // A nested `codex exec` belongs to a tool call, not the pane's
+                // interactive conversation. Its parent owns the wanted rollout.
+                continue;
+            }
+            queue.extend(children.get(&pid).into_iter().flatten().copied());
+        }
+    }
+    result
+}
+
+fn open_rollout_paths(pids: &HashSet<u32>) -> HashMap<u32, Vec<PathBuf>> {
+    let mut result: HashMap<u32, Vec<PathBuf>> = HashMap::new();
+    #[cfg(target_os = "linux")]
+    for &pid in pids {
+        let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else { continue };
+        for path in entries.flatten().filter_map(|entry| std::fs::read_link(entry.path()).ok()) {
+            if is_codex_rollout_path(&path) {
+                result.entry(pid).or_default().push(path);
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    if !pids.is_empty() {
+        // macOS has no /proc. One lsof for the whole inventory, restricted to
+        // the relevant native processes. Missing tools/permissions degrade to
+        // an unknown ID; they never attach another terminal's conversation.
+        let ids = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        if let Ok(out) = hidden_command("lsof").args(["-b", "-n", "-P", "-Fpn", "-p", &ids]).output() {
+            let mut pid = None;
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if let Some(value) = line.strip_prefix('p') {
+                    pid = value.parse::<u32>().ok().filter(|p| pids.contains(p));
+                } else if let (Some(pid), Some(value)) = (pid, line.strip_prefix('n')) {
+                    let path = PathBuf::from(value);
+                    if is_codex_rollout_path(&path) {
+                        result.entry(pid).or_default().push(path);
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+fn is_codex_rollout_path(path: &std::path::Path) -> bool {
+    path.file_name().and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))
+}
+
+fn unique_codex_rollout_session_id<'a>(paths: impl Iterator<Item = &'a PathBuf>) -> Option<String> {
+    use std::io::BufRead;
+    let mut ids = HashSet::new();
+    for path in paths {
+        if !is_codex_rollout_path(path) { continue; }
+        let Ok(file) = std::fs::File::open(path) else { continue };
+        // Only session metadata: never scan conversation bodies or unbounded
+        // files. Codex subagent rollouts share the process but have source
+        // {subagent: ...}; they must not become the terminal's title. Top-level
+        // sources are strings; a resumed session keeps its original source
+        // (e.g. vscode or exec) even when the current process is the CLI.
+        let mut line = String::new();
+        if std::io::BufReader::new(file.take(64 * 1024)).read_line(&mut line).is_err() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let top_level = record["payload"]["source"].as_str()
+            .is_some_and(|source| !source.is_empty() && !source.eq_ignore_ascii_case("subagent"));
+        if record["type"] != "session_meta" || !top_level {
+            continue;
+        }
+        let Some(id) = record["payload"]["id"].as_str() else { continue };
+        let valid_id = id.len() == 36 && id.bytes().enumerate().all(|(i, c)| {
+            if [8, 13, 18, 23].contains(&i) { c == b'-' } else { c.is_ascii_hexdigit() }
+        });
+        if valid_id && path.file_name().and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(&format!("-{id}.jsonl"))) {
+            ids.insert(id.to_string());
+        }
+    }
+    (ids.len() == 1).then(|| ids.into_iter().next()).flatten()
 }
 
 /// Like [`list_sessions`], but distinguishes "tmux answered" from "couldn't
@@ -1375,6 +1519,55 @@ pub fn detect_agents() -> Vec<AgentOption> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_processes_are_scoped_to_their_own_terminal() {
+        let sessions = codex_pids_by_session(
+            "ass-1-1-1 10\nass-1-1-2 20\nass-1-1-3 30\nnot-ours 40\n",
+            "10 1 bash\n11 10 node\n12 11 codex\n13 12 codex\n\
+             20 1 bash\n21 20 /opt/codex\n30 1 bash\n31 30 sleep\n\
+             40 1 codex\n99 1 codex\n",
+        );
+        assert_eq!(sessions.get("ass-1-1-1"), Some(&vec![12]));
+        assert_eq!(sessions.get("ass-1-1-2"), Some(&vec![21]));
+        assert!(!sessions.contains_key("ass-1-1-3"));
+        assert_eq!(sessions.len(), 2, "ignore other panes and nested tool-call agents");
+    }
+
+    #[test]
+    fn codex_rollout_identity_ignores_subagents_and_rejects_ambiguity() {
+        let dir = std::env::temp_dir().join(format!("vs-rollout-{}", new_uuid()));
+        std::fs::create_dir(&dir).unwrap();
+        let write = |id: &str, source: serde_json::Value| {
+            let path = dir.join(format!("rollout-2026-09-19T10-00-00-{id}.jsonl"));
+            std::fs::write(&path, format!("{}\n", serde_json::json!({
+                "type": "session_meta",
+                "payload": {"id": id, "source": source, "cwd": "/same/project"},
+            }))).unwrap();
+            path
+        };
+        let first = write("01a0bd55-10d4-7470-94f1-4c98dd5af803", serde_json::json!("cli"));
+        // A CLI resume preserves the source of the original VS Code session.
+        let second = write("01a0bd56-01bc-7e30-9c3c-352c4ffdd834", serde_json::json!("vscode"));
+        let child = write("01a0bd56-c1f5-72d2-8b90-4faffd31e733", serde_json::json!({
+            "subagent": {"thread_spawn": {"parent_thread_id": "01a0bd55-10d4-7470-94f1-4c98dd5af803"}},
+        }));
+        assert_eq!(
+            unique_codex_rollout_session_id([&first, &child, &first].into_iter()),
+            Some("01a0bd55-10d4-7470-94f1-4c98dd5af803".into()),
+        );
+        assert_eq!(
+            unique_codex_rollout_session_id([&second, &child].into_iter()),
+            Some("01a0bd56-01bc-7e30-9c3c-352c4ffdd834".into()),
+        );
+        assert_eq!(unique_codex_rollout_session_id([&first, &second, &child].into_iter()), None);
+        assert_eq!(unique_codex_rollout_session_id([&child].into_iter()), None);
+        let legacy_child = write(&new_uuid(), serde_json::json!("subagent"));
+        assert_eq!(unique_codex_rollout_session_id([&legacy_child].into_iter()), None);
+        std::fs::write(&first, "malformed\n").unwrap();
+        assert_eq!(unique_codex_rollout_session_id([&first].into_iter()), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Re-run stateful cases alone so their config, paste cache and tmux server
     /// belong to the test even when the surrounding suite runs in parallel.

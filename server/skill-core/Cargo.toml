@@ -27,7 +27,7 @@ sha2 = "0.10"
 # query encoding. Both already in the lockfile via skill-server.
 getrandom = "0.2"
 urlencoding = "2"
-# opencode keeps its sessions in a WAL SQLite db (session_title.rs). `bundled`
+# Codex and opencode keep session metadata in WAL SQLite dbs. `bundled`
 # compiles SQLite in-tree so releases don't depend on a system libsqlite3.
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 

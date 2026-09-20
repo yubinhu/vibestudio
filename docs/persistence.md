@@ -39,6 +39,29 @@ header's **Open** action accepts a path or opens the remembered file picker thro
 Removing a recent entry only removes its history record; it does not delete the
 underlying file or skill.
 
+## Session titles
+
+The sessions rail and compact picker display a user override, the agent's saved
+title, or the launch label, in that order. `POST /api/terminal/rename` accepts a
+terminal `id` and a single-line `title` of up to 200 Unicode characters. An explicit
+`null` removes the VibeStudio override. The host verifies that the terminal exists
+and validates the name before making a change.
+
+For an exactly identified Codex thread, VibeStudio first uses Codex's supported
+`thread/name/set` API. A successful native rename removes any older VibeStudio
+override; Codex then owns the name. This does not resume the thread or run a model
+turn. If the native operation is unavailable or fails, the host saves the name in
+`session-titles.json` in its configuration directory. Other agents use this same
+fallback. Names are keyed by the stable terminal ID, survive host restarts, and
+appear to other clients on their next inventory refresh. They do not transfer to
+a newly created terminal. Closing a terminal removes its override when possible.
+
+The fallback uses the locked, atomic JSON store. Write errors remain visible in
+the rename dialog and preserve existing data. An unreadable names file is logged
+and omitted from inventory enrichment so live terminals remain available. The
+dialog's **Use automatic title** action removes a local override and reveals the
+current agent title or launch label; native Codex names can be edited again.
+
 ## Validation
 
 ```sh

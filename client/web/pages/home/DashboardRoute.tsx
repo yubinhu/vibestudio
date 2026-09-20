@@ -12,6 +12,7 @@ import RecentStrip from "@/components/RecentStrip";
 import SkillGallery from "@/pages/home/SkillGallery";
 import * as api from "@/lib/api";
 import type { TermSession } from "@/lib/api";
+import { sessionTitle } from "@/lib/sessionTitle";
 import { useSessions, isUnread, refresh as refreshSessions, noteCreated, nativeNotifyState } from "@/lib/sessions";
 import { useMining } from "@/lib/mining";
 import { useSkills } from "@/lib/skills";
@@ -103,22 +104,16 @@ function SessionCard({ s, waiting, onClick }: { s: TermSession; waiting: boolean
     >
       <div className="flex items-center gap-2">
         <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: meta.color }} aria-hidden />
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg">{s.label}</span>
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-fg" title={sessionTitle(s)}>{sessionTitle(s)}</span>
         {waiting && (
           <span className="shrink-0 rounded-full bg-[color-mix(in_srgb,var(--info)_16%,transparent)] px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-info">
             Your turn
           </span>
         )}
       </div>
-      {s.title ? (
-        <span className="truncate text-[0.8rem] text-muted" title={s.cwd}>
-          {s.title}
-        </span>
-      ) : (
-        <span className="truncate font-mono text-[0.7rem] text-faint" title={s.cwd}>
-          {s.cwd}
-        </span>
-      )}
+      <span className="truncate font-mono text-[0.7rem] text-faint" title={s.cwd}>
+        {s.cwd}
+      </span>
       <span className="text-xs text-faint">
         {meta.label} · {waiting ? `finished ${ago(Number(s.bellAt))}` : `active ${ago(Number(s.activity))}`}
       </span>

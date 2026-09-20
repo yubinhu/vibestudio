@@ -4,6 +4,8 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayo
 import { useLocation, useNavigate } from "react-router-dom";
 import NavBar from "@/components/NavBar";
 import NewSessionDialog from "@/components/NewSessionDialog";
+import RenameSessionDialog from "@/components/RenameSessionDialog";
+import { sessionTitle } from "@/lib/sessionTitle";
 import ResizeHandle from "@/components/ResizeHandle";
 import TerminalPane from "@/components/TerminalPane";
 import * as api from "@/lib/api";
@@ -30,6 +32,14 @@ function PlusIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function RenameIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="m16 3 5 5M4 20l5-1L21 7a3.5 3.5 0 0 0-5-5L4 14l-1 7z" />
     </svg>
   );
 }
@@ -86,6 +96,8 @@ export default function SessionsWorkspace({
   const { sessions, loading, seen } = store.useSessions();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
+  const [renaming, setRenaming] = useState<TermSession | null>(null);
+  useEffect(() => { if (!visible) setRenaming(null); }, [visible]);
   const soundEnabled = useAttentionSound();
   // Web Push offer — shown until the user decides (mainly the installed phone
   // app, where watching desktop-started agents is the whole point).
@@ -201,7 +213,8 @@ export default function SessionsWorkspace({
       await api.terminalKill(id);
       setKillError(null);
     } catch (e) {
-      const label = sessions.find((s) => s.id === id)?.label ?? id;
+      const session = sessions.find((s) => s.id === id);
+      const label = session ? sessionTitle(session) : id;
       setKillError({ id, msg: `${label} — ${e instanceof Error ? e.message : String(e)}` });
     }
     await refresh();
@@ -363,7 +376,7 @@ export default function SessionsWorkspace({
               type="button"
               onClick={() => openInEditor(active)}
               title={editorTitle()}
-              aria-label={`Open ${active.label} in ${editorName}`}
+              aria-label={`Open ${sessionTitle(active)} in ${editorName}`}
               className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
             >
               <OpenExternalIcon />
@@ -398,7 +411,7 @@ export default function SessionsWorkspace({
               onChange={(e) => setActiveId(e.target.value)}
               disabled={sessions.length === 0}
               aria-label="Session"
-              title={active?.cwd}
+              title={active ? `${sessionTitle(active)}\n${active.cwd}` : undefined}
               className="h-7 min-w-0 flex-1 rounded-md border border-border bg-surface px-2 text-xs text-fg outline-none focus:border-accent disabled:opacity-50"
             >
               {sessions.length === 0 ? (
@@ -407,12 +420,23 @@ export default function SessionsWorkspace({
                 sessions.map((s) => (
                   <option key={s.id} value={s.id}>
                     {unread(s) ? "● " : ""}
-                    {s.label}
+                    {sessionTitle(s)}
                     {attentionLabel(s) ? ` — ${attentionLabel(s)}` : ""}
                   </option>
                 ))
               )}
             </select>
+            {active && (
+              <button
+                type="button"
+                onClick={() => setRenaming(active)}
+                aria-label={`Rename ${sessionTitle(active)}`}
+                title="Rename session"
+                className="shrink-0 rounded-md p-2 text-muted hover:bg-panel hover:text-fg focus-visible:outline focus-visible:outline-accent"
+              >
+                <RenameIcon />
+              </button>
+            )}
             {soundToggle}
             {pushOffer && store.nativeNotifyState() !== true && (
               <button
@@ -428,7 +452,7 @@ export default function SessionsWorkspace({
               <button
                 type="button"
                 onClick={() => void kill(active.id)}
-                aria-label={`Kill ${active.label}`}
+                aria-label={`Kill ${sessionTitle(active)}`}
                 title="Kill session"
                 className="shrink-0 rounded p-1 text-faint hover:text-danger"
               >
@@ -439,7 +463,7 @@ export default function SessionsWorkspace({
               <button
                 type="button"
                 onClick={() => openInEditor(active)}
-                aria-label={`Open ${active.label} in ${editorName}`}
+                aria-label={`Open ${sessionTitle(active)} in ${editorName}`}
                 title={editorTitle()}
                 className="shrink-0 rounded p-1 text-muted hover:bg-panel hover:text-fg"
               >
@@ -476,7 +500,7 @@ export default function SessionsWorkspace({
                     <button
                       type="button"
                       onClick={() => openInEditor(active)}
-                      aria-label={`Open ${active.label} in ${editorName}`}
+                      aria-label={`Open ${sessionTitle(active)} in ${editorName}`}
                       title={editorTitle()}
                       className="rounded p-1 text-muted hover:bg-panel hover:text-fg"
                     >
@@ -521,7 +545,9 @@ export default function SessionsWorkspace({
                             title={unread(s) ? "New output" : undefined}
                             aria-label={unread(s) ? "New output" : undefined}
                           />
-                          <span className="min-w-0 flex-1 truncate text-sm">{s.label}</span>
+                          <span className="min-w-0 flex-1 truncate text-sm" title={sessionTitle(s)}>
+                            {sessionTitle(s)}
+                          </span>
                         </span>
                         <span className="w-full truncate pl-3 font-mono text-[0.65rem] text-faint" title={s.cwd}>
                           {s.cwd}
@@ -534,10 +560,20 @@ export default function SessionsWorkspace({
                       </button>
                       <button
                         type="button"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={() => setRenaming(s)}
+                        aria-label={`Rename ${sessionTitle(s)}`}
+                        title="Rename session"
+                        className="hidden shrink-0 rounded p-1 text-faint hover:bg-panel hover:text-fg focus-visible:outline focus-visible:outline-accent group-hover:inline-flex group-focus-within:inline-flex"
+                      >
+                        <RenameIcon />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => void kill(s.id)}
-                        aria-label={`Kill ${s.label}`}
+                        aria-label={`Kill ${sessionTitle(s)}`}
                         title="Kill session"
-                        className="hidden shrink-0 appearance-none rounded p-1 text-faint hover:text-danger group-hover:inline-block"
+                        className="hidden shrink-0 appearance-none rounded p-1 text-faint hover:text-danger group-hover:inline-block group-focus-within:inline-block"
                       >
                         ✕
                       </button>
@@ -563,6 +599,13 @@ export default function SessionsWorkspace({
             store.noteCreated(s);
             setActiveId(s.id);
           }}
+        />
+      )}
+      {renaming && visible && (
+        <RenameSessionDialog
+          key={renaming.id}
+          session={renaming}
+          onClose={() => setRenaming(null)}
         />
       )}
     </div>

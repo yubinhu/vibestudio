@@ -351,6 +351,19 @@ most recently sending user input owns shared geometry; passive phone/desktop att
 resizes cannot resize a terminal another viewer is using. Ownership lives in tmux so it
 also works across sibling backend processes. Automatic terminal query replies do not claim it.
 
+The sessions rail and compact picker prefer the optional `title` returned by
+`/api/terminal/list`, falling back to the launch label. Titles come from each
+agent's own store in `skill-core::session_title`. For Codex, `skill-term` maps the
+pane's native process to its open root rollout UUID (Linux `/proc`, macOS `lsof`),
+excluding subagents and ambiguous matches. The reader prefers `threads.name` in
+the current `state_*.sqlite`, then `session_index.jsonl`'s latest `thread_name`,
+then the same session's first prompt. SQLite is read-only, including committed
+WAL changes; no extra model request generates these labels. Unknown Codex IDs keep
+the launch label rather than borrowing another conversation in the same folder.
+User edits go through `/api/terminal/rename`; the server uses Codex's native name
+API when available and a host-owned override otherwise. Storage and reset behavior
+are specified in [session-title persistence](docs/persistence.md#session-titles).
+
 ## Session attention
 
 `skill-core/src/agent_detection` vendors Herdr's terminal detection rules and

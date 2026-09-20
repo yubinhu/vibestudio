@@ -1,13 +1,15 @@
 //! A short human title for a live terminal, read from the agent's OWN session
 //! record — far more meaningful than the raw cwd. Hung off `AgentDef.session_title`
 //! (the common agent interface) so each agent contributes what it can and the rest
-//! degrade to `None`. Claude, Codex, Gemini, Cursor parse their JSONL transcripts;
-//! opencode reads its WAL SQLite store (bundled SQLite). Only openclaw is still
+//! degrade to `None`. Claude, Gemini, Cursor parse their JSONL transcripts;
+//! Codex and opencode also read their WAL SQLite stores (bundled SQLite). Only openclaw is still
 //! uncovered — it isn't launchable and its on-disk format is unverified.
 //!
 //! Correlation: when the terminal recorded the session id we forced at launch
 //! (`claude --session-id`), it maps to exactly that transcript — the only way to
-//! tell apart several sessions in the same cwd. Otherwise (shells, resumes,
+//! tell apart several sessions in the same cwd. Codex's id is resolved from its
+//! live process's open rollout; no id means no title rather than a cwd guess.
+//! Otherwise (shells, resumes,
 //! other agents, pre-existing terminals) it falls back to the newest-activity
 //! session for the cwd.
 //!
@@ -25,6 +27,9 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
+
+mod codex;
+pub use codex::codex_title;
 
 const MAX_LEN: usize = 72;
 
@@ -300,71 +305,32 @@ fn parse_claude(file: &Path) -> Option<String> {
     Some(truncate(&tidy(&raw)))
 }
 
-// ─── Codex ───
-// Rollout transcripts are date-organized (not by cwd), so scan the most recently
-// active ones, keep those whose session_meta.cwd matches, and title from the first
-// human `user_message` event. (The state_*.sqlite store holds nicer titles but is
-// SQLite — deferred.)
-
-pub fn codex_title(cwd: &Path, created: i64, _session_id: Option<&str>) -> Option<String> {
-    let base = home()?.join(".codex/sessions");
-    let mut rollouts: Vec<PathBuf> = walkdir::WalkDir::new(&base)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .map(|e| e.into_path())
-        .filter(|p| {
-            p.is_file()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))
-        })
-        .collect();
-    // Bound the scan to the most recently active rollouts.
-    rollouts.sort_by_key(|p| std::cmp::Reverse(file_time(p, false).unwrap_or(0)));
-    rollouts.truncate(48);
-    let want = cwd.to_string_lossy();
-    let mine: Vec<PathBuf> = rollouts
-        .into_iter()
-        .filter(|p| codex_meta_cwd(p).as_deref() == Some(&want))
-        .collect();
-    let file = pick_for_terminal(mine, created)?;
-    cached(&file, parse_codex)
-}
-
 fn parse_codex(file: &Path) -> Option<String> {
     for line in read_lines(file)? {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        // The `user_message` event carries the clean typed human text.
-        if v.get("type").and_then(|t| t.as_str()) == Some("event_msg") {
-            let pl = v.get("payload");
-            if pl.and_then(|p| p.get("type")).and_then(|t| t.as_str()) == Some("user_message") {
-                if let Some(m) = pl.and_then(|p| p.get("message")).and_then(|m| m.as_str()) {
-                    // IDE-launched Codex wraps the real ask under this marker,
-                    // after an "## Open tabs:" context dump.
-                    let ask = m
-                        .rsplit_once("## My request for Codex:")
-                        .map(|(_, a)| a)
-                        .unwrap_or(m);
-                    if let Some(c) = clean_prompt(ask) {
-                        return Some(truncate(&c));
-                    }
-                }
+        let payload = &v["payload"];
+        let text = if v["type"] == "event_msg" && payload["type"] == "user_message" {
+            payload["message"].as_str().map(str::to_string)
+        } else if v["type"] == "response_item" && payload["role"] == "user" {
+            // Paginated Codex rollouts omit user_message events, retaining the
+            // input_text blocks instead. Ignore image and tool-result blocks.
+            payload["content"].as_array().map(|blocks| {
+                blocks.iter().filter(|block| block["type"] == "input_text")
+                    .filter_map(|block| block["text"].as_str()).collect::<Vec<_>>().join(" ")
+            })
+        } else { None };
+        if let Some(text) = text {
+            let text = strip_tag_blocks(&text, &["image"]);
+            // IDE-launched Codex wraps the real ask under this marker.
+            let ask = text.rsplit_once("## My request for Codex:").map(|(_, ask)| ask).unwrap_or(&text);
+            if let Some(prompt) = clean_prompt(ask) {
+                return Some(truncate(&prompt));
             }
         }
     }
     None
-}
-
-fn codex_meta_cwd(file: &Path) -> Option<String> {
-    // session_meta is the first line.
-    let first = read_lines(file)?.next()?;
-    let v: Value = serde_json::from_str(&first).ok()?;
-    v.get("payload")?
-        .get("cwd")?
-        .as_str()
-        .map(|s| s.to_string())
 }
 
 // ─── Gemini CLI ───

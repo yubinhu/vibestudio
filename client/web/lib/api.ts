@@ -1052,13 +1052,16 @@ export interface TermSession {
    *  ("0" until the first). The rail compares it against a per-session "last
    *  viewed" mark for the unread dot — so the dot means "finished a turn". */
   bellAt: string;
-  /** A short human title read server-side from the agent's own session store
-   *  (Claude ai-title, Codex/Gemini/Cursor first prompt). Absent when the agent
-   *  has no readable session yet — callers fall back to the cwd. */
+  /** A short title read server-side from the agent's own session store,
+   *  preferring its saved title over a first-prompt fallback. Absent when the
+   *  agent has no readable session yet — callers fall back to the label. */
   title?: string;
-  /** The agent session id forced at launch (`claude --session-id`), used
-   *  server-side to map the terminal to its own transcript. Empty/absent for
-   *  shells, resumed, and pre-existing sessions. */
+  /** User's display title saved by VibeStudio on the session's host. The
+   *  agent's automatic title remains available separately in `title`. */
+  customTitle?: string | null;
+  /** The agent session id forced at launch (Claude) or found from the live
+   *  process (Codex), used to map the terminal to its own transcript.
+   *  Empty/absent when no exact session association is available. */
   sessionId?: string;
   /** Absent on older servers; those retain the terminal-bell fallback. */
   attention?: SessionAttention;
@@ -1183,6 +1186,14 @@ export const mineContinue = () => http<{ terminalId: string }>("POST", "mine/con
 export const terminalAgents = () => http<AgentOption[]>("GET", "terminal/agents");
 export const terminalList = () => http<TermSession[]>("GET", "terminal/list");
 export const terminalCreate = (a: CreateTermArgs) => http<TermSession>("POST", "terminal/create", { ...a });
+/** Set a display title, or restore the automatic title with null. */
+export const terminalRename = (id: string, title: string | null) =>
+  http<{ customTitle: string | null; title?: string; savedIn: "agent" | "vibestudio" }>("POST", "terminal/rename", { id, title }).catch((error: unknown) => {
+    if (error instanceof Error && "status" in error && error.status === 404) {
+      throw new Error("Renaming sessions requires a newer VibeStudio server on this host. Update its host service and try again.", { cause: error });
+    }
+    throw error;
+  });
 export const terminalKill = (id: string) =>
   http<{ ok: boolean }>("POST", "terminal/kill", { id }).then(() => {});
 

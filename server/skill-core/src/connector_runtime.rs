@@ -1,5 +1,6 @@
-//! Explicit, bounded connector runtime checks. No model turn is started and no
-//! connector tool is called. The agent owns authentication and MCP startup.
+//! Explicit, bounded agent runtime operations: connector checks and Codex thread
+//! renaming. No model turn is started and no connector tool is called. The agent
+//! owns authentication and MCP startup.
 //!
 //! Protocol references (also checked against installed CLI schemas):
 //! https://learn.chatgpt.com/docs/app-server#apps-connectors
@@ -90,6 +91,23 @@ pub fn discover(project: Option<&str>) -> ConnectorInventory {
     inventory
 }
 
+/// Rename Codex's persisted thread through its own API, without resuming it.
+/// Callers can keep a VibeStudio-owned name when the installed runtime cannot
+/// perform the operation. No raw runtime output is included in the error.
+pub fn rename_codex_thread(thread_id: &str, name: &str) -> Result<(), String> {
+    if thread_id.trim().is_empty() || name.trim().is_empty() {
+        return Err("A Codex thread ID and a nonempty name are required.".into());
+    }
+    #[cfg(unix)]
+    {
+        unix::rename_codex_thread(thread_id, name)
+    }
+    #[cfg(not(unix))]
+    {
+        Err("Native Codex thread renaming is available on macOS and Linux.".into())
+    }
+}
+
 fn source(
     id: &str,
     agent: Option<&str>,
@@ -125,6 +143,7 @@ mod unix {
     use std::time::{Duration, Instant};
 
     const CHECK_TIMEOUT: Duration = Duration::from_secs(18);
+    const RENAME_TIMEOUT: Duration = Duration::from_secs(5);
     const MAX_OUTPUT: usize = 8 * 1024 * 1024;
     const MAX_LINE: usize = 1024 * 1024;
     const MAX_PAGES: usize = 20;
@@ -481,6 +500,50 @@ mod unix {
         Err(Failure::Unsupported)
     }
 
+    pub(super) fn rename_codex_thread(thread_id: &str, name: &str) -> Result<(), String> {
+        let cwd = dirs::home_dir()
+            .ok_or_else(|| "The server user's home directory is unavailable.".to_string())?;
+        let deadline = Instant::now() + RENAME_TIMEOUT;
+        let outcome = resolve_runtime(ConnectorRuntime::Codex, &cwd, deadline).and_then(|binary| {
+            let mut command = hidden_command(binary);
+            command.arg("app-server").current_dir(cwd);
+            codex_set_name(command, deadline, thread_id, name)
+        });
+        outcome.map_err(|error| {
+            match error {
+                Failure::Timeout => "Codex did not finish renaming the thread within five seconds.",
+                Failure::Unsupported => "The installed Codex runtime does not support thread renaming.",
+                Failure::OutputLimit => "Codex returned too much output while renaming the thread.",
+                Failure::Exited => "Codex exited before confirming the thread rename.",
+                Failure::Protocol => "Codex could not confirm the thread rename.",
+                Failure::Io => "The Codex runtime could not be started or read on this server.",
+            }
+            .to_string()
+        })
+    }
+
+    fn codex_set_name(
+        command: Command,
+        deadline: Instant,
+        thread_id: &str,
+        name: &str,
+    ) -> Result<(), Failure> {
+        let mut session = Session::start(command, deadline)?;
+        session.rpc(1, "initialize", json!({"clientInfo":{"name":"vibestudio_session_names","title":"VibeStudio Session Names","version":env!("CARGO_PKG_VERSION")}}))?;
+        session.send(&json!({"method":"initialized","params":{}}))?;
+        // This method accepts a persisted rollout, so never attach or resume a
+        // live terminal's thread and never create a turn just to rename it.
+        let response = session.rpc(
+            2,
+            "thread/name/set",
+            json!({"threadId":thread_id,"name":name}),
+        )?;
+        if !response.is_object() {
+            return Err(Failure::Protocol);
+        }
+        Ok(())
+    }
+
     fn codex(
         binary: &Path,
         cwd: &Path,
@@ -825,6 +888,109 @@ mod unix {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        struct RenameRuntime {
+            root: PathBuf,
+        }
+
+        impl RenameRuntime {
+            fn new() -> Self {
+                let nonce = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let root = std::env::temp_dir().join(format!(
+                    "vibestudio-codex-rename-{}-{nonce}",
+                    std::process::id()
+                ));
+                std::fs::create_dir(&root).unwrap();
+                Self { root }
+            }
+
+            fn command(&self, reply: Value) -> Command {
+                let mut command = hidden_command("/bin/sh");
+                command
+                    .args([
+                        "-c",
+                        r#"while IFS= read -r request; do
+    printf '%s\n' "$request" >> "$1"
+    case "$request" in
+        *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+        *'"method":"thread/name/set"'*) printf '%s\n' "$2" ;;
+    esac
+done"#,
+                        "codex-rename-test",
+                    ])
+                    .arg(self.root.join("requests.jsonl"))
+                    .arg(reply.to_string());
+                command
+            }
+
+            fn requests(&self) -> Vec<Value> {
+                std::fs::read_to_string(self.root.join("requests.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect()
+            }
+        }
+
+        impl Drop for RenameRuntime {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+
+        #[test]
+        fn codex_rename_updates_exact_thread_without_resuming_or_starting_turn() {
+            let runtime = RenameRuntime::new();
+            let name = "Fix \"quoted\" path \\ 日本語";
+            assert_eq!(
+                codex_set_name(
+                    runtime.command(json!({"id":2,"result":{}})),
+                    Instant::now() + Duration::from_secs(3),
+                    "thread-exact-id",
+                    name,
+                ),
+                Ok(())
+            );
+            let requests = runtime.requests();
+            assert_eq!(requests.len(), 3);
+            assert_eq!(requests[0]["method"], "initialize");
+            assert_eq!(requests[1]["method"], "initialized");
+            assert_eq!(requests[2], json!({
+                "id":2,
+                "method":"thread/name/set",
+                "params":{"threadId":"thread-exact-id","name":name}
+            }));
+        }
+
+        #[test]
+        fn codex_rename_requires_confirmation_and_rejects_unsupported_runtime() {
+            for (reply, expected) in [
+                (
+                    json!({"id":2,"error":{"code":-32601,"message":"SECRET"}}),
+                    Failure::Unsupported,
+                ),
+                (json!({"id":2,"result":null}), Failure::Protocol),
+                (
+                    json!({"id":7,"method":"item/tool/requestUserInput","params":{}}),
+                    Failure::Unsupported,
+                ),
+            ] {
+                let runtime = RenameRuntime::new();
+                assert_eq!(
+                    codex_set_name(
+                        runtime.command(reply),
+                        Instant::now() + Duration::from_secs(3),
+                        "thread-exact-id",
+                        "New title",
+                    ),
+                    Err(expected)
+                );
+                assert_eq!(runtime.requests().len(), 3);
+            }
+        }
 
         #[test]
         fn catalog_apps_are_not_connections_and_access_does_not_prove_callable() {

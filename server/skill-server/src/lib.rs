@@ -1283,11 +1283,18 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
         (Method::Get, "/api/terminal/agents") => json_reply(Ok(skill_term::detect_agents())),
         #[cfg(feature = "local-backend")]
         (Method::Get, "/api/terminal/list") => json_reply(skill_term::list_sessions().map(|list| {
+            let custom_titles = skill_core::session_names::get().unwrap_or_else(|error| {
+                log::warn!("Could not read custom session names: {error}");
+                Default::default()
+            });
             // Enrich each session with a human title read from the agent's own
             // session store (falls back to the cwd client-side when absent).
             list.into_iter()
                 .map(|s| {
                     let mut v = serde_json::to_value(&s).unwrap_or_default();
+                    if let Some(title) = custom_titles.get(&s.id) {
+                        v["customTitle"] = json!(title);
+                    }
                     if let Some(attention) = events::attention_for(&s.id, &s.agent) {
                         v["attention"] = json!(attention);
                     }
@@ -1305,6 +1312,45 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
                 })
                 .collect::<Vec<_>>()
         })),
+        #[cfg(feature = "local-backend")]
+        (Method::Post, "/api/terminal/rename") => {
+            let result = (|| {
+                let title = match v.get("title") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(title)) => Some(title.as_str()),
+                    _ => return Err("Session name must be a string, or null to use the automatic name.".into()),
+                };
+                let title = skill_core::session_names::normalize(title)?;
+                let id = s("id");
+                let sessions = skill_term::list_sessions_checked()
+                    .ok_or("Could not check whether the session is still available.")?;
+                let session = sessions.iter().find(|session| session.id == id)
+                    .ok_or("This session is no longer available.")?;
+                if session.agent == "codex" {
+                    if let Some(title) = &title {
+                        // Resolving the exact native UUID requires process inspection;
+                        // ordinary existence checks and other agents do not need it.
+                        if let Ok(sessions) = skill_term::list_sessions() {
+                            if let Some(session) = sessions.iter().find(|session| session.id == id) {
+                                let thread_id = session.session_id.trim();
+                                if !thread_id.is_empty() {
+                                    match skill_core::connector_runtime::rename_codex_thread(thread_id, title) {
+                                        Ok(()) => {
+                                            skill_core::session_names::set(&id, None)?;
+                                            return Ok(json!({ "customTitle": null, "title": title, "savedIn": "agent" }));
+                                        }
+                                        Err(error) => log::warn!("Could not rename the Codex thread; saving a VibeStudio name instead: {error}"),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let title = skill_core::session_names::set(&id, title.as_deref())?;
+                Ok(json!({ "customTitle": title, "savedIn": "vibestudio" }))
+            })();
+            json_reply(result)
+        }
         #[cfg(feature = "local-backend")]
         (Method::Post, "/api/terminal/create") => {
             let u16f = |k: &str, d: u16| v.get(k).and_then(|x| x.as_u64()).map(|n| n as u16).unwrap_or(d);
@@ -1342,7 +1388,13 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
         }
         #[cfg(feature = "local-backend")]
         (Method::Post, "/api/terminal/kill") => {
-            json_reply(skill_term::kill_session(&s("id")).map(|_| json!({ "ok": true })))
+            let id = s("id");
+            json_reply(skill_term::kill_session(&id).map(|_| {
+                if let Err(error) = skill_core::session_names::set(&id, None) {
+                    log::warn!("Could not remove the closed session's custom name: {error}");
+                }
+                json!({ "ok": true })
+            }))
         }
         #[cfg(feature = "local-backend")]
         (Method::Post, "/api/terminal/resolve-link") => {
