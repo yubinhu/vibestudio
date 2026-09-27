@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Privacy Policy — VibeStudio</title>
-<meta name="description" content="Privacy policy for the VibeStudio desktop and iOS apps. No accounts, no analytics, no tracking, no data collected.">
+<meta name="description" content="Privacy policy for the VibeStudio desktop and iOS apps. No VibeStudio accounts, analytics, or tracking; details of local storage and optional service connections.">
 <meta name="theme-color" content="#FBFBF9" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#101C1E" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="assets/vibestudio-logo.svg" type="image/svg+xml">
@@ -21,30 +21,33 @@
 
   <main>
     <h1>Privacy Policy</h1>
-    <p class="meta">Effective July 10, 2026 &middot; Applies to the VibeStudio desktop (macOS) and iOS apps</p>
+    <p class="meta">Effective September 19, 2026 &middot; Applies to the VibeStudio desktop and iOS apps</p>
 
     <div class="summary">
-      <p><strong>The short version:</strong> VibeStudio does not collect any data about you. There are no accounts, no analytics, and no tracking. Your devices talk directly to your own computers — nothing passes through servers we operate, because we don't operate any.</p>
+      <p><strong>The short version:</strong> VibeStudio does not collect your workspace content or usage data. There are no VibeStudio accounts, analytics, or tracking. Your devices connect directly to your own computers without a VibeStudio relay. Downloads and optional integrations contact third-party services as described below.</p>
     </div>
 
     <h2>What we collect</h2>
-    <p>Nothing. The apps have no accounts to sign up for, contain no analytics or tracking code, and do not collect or transmit any personal data, usage data, or content to us or to anyone on our behalf.</p>
+    <p>The apps have no VibeStudio accounts to sign up for, contain no analytics or tracking code, and do not collect or transmit personal data, usage data, or workspace content to us or to anyone on our behalf. Information you choose to send for support and Apple's opt-in diagnostics are described below.</p>
 
-    <h2>SSH keys and managed secrets</h2>
+    <h2 id="ssh-keys">SSH keys and managed secrets</h2>
     <p>The iOS app generates SSH key pairs on your device. The private key is stored in the iOS Keychain, with an app-private file fallback if the native store cannot initialize. It never leaves your device — it is not backed up to us, synced through us, or visible to us in any way. Only the <em>public</em> key is shown so you can install it on your own computers.</p>
     <p>Secrets you manage for coding agents are stored on the active computer in local JSON and shell environment files. On macOS and Linux, these files are restricted to your user account. Agents load these values into their environment when needed; VibeStudio does not store them in the macOS Keychain or send them to us.</p>
 
     <h2>Where your data goes</h2>
-    <p>When you use VibeStudio, connections go directly from your device to computers <em>you</em> own and control, over SSH. Your code, terminal sessions, skills, and agent conversations travel only between your own devices. We have no server in the middle and no access to any of it.</p>
+    <p>The iOS app connects directly to computers <em>you</em> own and control over SSH. Desktop clients use the local host or a selected SSH or WSL connection. We have no relay in the middle of these workspace connections and no access to their contents.</p>
+    <p>Browser phone access uses HTTPS to your host through your Tailscale network. This path depends on your Tailscale configuration and access controls; it does not use a VibeStudio relay.</p>
+    <p>Agents you run, GitHub publishing or synchronization, and connector services may send data to their respective providers according to your configuration and actions. For example, a cloud-backed coding agent may send prompts and code to its model provider. Those services operate under their own accounts and privacy policies; their traffic does not pass through VibeStudio-operated servers.</p>
+    <p>If you enable browser push notifications, your host sends encrypted notification payloads through the browser's push provider. A notification can include the session label and a preview of terminal output. VibeStudio does not operate that push service. Native local notifications are generated on your device.</p>
 
-    <h2>Downloads from GitHub</h2>
-    <p>The first time the app connects to one of your computers, it downloads its small server component from GitHub Releases. That download is an ordinary HTTPS request to GitHub, so GitHub's standard server logs apply (for example, the IP address making the request). That request is covered by <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>, not ours — we receive nothing from it.</p>
+    <h2>Updates and downloads</h2>
+    <p>VibeStudio checks GitHub Releases for updates and downloads application or server packages when needed. The optional on-device model uses model files downloaded from Hugging Face; model inference then runs on the active computer. These downloads do not upload workspace files, but ordinary HTTPS request information, such as the requesting IP address, is visible to the download provider. GitHub requests are covered by <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>, and model downloads by <a href="https://huggingface.co/privacy">Hugging Face's privacy policy</a>.</p>
 
-    <h2>Crash reports</h2>
-    <p>The only diagnostics we can ever see come through Apple's own opt-in mechanisms: TestFlight feedback and the App Store's "Share with App Developers" crash reporting. Those are controlled entirely by your settings with Apple, and what we receive is what Apple provides — anonymized crash logs, if you have opted in.</p>
+    <h2>Crash reports and support</h2>
+    <p>VibeStudio does not automatically send us diagnostic logs. We may receive TestFlight feedback and App Store crash reports through Apple's opt-in mechanisms, controlled by your settings with Apple. We also receive information you choose to include in an email, issue, or other support request.</p>
 
     <h2>Children</h2>
-    <p>Because the apps collect no data at all, this applies equally to everyone, including children.</p>
+    <p>The apps' no-analytics and no-tracking commitments apply equally to everyone, including children.</p>
 
     <h2>Changes to this policy</h2>
     <p>If the apps ever change in a way that affects your privacy, we will update this page and change the effective date at the top.</p>

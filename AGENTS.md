@@ -26,24 +26,36 @@ feature = logic in `server/skill-core` → an `/api/<name>` route in
 `server/skill-server` → one function in `client/web/lib/api.ts`.
 
 **Read [design.md](design.md) before adding a feature** — it is the authoritative
-architecture doc (the HTTP-only rationale, the feature recipe, the dev-workflow
-table, and the on-device commit-message reference example).
+architecture doc (the HTTP-only rationale, feature recipe, runtime contracts,
+and on-device commit-message reference example).
 
-## Commands
+## Development
 
-- `npm run dev` — native desktop (`tauri dev`); the shell ensures the detached
-  host and starts its switchboard on `:8767` (Vite native mode), so no separate
-  backend is needed. Quitting the desktop leaves the host and agents running.
-- `npm run dev:vite` — the SPA only, in a browser (`:1420`); pair with
-  `cargo run -p skill-server` (`:8765`), which the Vite `/api` proxy targets.
-- `npm run build` — `tsc --noEmit && vite build` (the SPA lives in `client/web`,
-  built to `./dist` at the repo root).
-- `npm run lint` — ESLint.
-- `npm test` — release manifest and frontend workspace state tests.
-- **Mobile UX in a browser (no Mac/simulator):** `cargo run -p skill-server
-  --features russh-transport -- --mobile-dev` + `npm run dev:vite`, then a phone
-  viewport in the browser device toolbar. Mobile mode is server-detected (the
-  server answering `/api/remote/profiles`), not device-detected, so the full
-  phone experience runs on Linux with hot reload. See [plans/mobile-ux.md](plans/mobile-ux.md).
+Use the [development guide](docs/development.md) for commands, ports, mobile
+browser development and validation. Integration checks must follow its
+[isolated-backend procedure](docs/development.md#isolated-backend); leave the live
+host, phone-access mapping and tmux agents running.
 
 Heed deprecation notices and follow the existing patterns in the relevant crate/module.
+
+## Documentation maintenance
+
+Each detailed fact has one canonical home. Update that home and link to it
+elsewhere; short summaries may repeat the main idea. Executable definitions own
+exact values (commands, tokens, asset names); prose explains their meaning and
+links to source. Keep plans explicit about proposals and dated research, separate
+from implemented behavior. Ask before editing README files.
+
+| Topic | Canonical home |
+| --- | --- |
+| Architecture, host compatibility, updates and connection lifecycle | [design.md](design.md) |
+| Development modes, ports and validation | [docs/development.md](docs/development.md) |
+| Release process and signing | [RELEASING.md](RELEASING.md) |
+| Workspace preferences and history | [docs/persistence.md](docs/persistence.md) |
+| Connector discovery and status | [docs/connectors.md](docs/connectors.md) |
+| Terminal link interaction and resolution | [docs/terminal-links.md](docs/terminal-links.md) |
+| Visual rules and asset workflow | [design/visual-system.md](design/visual-system.md) |
+| User setup/help and data handling | [support](docs/support.html), [privacy](docs/privacy.html) |
+
+Workflow-specific guides (such as the Home UI lab and native simulator harness)
+remain beside their tools; the development and release guides link to them.

@@ -1,5 +1,8 @@
 # Connector discovery
 
+This document owns the connector inventory contract, coverage, and extension
+points. The [architecture](../design.md) describes the shared HTTP transport.
+
 Connectors brings together service connections and stored API keys/secrets used
 by agents. Service availability is a list of observations from configuration or
 an authenticated runtime. Secret storage keeps its own API and management
@@ -67,8 +70,9 @@ configuration on the active server. `POST /api/connectors/check` with optional
 checks. Both are ordinary proxied routes, so remote/phone clients see the remote
 host's inventory.
 
-`skill-core::connectors` owns the common DTO and configuration readers;
-`skill-core::connector_runtime` owns bounded runtime probes. `AgentDef` declares
+[connectors.rs](../server/skill-core/src/connectors.rs) owns the common DTO and
+configuration readers; [connector_runtime.rs](../server/skill-core/src/connector_runtime.rs)
+owns bounded runtime probes. `AgentDef` in [agents.rs](../server/skill-core/src/agents.rs) declares
 `connector_discovery` and `connector_runtime` capabilities. A simple JSON-based
 agent can use the declarative JSON adapter; a different format or protocol gets
 an adapter implementation. The registry supplies labels and client variants to
@@ -88,6 +92,16 @@ errors use fixed messages rather than including a fragment of a secret-bearing
 configuration file. Passive scans never execute configured commands. Explicit
 runtime checks may initialize an agent and its enabled MCP servers; probes have
 time/output limits and clean up the subprocesses they launch.
+
+The [frontend inventory store](../client/web/lib/connectors.ts) owns cached runtime
+evidence and project isolation. [CredentialsRoute.tsx](../client/web/pages/credentials/CredentialsRoute.tsx)
+renders the overview and management controls. Managed authentication and gateway
+behavior live in [connections.rs](../server/skill-core/src/connections.rs);
+API-key storage lives in [secrets.rs](../server/skill-core/src/secrets.rs).
+
+For verification, see [frontend connector tests](../scripts/connectors.test.mjs),
+[HTTP connector tests](../server/skill-server/tests/connectors_smoke.rs), and the
+shared [validation guidance](development.md#validation).
 
 ## Documentation used
 

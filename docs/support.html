@@ -28,10 +28,8 @@
     <h2>Getting started on iOS</h2>
     <ol class="steps">
       <li><strong>Add a connection.</strong> Tap <strong>+</strong> and enter your computer's host (name or IP), port (usually <code>22</code>), and your username on that machine.</li>
-      <li><strong>Generate a key.</strong> VibeStudio creates an SSH key pair on your phone. The private key stays in the iOS Keychain; you only ever handle the public key.</li>
-      <li><strong>Install the public key.</strong> Copy the public key and append it to <code>~/.ssh/authorized_keys</code> on your computer, for the user you entered in step 1. For example, on the computer:
-        <pre><code>echo 'PASTE_PUBLIC_KEY_HERE' &gt;&gt; ~/.ssh/authorized_keys</code></pre>
-      </li>
+      <li><strong>Generate a key.</strong> VibeStudio creates an SSH key pair on your phone. You only handle the public key; see <a href="privacy.html#ssh-keys">how private keys are stored</a>.</li>
+      <li><strong>Install the public key.</strong> Tap <strong>Copy commands</strong>, then run those commands in a terminal on your computer as the user you entered in step 1. They create the SSH directory if needed, add your public key, and set the required permissions while preserving existing keys. If you already manage authorized keys yourself, use <strong>Copy public key</strong> instead.</li>
       <li><strong>Save</strong> the connection.</li>
       <li><strong>Connect.</strong> VibeStudio signs in over SSH, sets up its server on the machine, and you're ready to work.</li>
     </ol>
@@ -45,10 +43,10 @@
     <p>The connection reached the machine, but the key isn't accepted — almost always because the public key isn't in <code>~/.ssh/authorized_keys</code> for <em>that</em> user. Double-check you added it under the same username you entered in the app, and that the file wasn't mangled when pasting (each key is a single line).</p>
 
     <h3>What runs on my computer?</h3>
-    <p>A small server that VibeStudio installs into <code>~/.vibestudio</code>. It runs only while you're connected and exits when you disconnect. You can remove it any time by deleting that folder.</p>
+    <p>VibeStudio installs a server on your computer and runs it as a persistent host service. Disconnecting or quitting the app leaves the host and your agent sessions running, ready for your next connection. Ending an agent session is a separate action in its session controls. The <a href="https://github.com/yubinhu/vibestudio/blob/master/design.md#durable-host-lifecycle--open-on-your-phone">host lifecycle documentation</a> explains installation, shutdown, and recovery.</p>
 
     <h3>Does my code pass through your servers?</h3>
-    <p>No. Your phone connects directly to your computer over SSH. There is no relay, no cloud, and no account — see the <a href="privacy.html">privacy policy</a>.</p>
+    <p>No. Your phone connects directly to your computer over SSH, without a VibeStudio relay or account. Optional integrations contact the services you choose; see the <a href="privacy.html">privacy policy</a>.</p>
 
     <h2>Get help</h2>
     <p>Found a bug or stuck on something? Open an issue on <a href="https://github.com/yubinhu/vibestudio/issues">GitHub</a> or email <a href="mailto:harvey@generalagency.ai">harvey@generalagency.ai</a>.</p>

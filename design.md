@@ -32,9 +32,11 @@ transports silently diverge — a feature wired only through `invoke` broke brow
 
 - **Streaming** = SSE (`request.into_writer()` + chunked `data:`, see `stream_terminal`),
   consumed via `EventSource`. Rides a plain socket and an SSH tunnel alike — no duplex channel.
-- **No native-only capabilities.** A native OS dialog only sees the *client* machine, breaking
-  the remote model. Browse the (possibly remote) fs via `/api/fs/list-dir` + the in-app
+- **Workspace operations use the active server.** A native OS file dialog only sees the
+  *client* machine. Browse the (possibly remote) fs via `/api/fs/list-dir` + the in-app
   `FolderPicker`; import via `/api/import/zip`; export via `/api/download/skill`.
+  Client capabilities such as native notifications and editor launch still use pinned-local
+  HTTP routes, as described in the connection manager below.
 
 *Skill packaging (`.skill`):* export emits a **`.skill`** — a deflate zip with one top-level
 `name/` folder, the shareable install unit (import accepts `.skill` and `.zip` alike; a `.skill`
@@ -59,10 +61,12 @@ subscription OAuth; opencode last, BYO-key); `engine.rs` (llama.cpp) is opt-in o
 Hash router (`createHashRouter`, Tauri webview) with one persistent shell + lazy pages.
 **The shell never unmounts; each page mounts its own `NavBar`** (the shell does not).
 
-- **Shell** (`app/AppShell.tsx`) globally mounts only: the `<Outlet>` (hidden via
-  `display:none` on `/sessions`, not unmounted), an always-mounted `SessionsHost` (live ptys
-  survive nav), and `UpdateBanner`. No `StrictMode` (would double-attach pty/xterm). Only guard:
-  `useDiscardBlocker`, fires *only* after an autosave failure — no auth gate.
+- **Shell** ([AppShell.tsx](client/web/app/AppShell.tsx)) keeps the `<Outlet>` (hidden via
+  `display:none` on `/sessions`) and `SessionsHost` mounted across workspace navigation.
+  It also owns update/phone UI, the mobile connect gate and the recovery overlay.
+  `useDiscardBlocker` protects edits after an autosave failure. No `StrictMode`
+  (would double-attach pty/xterm). Native device access is governed by the
+  [iPhone app lock](#native-iphone-app-lock).
 - **Routes:** `/` Home · `/connectors` · `/mining` · `/sessions` (element `null`; UI is
   `SessionsHost`) · `/skills/:root` (children: index = SKILL.md form, `file/*` = file pane,
   `commit/:sha` = worktree diff only) · `/markdown/:path` (standalone editor) · `*` → `/`.
@@ -75,23 +79,15 @@ Hash router (`createHashRouter`, Tauri webview) with one persistent shell + lazy
   (`studioLayout.ts`), not per-skill. (The "Versions panel" below = `SourceControl.tsx`.)
 - **Design system** ([visual guide](design/visual-system.md), `globals.css`): Tailwind v4,
   CSS variables + `@theme inline`, class-based dark (`.dark`, set pre-paint).
-  **Lime + ink identity:** `--action` / `--action-fg` pair for filled primary controls;
-  `--accent` for readable links, selected states and focus rings; semantic colors
-  for status. The full-color mark comes from `design/vibestudio-logo.svg` through
-  `VibeStudioMark`. Primitives: one `Modal`, `btn{Primary,Ghost,Danger}` (one filled
-  primary per row), `Badge` via `color-mix`, `useConfirm` (`window.confirm` is a no-op
-  in the `wry` webview). The app name is "VibeStudio" (one word).
+  The visual guide owns identity, token roles, primitives and asset generation.
 
 ## Workspace defaults and history
 
 Paths and launch settings belong to the **active server**, reached over ordinary
-proxied `/api/preferences*` and `/api/recents/*` routes. `preferences.json` remembers
-picker directories per workflow and session defaults per agent, including the last
-agent; `recents.json` keeps the last 30 successful skill/standalone Markdown opens.
-These JSON stores use file locks and atomic replacement across server processes.
-Theme and panel layout remain client-side. Home shows the four most recent items
-as compact shortcuts; the header's Open action can browse any skill or Markdown file.
-See [the persistence audit](docs/persistence.md).
+proxied preference and recent-history routes; visual layout belongs to the client.
+Home provides recent-work shortcuts, while Open can browse any skill or Markdown
+file. [Workspace persistence](docs/persistence.md) owns storage locations, limits,
+picker/default semantics, migration and write guarantees.
 
 ## Skill versioning: tracked by default
 
@@ -143,8 +139,8 @@ with the **per-skill git** as the eventual merge + recovery engine. Wordless aut
 *asset* here: each successful write refreshes the baseline, so the merge base stays fresh and
 conflicts stay rare.
 
-- **Optimistic-concurrency tag.** `read-file` returns an `etag` (sha256 prefix of the bytes);
-  the editor echoes it on `write-file` as `expectedEtag`. `write_file_impl` is a
+- **Optimistic-concurrency tag.** `/api/fs/read` returns an `etag` (sha256 prefix of the bytes);
+  the editor echoes it on `/api/fs/write` as `expectedEtag`. `write_file_impl` is a
   **compare-and-swap**: if disk no longer matches the tag it returns `WriteOutcome::Stale`
   (carrying the current disk bytes) **instead of overwriting**. A `None` tag = legacy
   unconditional overwrite (callers not yet tracking a baseline, e.g. `saveSkillMd`).
@@ -156,10 +152,12 @@ conflicts stay rare.
   own terminal, which never blurs the window. **No fs-watcher** — a poll rides the HTTP-only
   transport identically local or over the SSH tunnel; the CAS, not the poll, is the no-clobber
   guarantee.
-- **Dirty buffer → conflict.** An external change while the buffer has unsaved edits (caught by
-  the poll, or by a stale autosave's CAS) surfaces a **non-blocking inline banner** (Use disk /
-  Keep mine), never a modal (autosave is wordless and fires constantly, so it can't pop a dialog
-  per write) and never `window.confirm`. The user's edits are kept either way.
+- **Dirty buffer → conflict.** `FilePane` and `SkillDocument` surface a **non-blocking inline
+  banner** (Use disk / Keep mine) when polling or a stale autosave detects a conflict.
+  [MarkdownRoute](client/web/pages/markdown/MarkdownRoute.tsx) preserves unsaved text and
+  reports the stale-save error, asking the user to reopen for the latest disk version;
+  it does not yet provide those reconciliation actions. No editor silently overwrites
+  the changed disk version.
 - **Implemented:** CAS + etag end-to-end; the `useExternalFileSync` stat-poll; reconcile in
   `FilePane`, `SkillDocument` (the SKILL.md form — CAS + clean reload + banner), and
   `MarkdownRoute`. **Deferred (slice 2):** `git merge-file` 3-way auto-merge of *disjoint* edits
@@ -168,22 +166,10 @@ conflicts stay rare.
 
 ## Dev workflows
 
-| Goal | Backend | Frontend | Open |
-|------|---------|----------|------|
-| Browser, local backend | `cargo run -p skill-server` (`:8765`) | `npm run dev:vite` (`:1420`) | **`localhost:1420`** — Vite proxies `/api` → 8765 |
-| Browser/desktop, **remote** backend | skill-server on the remote host | `VITE_API_TARGET=http://<remote>:8765 npm run dev:vite` | `localhost:1420` |
-| Native desktop | in-process switchboard + detached local host service | `npm run tauri dev` | the native window |
-| Production / remote | `npm run build` then run skill-server | (served by skill-server) | skill-server's port (UI + API, one origin) |
-| **Browser-only / phone** (tailnet) | skill-server on `127.0.0.1:8765` + `tailscale serve --bg 8765` | (served by skill-server) | `https://<machine>.<tailnet>.ts.net` |
-
-The Vite `/api` proxy (`vite.config.ts`, target via `VITE_API_TARGET`) defaults to `:8765`.
-`tauri dev` starts Vite with `--mode native`, which targets its switchboard on `:8767`,
-and prefers `:8766` for a new host service. This leaves an existing production host on
-`:8765` available while native dev runs. If overriding `VIBESTUDIO_PORT`, set
-`VITE_API_TARGET` to the matching switchboard URL. Browser mobile-dev keeps `:8765`;
-native iOS uses its own ephemeral loopback origin rather than Vite. Production
-prefers `:8765` for the host and uses an ephemeral switchboard port. Existing host records
-take precedence: dev, desktop and SSH accessors share the same per-user service.
+The [development guide](docs/development.md) owns mode selection, port defaults,
+browser/mobile setup and validation. Use its
+[isolated backend](docs/development.md#isolated-backend) for integration checks.
+Release requirements belong in [RELEASING.md](RELEASING.md).
 
 ## Durable host lifecycle + "Open on your phone"
 
@@ -196,20 +182,26 @@ stops that service; sessions remain in tmux until closed through their session c
 ensures one detached worker and prints its ready record. Desktop uses its own executable's
 `--host-service` entry point before initializing Tauri. Startup and lifetime file locks
 serialize launches; `host-service.json` records protocol, instance ID, PID, port and version.
+The worker has no remote-switching capability. Its lifetime is independent of SSH/stdin
+and the desktop window. `--stop-host-service` or `POST /api/host-service/stop` stops
+an instance after identity verification. This is a detached process, not an OS login/boot
+service: a machine restart requires starting an accessor or `skill-server --daemon` again.
+An explicit Stop records its intent so other clients' automatic recovery cannot restart
+the service. A new connection, Retry, or explicit daemon launch can start it again.
+
+### Host compatibility
+
 Reuse verifies the record against loopback `/api/health`, checks the service protocol,
-and requires the actual server release to be at least the client's version. A newer
-protocol-compatible worker can serve an older client; an older worker cannot serve a
+and requires the actual server release to be at least the client's version. For remote
+provisioning, `VIBESTUDIO_SERVER_VERSION` can raise this minimum, never lower it;
+[server_version.rs](server/skill-server/src/server_version.rs) owns version comparison.
+A newer protocol-compatible worker can serve an older client; an older worker cannot serve a
 newer client merely because its protocol matches. Explicit startup/connection or Retry
 can replace an older worker after validating the replacement executable. Only the
 identity-verified HTTP host is stopped; tmux processes continue running. Background
 recovery reports the version mismatch and waits for Retry instead of performing an
 upgrade. A failed replacement startup returns an error so Retry can start it again;
 legacy workers do not provide enough launch metadata for universal automatic rollback.
-The worker has no remote-switching capability.
-Its lifetime is independent of SSH/stdin and the desktop window. `--stop-host-service` or
-`POST /api/host-service/stop` stops an instance after identity verification. This is a detached
-process, not an OS login/boot service: a machine restart requires starting an accessor or
-`skill-server --daemon` again.
 
 **Compatibility policy:** within a protocol version, newer servers must preserve the
 HTTP/JSON and SSE contracts used by older clients. Minor and patch releases must remain
@@ -220,11 +212,12 @@ mismatch fails before workspace requests are enabled and reports an actionable u
 error, leaving running agents intact. A major release number alone does not enforce this
 boundary, and a major release with compatible APIs may retain the existing protocol.
 
-An explicit Stop records its intent so other clients' automatic recovery cannot restart
-the service. A new connection, Retry, or explicit daemon launch can start it again.
+### Desktop updates
+
 Desktop updates download and verify first, then stop the local worker before replacing
-its executable and restart it through the new app. Installation failure restores the
-host; tmux agents are never terminated by the updater.
+its executable and restart it through the new app. If installation fails, the updater
+attempts to restore the host and reports any recovery failure. tmux agents are never
+terminated by the updater.
 
 The update button flushes pending editor changes before starting; a failed save leaves
 the editor open and reports the failure. While an update is in progress, persistent
@@ -241,6 +234,8 @@ external-editor launch). Its `LocalBackendControl` supplies the local worker tar
 off-thread health/recovery. A selected but unavailable host returns **503**, including on
 writes, instead of falling through to the switchboard's local filesystem.
 
+### Phone access
+
 **"Open on your phone" (`/api/phone/*`, `server/skill-server/src/phone.rs`) — the HUB is the
 server.** Remote dialog → *Open on your phone* → QR (the tray's item deep-links the same modal
 via `#/?phone=1`). `PhoneControl.enable()` fronts **the answering server** with the
@@ -248,8 +243,8 @@ via `#/?phone=1`). `PhoneControl.enable()` fronts **the answering server** with 
 URL + QR SVG. The phone routes are **ordinary routes — proxied like everything else**: switched
 onto a remote, the *remote's* PhoneControl answers, so the QR points at the remote itself and
 the phone reaches the stable machine directly — the client is an accessor, never a relay; it
-can sleep/shut down without costing the phone anything. (The desktop client itself always
-accesses remotes over SSH — reliability — never the tailnet.) Every loopback server carries a
+can sleep/shut down without costing the phone anything. (The desktop's remote workspace
+transport remains SSH or WSL; SSH may itself use a Tailscale address.) Every loopback server carries a
 PhoneControl, provisioned remotes included; remote launches are **tokenless** (a browser can't
 send a bearer; loopback + tailnet is the trust boundary, same as local). Guided failures describe the hub's
 machine: `operator` (one-time `tailscale set --operator`), `consent` (tailnet HTTPS approval
@@ -259,9 +254,7 @@ serve mapping persists in tailscaled, so a stable port lets it find the app on t
 so a changed host port can't leave a stale mapping (`status()` reports
 not-serving rather than a dead QR). `embed-ui` builds compile `dist/` into the binary
 (`include_dir`; `build.rs` re-runs on dist changes — without it a rebuild silently ships a
-stale SPA) so the standalone/headless binary serves the UI with no dist on disk. skill-term
-sets tmux `exit-empty off` (server-scoped) at session creation: backends come and go (dev +
-app share the tmux server), and the server must survive zero-session gaps.
+stale SPA) so the standalone/headless binary serves the UI with no dist on disk.
 
 **Browser-only constraints.** The SPA and API are root-absolute (Vite base `/`, `API_BASE=""`),
 so the server must sit at the origin root — no sub-path mounts. Tokens don't work from a plain
@@ -308,7 +301,10 @@ leave this optional device-access guard unset.
 ## Terminals: persistent by design
 
 Agent terminals are tmux sessions (`ass-*`); the backend is only a **bridge** (`tmux attach`
-in a PTY).
+in a PTY). `skill-term` sets tmux `exit-empty off` at session creation so the shared
+tmux server survives zero-session gaps. Link interaction belongs to xterm; the
+[terminal link contract](docs/terminal-links.md) owns detection, file resolution,
+preview/editor behavior and platform limitations.
 
 On touch devices, hold terminal text to select a word, keep dragging to extend
 the selection, then release for contextual Copy/Paste actions. A tap elsewhere
@@ -371,17 +367,24 @@ User edits go through `/api/terminal/rename`; the server uses Codex's native nam
 API when available and a host-owned override otherwise. Storage and reset behavior
 are specified in [session-title persistence](docs/persistence.md#session-titles).
 
+**History** reopens saved agent conversations in these same terminals. Native
+history discovery and exact-ID resume are capabilities in the agent registry;
+they are separate from the cwd-latest resume used by mining. History belongs to
+the active host and reads provider-owned metadata through the ordinary HTTP API.
+The [past-session contract](docs/persistence.md#past-agent-sessions) owns supported
+providers, retention, search and unavailable states.
+
 ## Session attention
 
-`skill-core/src/agent_detection` vendors Herdr's terminal detection rules and
-stabilization at commit `4b5e9bda239a0b6903889062d756424578e94691`; attribution and
-license are in `server/skill-core/src/agent_detection/NOTICE.txt`. All 21 bundled manifests are unchanged. The
-registry's `attention_detector` capability enables the corresponding detector for
-Claude, Codex, Cursor, Gemini and opencode.
+[Agent detection](server/skill-core/src/agent_detection) vendors Herdr's terminal
+rules and stabilization. The [NOTICE](server/skill-core/src/agent_detection/NOTICE.txt)
+owns the upstream revision and attribution; the agent registry's `attention_detector`
+capability selects each supported detector.
 
-The owning server's `events` watcher samples the visible tmux screen and pane title
-without attaching a client. Ordinary samples run every second; ambiguous Working
-→ Idle transitions use Herdr's 100 ms rechecks, three confirmations and 700 ms cap.
+The owning server's [events watcher](server/skill-server/src/events.rs) samples the
+visible tmux screen and pane title without attaching a client. Ambiguous Working
+→ Idle transitions use bounded fast rechecks; timing constants live in the
+[stabilizer](server/skill-core/src/agent_detection/stabilization.rs).
 Failed captures retain the last state. tmux does not retain OSC 9;4 progress, so
 that detector input is empty; screen/title rules and all matcher semantics remain
 unchanged. The port uses bundled rules only, with no automatic manifest downloads.
@@ -428,6 +431,9 @@ consume this registry. Agent-specific process/session adapters remain separate.
 - **launch / resume** — interactive prompt submission and optional cwd-scoped
   continuation. A missing capability disables that action; a globally scoped
   "latest session" is not a safe substitute for resume.
+- **history** — discover saved native conversations and resume a selected exact ID.
+  Providers without a verified reader and exact resume command are omitted from
+  History. Its selection must never use the cwd-latest `resume` capability.
 - **session_title / last_message / attention_detector** — native metadata and
   terminal status. Session identities come from the terminal integration; local
   display-name overrides work independently of native rename support.
@@ -460,13 +466,9 @@ A **local proxy switchboard**; the webview never changes origin.
   server exists purely as a switchboard that proxies to a remote. iOS can't spawn `ssh`, so the
   phone speaks SSH in-process (`sshmgr/russh_tx.rs`, russh on `ring`) behind the same seam
   (`conn.rs`'s `Remote` trait — one connect orchestration drives both; the desktop keeps the
-  shell-out because it inherits `~/.ssh/config`/agent/ProxyJump). Credentials are saved
-  profiles: host/port/user as JSON, the private key in the **iOS Keychain** — the `SecureStore`
-  client-capability trait (impl `client/desktop/src/securestore.rs`, same pattern as
-  `NotifyControl`), managed over the pinned-local `/api/remote/profiles*` routes and an
-  on-device `/api/ssh/keygen` (also pinned local — a key is born where its keystore lives, and
-  no route ever returns it). Host keys are TOFU-pinned to `~/.config/vibestudio/russh_known_hosts`
-  (no `~/.ssh` on iOS; fails closed). `WindowEvent::Resumed` → `resume_check()` reconnects after
+  shell-out because it inherits `~/.ssh/config`/agent/ProxyJump). Credentials and TOFU
+  host-key verification follow [SSH profiles and key storage](#ssh-profiles-and-key-storage).
+  `WindowEvent::Resumed` → `resume_check()` reconnects after
   the app foregrounds (on iOS tao/wry deliver applicationWillEnterForeground as a *window*
   event; `RunEvent::Resumed` is never emitted — it needs `ControlFlow::Poll`) — needed because
   iOS kills the backgrounded tunnel (it ACTIVELY probes the forwarded port's `/api/health`
@@ -496,13 +498,11 @@ A **local proxy switchboard**; the webview never changes origin.
   Non-`/api` GETs serve the local UI.
 - **Connect flow:** list targets (`~/.ssh/config` + WSL distros) → discover the durable
   service record → attach and verify its identity, protocol and actual release version.
-  A server must be at least the client version (and any higher configured server
-  version); a directory name or matching protocol is insufficient. If absent or older
-  during an explicit connection, detect arch, ensure a version-pinned static-musl
-  `skill-server` (checksum-verified), check its own `--version`, and start `--daemon`.
-  The daemon rechecks the shared worker before replacing an older one, preventing
-  an older client from downgrading a healthy newer worker. The resulting health
-  response must satisfy the version requirement before workspace requests are enabled.
+  Apply the [host compatibility policy](#host-compatibility). When explicit connection
+  requires provisioning, detect architecture, ensure the platform's version-pinned `skill-server`
+  (checksum-verified), check its own `--version`, and start `--daemon`. The daemon
+  rechecks the shared worker before replacement, and the resulting health response
+  must pass compatibility checks before workspace requests are enabled.
   Provisioning keeps three recently used server installations; pruning happens only
   after a successful verified connection, leaving the previous binary available while
   an upgrade is being prepared. A removed cache can be downloaded again when needed.
@@ -512,8 +512,7 @@ A **local proxy switchboard**; the webview never changes origin.
   Windows and WSL may both own the host's port, so Windows localhost forwarding is
   never used to identify or reach the WSL worker. The relay skips shell profiles,
   supports pooled HTTP and independent SSE streams, and needs no new remote binary.
-  Closing either forward cannot stop the host. Legacy binaries without the service protocol fail with an
-  update message; running agents are left intact.
+  Closing either forward cannot stop the host.
 - **Recovery:** off-thread identity probes detect stale tunnels, including after iOS resume.
   Transient failures retry with capped backoff; trust/auth/setup failures stop for explicit
   Retry. Generation guards cancel obsolete retries on Disconnect or a newer connection.
@@ -533,7 +532,31 @@ A **local proxy switchboard**; the webview never changes origin.
   `ServerConfig::remote = None`.
   Provisioning resolves `server-*` filenames from `release-assets.json` and downloads
   them with their required `.sha256` files from the GitHub release matching the app
-  version (override via `VIBESTUDIO_SERVER_BASE_URL` / `_VERSION`).
+  version (download mirror override: `VIBESTUDIO_SERVER_BASE_URL`; version override
+  follows the compatibility policy above).
+
+### SSH profiles and key storage
+
+Saved mobile profiles and key generation are client capabilities, reached through
+pinned-local `/api/remote/profiles*` and `/api/ssh/keygen` routes. The
+[`SecureStore` interface and selection policy](server/skill-core/src/keystore.rs)
+use a supplied native store or fall back to app-private files. The
+[Apple implementation](client/desktop/src/securestore.rs) uses Keychain for private
+keys; file fallback applies when no native store is wired or initialization fails.
+The fallback stores keys in `ssh_keys.json` with Unix mode `0600`, separately from
+non-secret `ssh_profiles.json` metadata. Android has no native keystore backend wired.
+See the [privacy page](docs/privacy.html#ssh-keys) for the user-facing storage summary.
+
+Currently, `/api/ssh/keygen` returns the newly generated private key to this device's
+frontend, which sends it back when saving the profile. This is a pinned-local HTTP
+round-trip, not a route for retrieving saved private keys: profile-list responses
+return metadata only. Eliminating that generation round-trip is part of the
+[proposed password bootstrap](plans/mobile-ux.md#4-password-based-ssh--automatic-key-install--planned).
+
+The russh transport TOFU-pins host keys in `russh_known_hosts` under the
+[app config directory](docs/persistence.md#storage-and-failure-handling) and fails
+closed on a changed key. The desktop system-SSH path instead inherits its SSH
+configuration, agent and host-key handling.
 
 ## Roadmap
 

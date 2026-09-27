@@ -1,7 +1,9 @@
 # Releasing VibeStudio
 
-How desktop releases and iOS TestFlight builds are verified and shipped. Read
-this end-to-end before your first release; after that use **The process** below.
+The release procedure for desktop packages and iOS TestFlight builds.
+Development modes, local validation and isolated browser checks live in the
+[development guide](docs/development.md). The workflows linked below define
+the executable build and validation gates.
 
 ## Signing configuration
 
@@ -85,9 +87,9 @@ finalizer reads the policy and signing key from the immutable release commit and
 refuses to rename published assets. It accepts Tauri's raw bundle filenames and
 the policy's finalized names so interrupted draft finalization can be retried.
 
-Server provisioning uses the policy's filenames at the app's version tag, then
-the latest release. Custom download mirrors must provide the same filenames and
-matching `.sha256` files. Every new server download must pass checksum verification.
+Custom server-download mirrors must provide the policy's filenames and matching
+`.sha256` files. Provisioning and version compatibility follow the
+[host compatibility contract](design.md#host-compatibility).
 
 Keep human installer links prominent in release notes; server, auto-update, and
 verification files are supporting assets.
@@ -100,28 +102,30 @@ verification files are supporting assets.
 > publishing is the outward-facing step.
 
 0. **Pick the version.** Next semver after the last tag. Reusing the number of an
-   *unpublished* draft is fine — no user ever received it (see "Overwrite a draft").
+   *unpublished* draft is fine — no user ever received it (see step 6).
    Never rebuild or replace the binaries of a published version.
-1. **Local test.** From the repo root:
-   ```bash
-   npm run build          # tsc --noEmit && vite build
-   npm run lint           # eslint
-   npm test               # release manifest and workspace state tests
-   cargo test --workspace
-   ```
-   Also review the full diff since the last **published** release
-   (`git diff vPREV..HEAD`) for potential bugs before proceeding.
+1. **Validate the release commit.** Run the applicable checks in
+   [local validation](docs/development.md#validation), review the full diff since
+   the last **published** release (`git diff vPREV..HEAD`), and require a green
+   [`ci.yml`](.github/workflows/ci.yml) run for the exact commit being tagged.
+   That workflow defines the complete CI gates; a green run for another commit
+   does not validate this release.
 2. **Visual check — the 3 key pages.** Render and *look* (tsc won't catch layout
    bugs). Screenshot **Home**, **Studio**, **Sessions** and confirm no console
-   errors. See "Screenshot harness" below. **Gotcha: the SPA is a hash router** —
-   `goto("…/skills/<root>")` lands on Home; you must use `…/#/skills/<root>`.
-3. **Confirm the tag will be on-branch.** The tagged commit **must be an ancestor
-   of `master` and pushed** (`git rev-list --left-right --count origin/master...HEAD`
-   → `0  0`). This ensures releases contain reviewed code. Release jobs explicitly
-   request `contents: write`; repository Actions policy must allow that permission.
+   errors. Follow the [isolated backend and browser-check procedure](docs/development.md#isolated-backend).
+   Keep screenshots and diagnostics with the release verification evidence.
+3. **Confirm the tag will be on-branch.** Select the reviewed commit and confirm
+   it is already reachable from the remote default branch:
+   ```bash
+   git fetch origin master
+   release_commit=$(git rev-parse HEAD) # or the reviewed commit you selected
+   git merge-base --is-ancestor "$release_commit" origin/master
+   ```
+   Continue only if the ancestry check succeeds. Release jobs explicitly request
+   `contents: write`; repository Actions policy must allow that permission.
 4. **Tag and push.**
    ```bash
-   git tag -a vX.Y.Z -m "VibeStudio vX.Y.Z" <commit>   # usually HEAD
+   git tag -a vX.Y.Z -m "VibeStudio vX.Y.Z" "$release_commit"
    git push origin vX.Y.Z
    ```
    To retry an existing tag using the maintained workflow on `master`:
@@ -130,12 +134,19 @@ verification files are supporting assets.
    ```
    This checks out and stamps the supplied tag, including the standalone servers.
    Dispatching a branch without a version tag is rejected.
-5. **Watch CI to completion.**
+5. **Watch the release build to completion.** Select the run triggered in step 4:
    ```bash
-   RUN=$(gh run list --limit 10 --json databaseId,headBranch,name \
-     -q '.[] | select(.headBranch=="vX.Y.Z" and .name=="build") | .databaseId' | head -1)
-   gh run watch "$RUN" --exit-status --interval 30
+   gh run list --workflow release.yml --limit 20 \
+     --json databaseId,event,headBranch,headSha,url
+   release_run="SELECTED_RUN_ID"
+   gh run view "$release_run"
+   gh run watch "$release_run" --exit-status --interval 30
    ```
+   For a tag push, confirm the tag and commit match. A manual dispatch on
+   `master` reports that branch and its workflow commit; confirm its `tag` input
+   in the run details or the **Validate release tag** step. Do not select a run
+   solely because it is newest or expect manual dispatch to report the tag as
+   `headBranch`.
    **macOS notarization is usually the long pole** (~5–20 min; Apple's notary service
    occasionally hangs on a transient — re-run that leg if it stalls far past 20 min).
    After desktop bundles finish, the `skill-server` matrix uploads standalone binaries,
@@ -159,9 +170,15 @@ verification files are supporting assets.
    ```
 9. **Verify the published release.** Confirm the final asset set and public links:
    ```bash
-   gh run watch "$(gh run list -w release-tidy --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
+   gh run list --workflow release-tidy.yml --limit 20 \
+     --json databaseId,event,headBranch,headSha,url
+   tidy_run="RUN_ID_FOR_THIS_RELEASE"
+   gh run view "$tidy_run"
+   gh run watch "$tidy_run" --exit-status
    gh release view vX.Y.Z --json isDraft,assets -q '.isDraft, [.assets[].name]'
    ```
+   Confirm the selected tidy run's release event or `TAG` value names `vX.Y.Z`;
+   an earlier release's successful tidy run is not evidence for this one.
    Expect: the 3 renamed installers + `autoupdate-macos-universal.app.tar.gz` +
    `latest.json` + the 4 `server-*` binaries (+ `.sha256`) + updater `.sig` files.
    Verify the
@@ -185,7 +202,9 @@ the build. No public App Store submission or external testing is performed.
 The workflow verifies that the release is public, its tag is on `master`, and
 repository CI succeeded for the exact source commit. It builds that immutable
 commit in a separate checkout from the release tooling. The existing simulator
-CI remains the native launch, authentication, and privacy gate.
+CI remains the native launch, authentication, and privacy gate; its
+[harness guide](client/desktop/gen/apple/Tests/NativeUI/README.md) owns coverage
+and limitations.
 
 To release an already published tag or start a fresh build after a terminal
 Apple rejection:
@@ -279,62 +298,13 @@ never reuse an accepted version/build combination. See the
 [Tauri signing guide](https://v2.tauri.app/distribute/sign/ios/), and
 [Apple internal-testing guide](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers).
 
-## Screenshot harness (headless, never touches the live app)
+## Reference
 
-The desktop's own server runs on `:8765` and **must not be killed** (it may host
-the agent session driving the release). Verify against a throwaway server with
-its own config and tmux socket directory. `--no-startup-maintenance` is required:
-Tailscale Serve belongs to the machine, so an isolated config directory alone
-does not prevent a test server from changing the live phone-access target.
-
-```bash
-# Keep tmux's socket path short enough for macOS as well as Linux.
-visual_fixture=$(mktemp -d /tmp/vs-visual.XXXXXX)
-mkdir -p "$visual_fixture/config" "$visual_fixture/tmux"
-cargo build -p skill-server   # workspace target is ./target, NOT ./server/target
-# Fresh server on a spare port; never inherit the agent's tmux connection.
-env -u VIBESTUDIO_SERVER_TOKEN -u TMUX -u TMUX_PANE \
-  XDG_CONFIG_HOME="$visual_fixture/config" TMUX_TMPDIR="$visual_fixture/tmux" \
-  ./target/debug/skill-server --port 8799 --no-startup-maintenance \
-  > "$visual_fixture/server.log" 2>&1 &
-visual_server_pid=$!
-# Vite pointed at it (its /api proxy target is overridable):
-VITE_API_TARGET=http://127.0.0.1:8799 node node_modules/vite/bin/vite.js --port 1421 --strictPort \
-  > "$visual_fixture/vite.log" 2>&1 &
-visual_vite_pid=$!
-```
-
-Then drive `http://localhost:1421` with `playwright-core` if installed, or any
-headless Chromium/CDP harness against cached Chromium
-(`~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`). Studio needs a real
-skill root from `GET /api/skills/discover`, reached via `/#/skills/<encoded-root>`.
-Confirm both processes started successfully from their logs before browsing.
-After the checks, stop only the processes and private tmux server created above:
-
-```bash
-kill "$visual_vite_pid" "$visual_server_pid"
-wait "$visual_vite_pid" "$visual_server_pid" 2>/dev/null || true
-env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$visual_fixture/tmux" \
-  tmux kill-server 2>/dev/null || true
-rm -rf "$visual_fixture"
-```
-
-Never run a bare `tmux kill-server`, stop the live host service, or kill processes
-by name or port during these checks.
-
-## Key facts & gotchas
-
-- **No version-bump commit** — the tag is the source of truth; `stamp-version.sh`
-  injects it in CI. Manifests stay `0.0.0`.
-- **On-branch tags only** (step 3) — release reviewed code from the default branch.
-- **Drafts are invisible to the updater** — only the published "Latest" release feeds auto-update.
-- **Overwrite an unpublished draft version:** `gh release delete vX.Y.Z --yes
-  --cleanup-tag`, then re-tag at the new commit and re-push. Safe because no user got the draft.
-- **Hash router** — screenshots/deep links need `/#/…`.
-- **Updater signing guard** — CI fails fast if the signing secret is absent or
-  `tauri.conf.json` still carries a placeholder pubkey. Finalization rejects
-  signatures from a key that does not match the configured public key. Configure
-  the secrets listed in "Signing configuration" before building.
-- **macOS** signing/notarization secrets and the **updater signing key** live in
-  repo Actions secrets (see `release.yml` env). Windows Authenticode is currently
-  off.
+- [Release workflow](.github/workflows/release.yml): build matrix, signing inputs,
+  draft creation and published-version protection.
+- [Release finalizer](scripts/finalize-release.mjs) and
+  [asset naming policy](release-assets.json): payload names, signatures and updater manifest.
+- [Shipped-server smoke checks](.github/workflows/provision-smoke.yml): verification
+  of the actual release artifacts.
+- [Development and validation](docs/development.md): local commands, isolated
+  servers and browser checks.
