@@ -38,6 +38,37 @@ Native iOS uses its own ephemeral loopback origin. See
 [host lifecycle](../design.md#durable-host-lifecycle--open-on-your-phone) for
 discovery, persistence and browser phone access.
 
+### WSLg: no desktop window after a successful build
+
+A running Linux webview does not establish that Windows can display its window.
+If `npm run dev` compiles but nothing appears, inspect WSLg's current logs before
+changing app rendering settings:
+
+```bash
+rg -n 'terminated with signal|not starting it again' /mnt/wslg/stderr.log
+rg -n 'rdp_peer|weston-notify.sock' /mnt/wslg/weston.log
+```
+
+A compositor crash followed by repeated `rdp_peer is not initalized` messages
+(the spelling comes from Weston), a missing `weston-notify.sock`, and the Windows
+display client reaching its restart limit indicate a broken WSLg desktop
+connection. Native acceptance tests can still pass inside Linux in this state;
+they do not prove that a window is visible on the Windows desktop.
+
+Save work and arrange to stop active WSL agents and services before recovery.
+From **Windows PowerShell**, run `wsl --shutdown`, reopen the distribution, and
+retry `npm run dev`. This stops all running WSL distributions, including tmux
+sessions and the host service; agents must not run it during ordinary validation.
+See Microsoft's [WSL GUI app guide](https://learn.microsoft.com/en-us/windows/wsl/tutorials/gui-apps)
+for restart and update instructions.
+
+If WSLg is connected but WebKit still has graphics problems, follow
+[Tauri's Linux graphics guide](https://v2.tauri.app/develop/debug/linux-graphics/).
+For an isolated X11/software-rendering diagnostic, use
+`GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 npm run dev`.
+These overrides can reduce rendering performance and cannot repair a disconnected
+WSLg desktop bridge; they are not app defaults.
+
 ### Home UI lab
 
 The lab uses the same backend proxy settings as browser mode. Point
@@ -45,6 +76,64 @@ The lab uses the same backend proxy settings as browser mode. Point
 do not infer its port from a running native dev window. The comparison workflow,
 entry URL and build output belong in the
 [Home UI lab guide](../client/web/app/home-lab/README.md).
+
+### Native live UI comparison checks
+
+The [comparison architecture](../design.md#live-ui-comparison) and bundled
+[agent skill](../skills/ui-compare/SKILL.md) describe the feature and its configuration.
+Build the SPA, then run the isolated
+[acceptance runner](../client/desktop/tests/comparison_smoke.py):
+`python3 client/desktop/tests/comparison_smoke.py --xvfb` on Linux, or omit `--xvfb`
+on a native desktop. It creates a temporary Git/Vite project and checks the real
+comparison adapter and HTTP manager without starting the host service, changing
+phone access or installing skills.
+
+For custom fixtures, use the underlying
+[native harness](../client/desktop/examples/comparison_smoke.rs). Supply a configuration
+pointing at a temporary Git repository and set private `XDG_CONFIG_HOME` and
+`TMUX_TMPDIR`. Run
+`cargo run --manifest-path client/desktop/Cargo.toml --example comparison_smoke -- /tmp/fixture/config.json`.
+On Linux, `xvfb-run --auto-servernum` with `GDK_BACKEND=x11` selects the virtual
+screen; headless machines without GPU support can set `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
+The harness prints its HTTP URL and session ID, then confirms that all three native
+children are visible. Its optional `VIBESTUDIO_COMPARISON_SMOKE_SCRIPT` injects
+fixture-only JavaScript for reporting actual CSS dimensions and scroll positions.
+
+Acceptance checks should edit a saved component and verify working-pane HMR with the
+baseline unchanged, assert both actual CSS viewports after preset/rotation/custom-size
+changes, and scroll both documents and nested containers in both directions (including
+different content heights and disabling sync). Close through HTTP and the native
+window control, verify the viewer disappears while its checkout and servers remain,
+and reopen the same artifact. Switch between associated diffs through the toolbar;
+opening an existing viewer must focus it without duplicating children. Finally stop
+through HTTP and verify only the owned checkout and servers were removed. Normal
+browser tests cannot establish native child allocation, zoom or window lifecycle.
+
+[Session artifact browser tests](../e2e/session-comparisons-ui.spec.ts) cover the
+session UI, metadata, explicit association and creation with isolated fixtures.
+Run `python3 scripts/comparison_cli_test.py` for the helper's exact session/host
+association checks. Persistence and pinned reopen behavior are covered by the
+comparison core and HTTP tests.
+
+The native runner also measures continuous root/nested scroll latency, checks for
+reflected updates, and exercises the navigation fallback under a strict preview CSP.
+The device chooser's **Sync from Chrome** action explicitly refreshes its local
+catalog. It has no automatic refresh schedule or agent task. `npm run devices:update`
+regenerates the bundled offline snapshot with the
+[data-only generator](../scripts/update-comparison-devices.mjs).
+The core's ignored `comparison_devices::tests::live_upstream_is_accepted` check
+verifies live-source parsing when run explicitly with network access; ordinary tests
+use fixture data and do not require Chrome or internet access.
+
+The [pinned Tauri version](../client/desktop/Cargo.lock) exposes unstable multiwebviews.
+Its Linux GtkLayout adapter positions children within the allocated content area.
+Child size requests do not contribute to the window minimum, preventing a resize
+feedback loop from GTK decorations or display scaling. Comparison needs
+macOS 11+ for native page zoom; the rest of VibeStudio retains its existing platform
+minimum. Windows uses WebView2. Large custom viewports increase the minimum window size
+to preserve CSS dimensions within the native zoom range. Native pixel rounding can
+shift arbitrary custom sizes by a few CSS pixels when scaled; both panes use the same
+geometry. Linux runtime validation does not substitute for native macOS/Windows checks.
 
 ## Isolated backend
 

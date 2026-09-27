@@ -4801,6 +4801,7 @@ dependencies = [
  "url",
  "urlencoding",
  "walkdir",
+ "windows-sys 0.61.2",
  "zip 2.4.2",
 ]
 
@@ -6077,6 +6078,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vibestudio"
 version = "0.0.0"
 dependencies = [
+ "gtk",
  "keyring",
  "log",
  "objc2",

@@ -62,6 +62,49 @@ the existing terminal after opening a conversation. Native saved titles remain
 authoritative; the terminal-specific VibeStudio naming override described below
 is not a persistent conversation rename.
 
+## UI diff artifacts
+
+A desktop UI diff is a persistent session artifact. **Sessions → UI diffs** lists
+its title, review notes, source repository and working directory, baseline ref and
+resolved commit, preview commands/URLs, viewport, route, timestamps and state.
+The [comparison manager](../server/skill-core/src/comparison.rs) stores records in
+`comparison-artifacts.json` in the desktop's configuration directory, using the
+locked atomic JSON store and private Unix file permissions. Records remain after
+stopping previews or exiting the app; they are not committed source snapshots.
+The working pane continues to show the current saved files.
+
+Ownership is explicit: the local/SSH workspace identifier scopes a terminal ID;
+provider and native conversation ID preserve the association after that conversation
+resumes in another terminal. Two agents in one folder remain distinct. A newly
+resolved native ID enriches a terminal-bound artifact through the UI. A legacy
+unassigned diff needs an explicit **Attach to this session** action.
+
+Closing its native window preserves running servers and the pinned checkout.
+**Stop previews** releases those resources but retains the record. Reopening a
+stopped artifact recreates its baseline at the saved SHA, even if the branch has
+moved. Desktop startup loads records as stopped and does not execute saved commands
+or open windows automatically. Stale resources from an abrupt process kill are
+never silently adopted or removed; cleanup ownership belongs to the live worker.
+
+Environment values and volatile server logs/errors are excluded from disk. Commands
+and full preview URLs remain in the private configuration, so credentials should
+be supplied through environment settings. A record that used environment values
+requires an explicit runtime configuration on reopening after app restart. Corrupt
+or unreadable artifact stores report errors and are preserved. At desktop startup,
+such a failure disables UI comparisons while the rest of the app remains available.
+Metadata belongs to
+the desktop that renders the windows, even when the associated agent is remote;
+preview paths and commands still run on that desktop.
+
+The device chooser caches Chrome's last valid viewport catalog and successful check
+time in `comparison-devices.json` beside these artifacts. This disposable cache is
+independent of session metadata: refreshing it never changes saved viewport dimensions.
+The [catalog service](../server/skill-core/src/comparison_devices.rs) owns explicit
+refresh, validation and the generated offline fallback. Opening the chooser only
+reads the cache; **Sync from Chrome** is the only runtime download trigger. Network
+failure or invalid upstream data retains the last good list. Scroll relay capabilities are runtime-only
+and are never stored with either artifacts or the device catalog.
+
 ## Picker and launch defaults
 
 The folder picker tries the current form's explicit directory, then the last

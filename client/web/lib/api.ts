@@ -27,7 +27,7 @@ const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 const RETRYABLE_POST = /^(remote|ssh)\//;
 
 async function http<T>(method: "GET" | "POST", path: string, args?: Record<string, unknown>, retried = false): Promise<T> {
-  const local = /^(remote|ssh|update|notify|editor|reveal)(?:\/|$)|^logs\/client$/.test(path);
+  const local = /^(remote|ssh|update|notify|editor|reveal|comparison)(?:\/|$)|^logs\/client$/.test(path);
   const connection = workspaceConnection();
   if (!local && !connection.available) throw workspaceUnavailable();
   let res: Response;
@@ -190,6 +190,128 @@ export const remoteLast = () => http<{ host: string | null }>("GET", "remote/las
 export const remoteConnect = (host: string) => http<{ ok: boolean }>("POST", "remote/connect", { host });
 export const remoteRetry = () => http<{ ok: boolean }>("POST", "remote/retry");
 export const remoteDisconnect = () => http<{ ok: boolean }>("POST", "remote/disconnect");
+
+// --- Live UI comparison (pinned to the desktop client's local host) ---
+export interface ComparisonViewport {
+  /** CSS viewport dimensions; the desktop fits both previews to the window. */
+  width: number;
+  height: number;
+  preset?: string | null;
+  orientation: "portrait" | "landscape";
+}
+
+export interface ComparisonPreviewConfig {
+  command?: string | null;
+  url?: string | null;
+  port?: number | null;
+  env?: Record<string, string>;
+  /** Relative to this pane's source tree. */
+  directory?: string | null;
+  readyTimeoutSeconds?: number;
+}
+
+export interface ComparisonOwner {
+  /** "local", or the exact SSH/WSL workspace identifier. Never inferred from cwd. */
+  hostId: string;
+  terminalId?: string | null;
+  provider?: string | null;
+  conversationId?: string | null;
+}
+
+export interface ComparisonArtifact {
+  title: string;
+  description?: string | null;
+  owner: ComparisonOwner;
+}
+
+export interface ComparisonConfig {
+  artifact?: ComparisonArtifact | null;
+  repository: string;
+  workingDirectory?: string | null;
+  baselineRef?: string | null;
+  baselineWorktree?: string | null;
+  baseline?: ComparisonPreviewConfig;
+  working?: ComparisonPreviewConfig;
+  env?: Record<string, string>;
+  route?: string;
+  viewport?: ComparisonViewport;
+  syncScroll?: boolean;
+}
+
+export interface ComparisonUpdate {
+  artifact?: ComparisonArtifact;
+  route?: string;
+  viewport?: ComparisonViewport;
+  syncScroll?: boolean;
+}
+
+export interface ComparisonSession {
+  id: string;
+  windowOpen: boolean;
+  windowRequested: boolean;
+  presentationRevision: number;
+  /** Environment values are not persisted; reopening may need them supplied again. */
+  restoreRequired: boolean;
+  updatedAt: number;
+  state: "starting" | "ready" | "stopping" | "stopped" | "failed";
+  config: ComparisonConfig & Required<Pick<ComparisonConfig, "baseline" | "working" | "env" | "route" | "viewport" | "syncScroll">>;
+  baselineSha: string | null;
+  baselineWorktree: string | null;
+  baselineUrl: string | null;
+  workingUrl: string | null;
+  baselineExternal: boolean;
+  workingExternal: boolean;
+  baselineLog: string | null;
+  workingLog: string | null;
+  error: string | null;
+  createdAt: number;
+}
+
+export interface ComparisonDevice {
+  id: string;
+  label: string;
+  group: "Phones" | "Tablets" | "Computers";
+  width: number;
+  height: number;
+  showByDefault: boolean;
+  order: number;
+}
+
+export interface ComparisonDeviceCatalog {
+  sourceUrl: string;
+  sourceSha256?: string;
+  checkedAt: number | null;
+  devices: ComparisonDevice[];
+  refreshing: boolean;
+  error?: string | null;
+}
+
+/** Read the saved Chrome viewport catalog without contacting Chrome. */
+export const comparisonDevices = () => http<ComparisonDeviceCatalog>("GET", "comparison/devices");
+/** Explicitly request one asynchronous sync from the official Chrome source. */
+export const comparisonDevicesRefresh = () => http<ComparisonDeviceCatalog>("POST", "comparison/devices/refresh");
+
+export const comparisonCapabilities = () => http<{
+  available: boolean; protocol: number; nativeWebviews: boolean; sessionArtifacts?: boolean;
+}>("GET", "comparison/capabilities");
+/** Open/focus a live preview, or restart a saved artifact at its pinned baseline. */
+export const comparisonOpen = (id: string, config?: ComparisonConfig) =>
+  http<ComparisonSession>("POST", "comparison/open", { id, ...(config ? { config } : {}) });
+/** Close only the native window; Stop separately releases preview resources. */
+export const comparisonClose = (id: string) =>
+  http<ComparisonSession>("POST", "comparison/close", { id });
+
+/** Starts asynchronously; poll status until both previews are ready. */
+export const comparisonStart = (config: ComparisonConfig) =>
+  http<ComparisonSession>("POST", "comparison/start", { ...config });
+export const comparisonUpdate = (id: string, update: ComparisonUpdate) =>
+  http<ComparisonSession>("POST", "comparison/update", { id, ...update });
+export const comparisonStop = (id: string) =>
+  http<ComparisonSession>("POST", "comparison/stop", { id });
+export const comparisonList = () => http<ComparisonSession[]>("GET", "comparison/list");
+export const comparisonStatus = (id: string) =>
+  http<ComparisonSession>("GET", `comparison/status?id=${encodeURIComponent(id)}`);
+
 
 // --- Saved SSH connections (mobile only) ---
 // The mobile app has no `~/.ssh` — connections are saved profiles whose private

@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "test": "node --test scripts/*.test.mjs",
     "test:e2e": "npm run build && cargo build -p skill-server --locked && playwright test",
-    "icons:generate": "node scripts/generate-brand-assets.mjs"
+    "icons:generate": "node scripts/generate-brand-assets.mjs",
+    "devices:update": "node scripts/update-comparison-devices.mjs"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.5.0",

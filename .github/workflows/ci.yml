@@ -33,6 +33,8 @@ jobs:
       - run: npm ci
       - name: Install shells for SSH setup command tests
         run: sudo apt-get update && sudo apt-get install -y fish zsh
+      - name: Test comparison agent session association
+        run: python3 scripts/comparison_cli_test.py
       - name: Test release manifests and workspace state
         run: npm test
       - run: npm run lint
@@ -106,10 +108,16 @@ jobs:
   # A `cargo check` (not a full bundle — that's the release's job) catches Rust /
   # tauri.conf drift pre-merge, which today only surfaces when a tag is cut.
   desktop:
-    runs-on: ubuntu-latest
+    name: desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - name: Install Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -117,7 +125,7 @@ jobs:
             build-essential curl wget file \
             libxdo-dev libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev patchelf
+            librsvg2-dev patchelf xvfb
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -134,7 +142,18 @@ jobs:
       # nothing to stub before the desktop `cargo check`.
       - name: cargo check (desktop shell)
         working-directory: client/desktop
-        run: cargo check --locked
+        run: cargo check --all-targets --locked
+      - name: Test native comparison (Linux WebKitGTK)
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: python3 client/desktop/tests/comparison_smoke.py --xvfb
+      - name: Upload native comparison failure evidence
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-comparison-failure
+          path: /tmp/vs-comparison-smoke-*/
+          if-no-files-found: ignore
 
   # Compile and link the actual iOS app, then verify its native lock and unlocked
   # startup in a fresh simulator. No account, distribution certificate or upload.

@@ -171,6 +171,84 @@ browser/mobile setup and validation. Use its
 [isolated backend](docs/development.md#isolated-backend) for integration checks.
 Release requirements belong in [RELEASING.md](RELEASING.md).
 
+### Live UI comparison
+
+Desktop comparison sessions are client capabilities, reached through the pinned-local
+`/api/comparison/*` routes in [comparison_api.rs](server/skill-server/src/comparison_api.rs).
+They do not follow the selected SSH workspace: repository paths, working directories,
+commands and ports all belong to the desktop machine. Agents may tunnel back to this
+listener explicitly. Standalone hosts and mobile clients do not create native windows.
+The desktop publishes its current listener in `comparison-desktop.json` in the
+[configuration directory](server/skill-core/src/paths.rs); clients verify the capabilities
+endpoint before using this discovery hint.
+
+[ComparisonManager](server/skill-core/src/comparison.rs) owns asynchronous startup,
+status, updates and stopping. Server readiness and native presentation are reported
+separately (`windowOpen`); the agent helper waits for both. It resolves the requested mainline ref once, creates a
+detached baseline worktree at that SHA and starts independent preview servers. The
+working preview uses the specified directory directly, including saved uncommitted
+changes. Each server retains its ordinary HMR connection. Paths may point to the main
+repository, other worktrees or temporary checkouts; an explicit baseline worktree path
+must not exist. Existing URLs remain externally owned and an external baseline cannot
+be guaranteed pinned. Changing source/server configuration requires a new session;
+route, viewport and scroll sync can change within a session. Closing a comparison
+window preserves its running previews; Open focuses an existing window or creates
+its viewer again. Stop and normal app exit clean up owned processes and the baseline
+worktree, never the working directory or external servers. An abrupt process kill is
+not a normal cleanup path.
+
+**Sessions → UI diffs** exposes the session's comparison artifacts, with titles,
+review notes, configuration and lifecycle metadata. Users can create, open, close,
+stop and reopen artifacts there; the comparison toolbar switches among the same
+session's diffs. Association uses the exact workspace host and terminal ID, enriched
+with provider/native conversation ID so resuming a conversation retains its reviews.
+It never guesses from a shared working directory. Legacy artifacts can be explicitly
+attached in the UI. The [persistence contract](docs/persistence.md#ui-diff-artifacts)
+owns disk storage, environment handling and restart behavior.
+
+The [native adapter](client/desktop/src/comparison.rs) creates a separate window with
+two independent child webviews plus a trusted toolbar child. There are no iframes and
+the previews receive no Tauri capability grants. Tauri's desktop `unstable` feature is
+enabled for `Window::add_child` / `WebviewBuilder`; it is not enabled for iOS. The
+viewport uses matching CSS dimensions with native zoom to fit both panes. The
+[device catalog service](server/skill-core/src/comparison_devices.rs) imports phone/tablet
+viewport data from Chrome DevTools over Rust HTTP. `GET /api/comparison/devices`
+returns cached data without network access. **Sync from Chrome** explicitly calls
+`POST /api/comparison/devices/refresh`, which downloads the catalog off-thread.
+There are no automatic refreshes, recurring tasks, or model calls. Failed or
+incompatible upstream data preserves the last good catalog; a generated bundle
+is the offline fallback. Chrome's default entries come
+first, with its other devices available too; the list follows Chrome rather than
+assuming every newly released device already has a Chrome definition. Generic
+laptop/desktop sizes remain in the [shared viewport helper](client/web/lib/comparisonViewports.ts).
+The same chooser appears in the comparison toolbar and artifact configuration form;
+custom dimensions and rotation apply to both panes. Width and height are authoritative;
+`preset` identifies a matching catalog entry, including when rotated, and never
+silently overrides supplied dimensions. These are responsive viewport previews:
+device names do not emulate device pixel ratio, user agent, touch, or browser chrome.
+Only browser-compatible frontends are in scope, including Tauri/Electron web UIs;
+screens requiring native commands need a backend adapter or preview mocks.
+
+Scroll observation is injected into each preview. The observer coalesces positions
+per animation frame, allows one HTTP request in flight, suppresses reflected events,
+and transfers proportional positions. The pinned-local `/api/comparison/scroll/<token>`
+bridge accepts only bounded position data for one sibling pane. Ephemeral per-pane
+capabilities require the exact preview origin, are revoked with the viewer, and never
+enter artifact storage or request logs. Its scoped CORS permission grants no ordinary
+API access. The native receiver retains only the latest queued positions.
+If a preview's CSP or network policy blocks the fast path, the observer falls back
+once to a rate-limited same-origin navigation that Rust cancels and relays locally.
+Neither path grants a general native command channel. Nested containers match by
+`data-comparison-scroll-key`, ID, DOM path, then cached scroll-container order. Apps
+with different DOM layouts can add matching stable keys. Navigation stays within each
+configured preview origin so redirects cannot grant a new site the bridge.
+
+The bundled [ui-compare skill](skills/ui-compare/SKILL.md) supplies a standard-library
+agent client and the configuration reference. Desktop startup installs missing copies
+into detected agents' skill directories and upgrades exact known prior bundled versions.
+Customized copies are preserved; eligibility compares the complete authored file tree
+against known shipped hashes, never just Git cleanliness.
+
 ## Durable host lifecycle + "Open on your phone"
 
 The desktop app is **tray-resident** (`client/desktop/src/lib.rs`): closing the window hides

@@ -230,6 +230,8 @@ mod tests {
             phone: None,
             notifier: None,
             editor: None,
+            comparison: None,
+            comparison_scroll: None,
             secure_store: store,
             port: 0,
         }

@@ -4,6 +4,8 @@ pub mod agent_detection;
 pub mod agents;
 pub mod commit_agent;
 pub mod commitmsg;
+pub mod comparison;
+pub mod comparison_devices;
 pub mod connections;
 pub mod connectors;
 pub mod connector_runtime;

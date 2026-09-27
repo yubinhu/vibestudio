@@ -120,7 +120,7 @@ export function skillKind(root: string): KindMeta {
 // your own — but you didn't author them, so we give them the "studio" kind:
 // they keep their folder names but tuck into the bundled dropdown with a
 // "VibeStudio" tag instead of showing as your cards.
-export const BUNDLED_SKILL_DIRNAMES = ["load-secrets", "skill-miner", "skill-studio"];
+export const BUNDLED_SKILL_DIRNAMES = ["load-secrets", "skill-miner", "skill-studio", "ui-compare"];
 
 // Bundled skills the user is meant to make their own after install: editable
 // and versionable in place (the quality bar, prompts and adapters are theirs to
@@ -128,7 +128,7 @@ export const BUNDLED_SKILL_DIRNAMES = ["load-secrets", "skill-miner", "skill-stu
 // the update lands as reviewable uncommitted changes). The rest (load-secrets)
 // stay locked down — they're plumbing that terminals and rc-file wiring depend
 // on, with no customization upside.
-const EDITABLE_BUNDLED_DIRNAMES = ["skill-miner"];
+const EDITABLE_BUNDLED_DIRNAMES = ["skill-miner", "ui-compare"];
 
 const lastSegment = (root: string) => root.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
 

@@ -8,6 +8,9 @@ export function createAppRoutes(
   homeLoader: NonNullable<RouteObject["lazy"]> = () => import("@/pages/home/DashboardRoute"),
 ): RouteObject[] {
   return [
+    // Native comparison chrome lives in its own child webview. Mounting the main
+    // shell here would also mount terminals and the active-host recovery overlay.
+    { path: "comparison/:id", lazy: () => import("@/pages/comparison/ComparisonRoute"), HydrateFallback: RootFallback },
     {
       element: <AppShell />,
       HydrateFallback: RootFallback,

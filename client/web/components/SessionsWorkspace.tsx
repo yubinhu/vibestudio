@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import NavBar from "@/components/NavBar";
 import NewSessionDialog from "@/components/NewSessionDialog";
 import SessionHistoryDialog, { SessionHistoryIcon } from "@/components/SessionHistoryDialog";
+import SessionComparisons from "@/components/SessionComparisons";
 import RenameSessionDialog from "@/components/RenameSessionDialog";
 import { useSessionTitleMenu } from "@/components/useSessionTitleMenu";
 import { sessionTitle } from "@/lib/sessionTitle";
@@ -396,6 +397,7 @@ export default function SessionsWorkspace({
               <span className="hidden text-xs sm:inline">Open in {editorName}</span>
             </button>
           )}
+          {!narrow && active && <SessionComparisons session={active} visible={visible} />}
           {historyButton}
           <button
             type="button"
@@ -481,6 +483,7 @@ export default function SessionsWorkspace({
                 <OpenExternalIcon />
               </button>
             )}
+            {active && <SessionComparisons session={active} visible={visible} compact />}
             {embedded && historyButton}
             <button
               type="button"
@@ -519,6 +522,7 @@ export default function SessionsWorkspace({
                       <OpenExternalIcon />
                     </button>
                   )}
+                  {active && <SessionComparisons session={active} visible={visible} compact />}
                   {historyButton}
                   <button
                     type="button"

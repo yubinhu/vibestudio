@@ -33,7 +33,7 @@ serde_json = "1"
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 # tray-icon: window-close hides to the tray (the tray governs the lifecycle);
 # image-png decodes the bundled icon for the tray.
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
 skill-term = { path = "../../server/skill-term" }
 # Backend (incl. the SSH connection manager) — the desktop wires it into its
 # in-process server; the ssh/provisioning code lives here, not in the shell.
@@ -54,6 +54,11 @@ open = "5"
 # adding a second tray. Registered release-only (see run()) — dev shares the
 # bundle id and must stay free to run beside the installed app.
 tauri-plugin-single-instance = "2"
+
+# Tauri 2.11's Linux child-webview backend packs into a GtkBox. Reparent the
+# comparison widgets into GtkLayout so their bounds do not grow window minima.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
 
 # ── Mobile (iOS): a pure switchboard — every /api/* proxies to the connected
 # remote over the in-process russh transport (iOS can't spawn `ssh`), so the

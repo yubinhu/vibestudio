@@ -1,0 +1,385 @@
+{
+  "sourceUrl": "https://raw.githubusercontent.com/ChromeDevTools/devtools-frontend/main/front_end/models/emulation/EmulatedDevices.ts",
+  "sourceSha256": "8b4f3c0040758ef09b419162508e40e0a3af06ca214209ea180ba4cd45c7d41c",
+  "checkedAt": null,
+  "devices": [
+    {
+      "id": "galaxy-tab-s4",
+      "label": "Galaxy Tab S4",
+      "group": "Phones",
+      "width": 712,
+      "height": 1138,
+      "showByDefault": false,
+      "order": 0
+    },
+    {
+      "id": "moto-g-power",
+      "label": "Moto G Power",
+      "group": "Phones",
+      "width": 412,
+      "height": 823,
+      "showByDefault": false,
+      "order": 0
+    },
+    {
+      "id": "moto-g4",
+      "label": "Moto G4",
+      "group": "Phones",
+      "width": 360,
+      "height": 640,
+      "showByDefault": false,
+      "order": 0
+    },
+    {
+      "id": "jiophone-2",
+      "label": "JioPhone 2",
+      "group": "Phones",
+      "width": 240,
+      "height": 320,
+      "showByDefault": false,
+      "order": 1
+    },
+    {
+      "id": "iphone-se",
+      "label": "iPhone SE",
+      "group": "Phones",
+      "width": 375,
+      "height": 667,
+      "showByDefault": true,
+      "order": 10
+    },
+    {
+      "id": "iphone-xr",
+      "label": "iPhone XR",
+      "group": "Phones",
+      "width": 414,
+      "height": 896,
+      "showByDefault": false,
+      "order": 12
+    },
+    {
+      "id": "iphone-12-pro",
+      "label": "iPhone 12 Pro",
+      "group": "Phones",
+      "width": 390,
+      "height": 844,
+      "showByDefault": false,
+      "order": 14
+    },
+    {
+      "id": "iphone-14",
+      "label": "iPhone 14",
+      "group": "Phones",
+      "width": 390,
+      "height": 844,
+      "showByDefault": false,
+      "order": 15
+    },
+    {
+      "id": "iphone-14-plus",
+      "label": "iPhone 14 Plus",
+      "group": "Phones",
+      "width": 428,
+      "height": 926,
+      "showByDefault": false,
+      "order": 16
+    },
+    {
+      "id": "iphone-14-pro",
+      "label": "iPhone 14 Pro",
+      "group": "Phones",
+      "width": 393,
+      "height": 852,
+      "showByDefault": false,
+      "order": 17
+    },
+    {
+      "id": "iphone-14-pro-max",
+      "label": "iPhone 14 Pro Max",
+      "group": "Phones",
+      "width": 430,
+      "height": 932,
+      "showByDefault": false,
+      "order": 18
+    },
+    {
+      "id": "iphone-15",
+      "label": "iPhone 15",
+      "group": "Phones",
+      "width": 393,
+      "height": 852,
+      "showByDefault": false,
+      "order": 19
+    },
+    {
+      "id": "iphone-15-plus",
+      "label": "iPhone 15 Plus",
+      "group": "Phones",
+      "width": 430,
+      "height": 932,
+      "showByDefault": false,
+      "order": 20
+    },
+    {
+      "id": "iphone-15-pro",
+      "label": "iPhone 15 Pro",
+      "group": "Phones",
+      "width": 393,
+      "height": 852,
+      "showByDefault": false,
+      "order": 21
+    },
+    {
+      "id": "iphone-15-pro-max",
+      "label": "iPhone 15 Pro Max",
+      "group": "Phones",
+      "width": 430,
+      "height": 932,
+      "showByDefault": false,
+      "order": 22
+    },
+    {
+      "id": "iphone-16e",
+      "label": "iPhone 16e",
+      "group": "Phones",
+      "width": 390,
+      "height": 844,
+      "showByDefault": false,
+      "order": 23
+    },
+    {
+      "id": "iphone-16",
+      "label": "iPhone 16",
+      "group": "Phones",
+      "width": 393,
+      "height": 852,
+      "showByDefault": true,
+      "order": 24
+    },
+    {
+      "id": "iphone-16-plus",
+      "label": "iPhone 16 Plus",
+      "group": "Phones",
+      "width": 430,
+      "height": 932,
+      "showByDefault": false,
+      "order": 25
+    },
+    {
+      "id": "iphone-16-pro",
+      "label": "iPhone 16 Pro",
+      "group": "Phones",
+      "width": 402,
+      "height": 874,
+      "showByDefault": false,
+      "order": 26
+    },
+    {
+      "id": "iphone-16-pro-max",
+      "label": "iPhone 16 Pro Max",
+      "group": "Phones",
+      "width": 440,
+      "height": 956,
+      "showByDefault": true,
+      "order": 27
+    },
+    {
+      "id": "pixel-7",
+      "label": "Pixel 7",
+      "group": "Phones",
+      "width": 412,
+      "height": 915,
+      "showByDefault": false,
+      "order": 30
+    },
+    {
+      "id": "pixel-8",
+      "label": "Pixel 8",
+      "group": "Phones",
+      "width": 412,
+      "height": 915,
+      "showByDefault": false,
+      "order": 31
+    },
+    {
+      "id": "pixel-8-pro",
+      "label": "Pixel 8 Pro",
+      "group": "Phones",
+      "width": 448,
+      "height": 997,
+      "showByDefault": false,
+      "order": 32
+    },
+    {
+      "id": "pixel-8a",
+      "label": "Pixel 8a",
+      "group": "Phones",
+      "width": 412,
+      "height": 915,
+      "showByDefault": false,
+      "order": 33
+    },
+    {
+      "id": "pixel-9",
+      "label": "Pixel 9",
+      "group": "Phones",
+      "width": 412,
+      "height": 924,
+      "showByDefault": true,
+      "order": 34
+    },
+    {
+      "id": "pixel-9-pro",
+      "label": "Pixel 9 Pro",
+      "group": "Phones",
+      "width": 427,
+      "height": 952,
+      "showByDefault": true,
+      "order": 35
+    },
+    {
+      "id": "pixel-9-pro-xl",
+      "label": "Pixel 9 Pro XL",
+      "group": "Phones",
+      "width": 448,
+      "height": 997,
+      "showByDefault": false,
+      "order": 36
+    },
+    {
+      "id": "pixel-10",
+      "label": "Pixel 10",
+      "group": "Phones",
+      "width": 412,
+      "height": 924,
+      "showByDefault": true,
+      "order": 37
+    },
+    {
+      "id": "samsung-galaxy-a55",
+      "label": "Samsung Galaxy A55",
+      "group": "Phones",
+      "width": 360,
+      "height": 800,
+      "showByDefault": true,
+      "order": 38
+    },
+    {
+      "id": "samsung-galaxy-s8",
+      "label": "Samsung Galaxy S8+",
+      "group": "Phones",
+      "width": 360,
+      "height": 740,
+      "showByDefault": false,
+      "order": 38
+    },
+    {
+      "id": "samsung-galaxy-s20-ultra",
+      "label": "Samsung Galaxy S20 Ultra",
+      "group": "Phones",
+      "width": 412,
+      "height": 915,
+      "showByDefault": false,
+      "order": 39
+    },
+    {
+      "id": "ipad-mini",
+      "label": "iPad Mini",
+      "group": "Tablets",
+      "width": 768,
+      "height": 1024,
+      "showByDefault": true,
+      "order": 40
+    },
+    {
+      "id": "ipad-pro-13",
+      "label": "iPad Pro 13",
+      "group": "Tablets",
+      "width": 1032,
+      "height": 1376,
+      "showByDefault": true,
+      "order": 42
+    },
+    {
+      "id": "surface-pro-10",
+      "label": "Surface Pro 10",
+      "group": "Tablets",
+      "width": 960,
+      "height": 1440,
+      "showByDefault": true,
+      "order": 43
+    },
+    {
+      "id": "surface-pro-7",
+      "label": "Surface Pro 7",
+      "group": "Tablets",
+      "width": 912,
+      "height": 1368,
+      "showByDefault": false,
+      "order": 43
+    },
+    {
+      "id": "surface-duo",
+      "label": "Surface Duo",
+      "group": "Phones",
+      "width": 540,
+      "height": 720,
+      "showByDefault": false,
+      "order": 44
+    },
+    {
+      "id": "pixel-9-pro-fold",
+      "label": "Pixel 9 Pro Fold",
+      "group": "Phones",
+      "width": 412,
+      "height": 922,
+      "showByDefault": true,
+      "order": 45
+    },
+    {
+      "id": "galaxy-z-fold-5",
+      "label": "Galaxy Z Fold 5",
+      "group": "Phones",
+      "width": 344,
+      "height": 882,
+      "showByDefault": false,
+      "order": 46
+    },
+    {
+      "id": "galaxy-z-fold-6",
+      "label": "Galaxy Z Fold 6",
+      "group": "Phones",
+      "width": 412,
+      "height": 968,
+      "showByDefault": true,
+      "order": 46
+    },
+    {
+      "id": "asus-zenbook-fold",
+      "label": "Asus Zenbook Fold",
+      "group": "Tablets",
+      "width": 853,
+      "height": 1280,
+      "showByDefault": false,
+      "order": 47
+    },
+    {
+      "id": "samsung-galaxy-a51-71",
+      "label": "Samsung Galaxy A51/71",
+      "group": "Phones",
+      "width": 412,
+      "height": 914,
+      "showByDefault": false,
+      "order": 48
+    },
+    {
+      "id": "facebook-on-android",
+      "label": "Facebook on Android",
+      "group": "Phones",
+      "width": 412,
+      "height": 892,
+      "showByDefault": false,
+      "order": 200
+    }
+  ]
+}

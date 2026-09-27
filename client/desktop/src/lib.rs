@@ -25,6 +25,10 @@ use tauri_plugin_updater::UpdaterExt;
 use skill_server::{init_logging, init_logging_to_file, ServerConfig, SshRemoteControl};
 
 #[cfg(desktop)]
+mod comparison;
+#[cfg(desktop)]
+mod comparison_endpoint;
+#[cfg(desktop)]
 mod editor; // ShellEditor: the "Open in VS Code" control (client-side, pinned-local route)
 #[cfg(any(desktop, target_os = "ios"))]
 mod sound;
@@ -315,6 +319,17 @@ pub fn run() {
                 // Client exit drops this accessor's tunnels. Local and remote
                 // host services, their gateways and agents remain available.
                 tauri::RunEvent::Exit => {
+                    #[cfg(desktop)]
+                    {
+                        if let Some(manager) = _app.try_state::<skill_core::comparison::ComparisonManager>() {
+                            if !manager.shutdown(std::time::Duration::from_secs(5)) {
+                                log::warn!("comparison cleanup did not finish before desktop exit");
+                            }
+                        }
+                        if let Some(record) = _app.try_state::<comparison_endpoint::EndpointRecord>() {
+                            record.remove();
+                        }
+                    }
                     if let Some(r) = remote_slot.get() {
                         r.shutdown();
                     }
@@ -416,6 +431,23 @@ fn setup_desktop(
     // it lives in the shell (see editor.rs), reached over the pinned-local route.
     let editor = std::sync::Arc::new(editor::ShellEditor)
         as std::sync::Arc<dyn skill_server::EditorControl>;
+    // An unreadable artifact store disables this optional capability, not the
+    // whole desktop. Keep the file intact; an empty replacement manager could
+    // otherwise overwrite recoverable review metadata on the next start.
+    let comparison = match skill_core::paths::ensure_config_dir().and_then(|directory| {
+        skill_core::comparison::ComparisonManager::with_store(directory.join("comparison-artifacts.json"))
+    }) {
+        Ok(manager) => {
+            app.manage(manager.clone());
+            Some(manager)
+        }
+        Err(error) => {
+            log::warn!("Live UI comparison disabled; existing artifact data was preserved: {error}");
+            None
+        }
+    };
+    let comparison_scroll = comparison.as_ref()
+        .map(|_| skill_core::comparison::ComparisonScrollRelay::default());
     let make_cfg = |port: u16| ServerConfig {
         host: "127.0.0.1".into(),
         port,
@@ -432,6 +464,8 @@ fn setup_desktop(
         notifier: Some(notifier.clone()),
         // "Open in VS Code" on this machine (or the remote over Remote-SSH).
         editor: Some(editor.clone()),
+        comparison: comparison.clone(),
+        comparison_scroll: comparison_scroll.clone(),
         ..Default::default()
     };
     // Only the dev proxy needs a fixed client port. The phone uses the worker's
@@ -449,6 +483,21 @@ fn setup_desktop(
     } else {
         format!("http://127.0.0.1:{port}") // the in-process server serves UI + /api
     };
+    if let (Some(comparison), Some(comparison_scroll)) = (comparison, comparison_scroll) {
+        comparison::ShellComparison::new(app.handle().clone(), comparison, comparison_scroll).start(url.clone());
+        match comparison_endpoint::EndpointRecord::publish(port) {
+            Ok(record) => { app.manage(record); }
+            Err(error) => log::warn!("comparison endpoint discovery: {error}"),
+        }
+    }
+    let comparison_skill = resource_dir.as_ref().map(|r| r.join("skills/ui-compare"))
+        .filter(|path| path.join("SKILL.md").is_file())
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/ui-compare"));
+    std::thread::spawn(move || {
+        if let Err(error) = skill_core::comparison::ensure_agent_skill(&comparison_skill) {
+            log::warn!("comparison agent skill: {error}");
+        }
+    });
     WebviewWindowBuilder::new(app.handle(), "main", WebviewUrl::External(url.parse().unwrap()))
         .title("VibeStudio")
         .inner_size(1200.0, 800.0)

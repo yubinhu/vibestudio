@@ -30,6 +30,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 #[cfg(feature = "local-backend")]
 mod events;
 mod app_access;
+mod comparison_api;
 mod gateway;
 #[cfg(feature = "local-backend")]
 pub mod host_service;
@@ -324,6 +325,11 @@ pub struct ServerConfig {
     /// editor, or on the connected remote over Remote-SSH. `None` (standalone/
     /// browser) = `/api/editor/*` 404s and the SPA hides the button.
     pub editor: Option<Arc<dyn EditorControl>>,
+    /// Desktop comparison sessions, pinned to this client machine.
+    /// Standalone and mobile servers leave this absent.
+    pub comparison: Option<skill_core::comparison::ComparisonManager>,
+    /// Runtime-only native preview scroll capabilities; never a workspace API.
+    pub comparison_scroll: Option<skill_core::comparison::ComparisonScrollRelay>,
     /// SSH credential store (mobile only): saved connection profiles + Keychain-
     /// held private keys for the russh transport. `None` (desktop, standalone) =
     /// `/api/remote/profiles*` 404s and the SPA hides the credential UI.
@@ -350,6 +356,8 @@ impl Default for ServerConfig {
             phone: None,
             notifier: None,
             editor: None,
+            comparison: None,
+            comparison_scroll: None,
             secure_store: None,
         }
     }
@@ -454,6 +462,8 @@ pub fn spawn(cfg: ServerConfig) -> std::io::Result<ServerHandle> {
         phone: cfg.phone,
         notifier: cfg.notifier,
         editor: cfg.editor,
+        comparison: cfg.comparison,
+        comparison_scroll: cfg.comparison_scroll,
         secure_store: cfg.secure_store,
         port: addr.port(),
     });
@@ -495,6 +505,8 @@ struct ServerCtx {
     phone: Option<Arc<PhoneControl>>,
     notifier: Option<Arc<dyn NotifyControl>>,
     editor: Option<Arc<dyn EditorControl>>,
+    comparison: Option<skill_core::comparison::ComparisonManager>,
+    comparison_scroll: Option<skill_core::comparison::ComparisonScrollRelay>,
     secure_store: Option<Arc<dyn SecureStore>>,
     /// The ACTUAL bound port — the MCP-connection flow bakes it into the
     /// `/gw/<id>/mcp` gateway URL written into agent configs.
@@ -525,6 +537,16 @@ fn worker_loop(server: &Server, ctx: &ServerCtx) {
         let method = request.method().clone();
         let url = request.url().to_string();
         let path = url.split('?').next().unwrap_or(url.as_str()).to_string();
+        // Native scroll previews authenticate with a per-pane capability and
+        // exact Origin. Handle only this route before generic bearer/CORS logic;
+        // it is pinned local, honors the native lock, and never logs its token.
+        if let Some(token) = path.strip_prefix("/api/comparison/scroll/") {
+            comparison_api::handle_scroll(
+                request, token, ctx.comparison_scroll.as_ref(),
+                ctx.app_access.as_ref().is_none_or(|access| access.is_unlocked()),
+            );
+            continue;
+        }
         // Native authentication precedes every API/gateway dispatch, including
         // local credentials, connection management, proxies and streaming routes.
         // Health only identifies this listener, allowing iOS listener recovery
@@ -645,6 +667,21 @@ fn worker_loop(server: &Server, ctx: &ServerCtx) {
                 let _ = request.as_reader().read_to_string(&mut body);
             }
             send_reply(request, handle(&method, &url, &body, ctx));
+            continue;
+        }
+        // Comparison sessions belong to the desktop showing their native window.
+        // Never proxy paths, commands or ports to the currently selected workspace.
+        if path.starts_with("/api/comparison/") {
+            if !from_this_machine(&request) {
+                send_reply(request, comparison_api::unavailable());
+                continue;
+            }
+            let mut body = String::new();
+            if method == Method::Post {
+                use std::io::Read;
+                let _ = request.as_reader().take(1024 * 1024).read_to_string(&mut body);
+            }
+            send_reply(request, comparison_api::handle(&method, &url, &body, ctx.comparison.as_ref()));
             continue;
         }
         // Revealing a saved file in the OS file manager is likewise pinned LOCAL
