@@ -1282,6 +1282,18 @@ fn handle(method: &Method, url: &str, body: &str, ctx: &ServerCtx) -> Reply {
         #[cfg(feature = "local-backend")]
         (Method::Get, "/api/terminal/agents") => json_reply(Ok(skill_term::detect_agents())),
         #[cfg(feature = "local-backend")]
+        (Method::Get, "/api/terminal/history") => {
+            let query = query_param(url, "query").unwrap_or_default();
+            let agent = query_param(url, "agent").filter(|value| !value.is_empty());
+            let offset = query_param(url, "offset").and_then(|value| value.parse().ok()).unwrap_or(0);
+            let limit = query_param(url, "limit").and_then(|value| value.parse().ok()).unwrap_or(50);
+            json_reply(skill_term::history::list(&query, agent.as_deref(), offset, limit))
+        }
+        #[cfg(feature = "local-backend")]
+        (Method::Post, "/api/terminal/history/resume") => {
+            json_reply(skill_term::history::resume(&s("agent"), &s("sessionId")))
+        }
+        #[cfg(feature = "local-backend")]
         (Method::Get, "/api/terminal/list") => json_reply(skill_term::list_sessions().map(|list| {
             let custom_titles = skill_core::session_names::get().unwrap_or_else(|error| {
                 log::warn!("Could not read custom session names: {error}");

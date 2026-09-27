@@ -26,6 +26,7 @@ async function dashboard(s, unread = false) {
     "react-router-dom": { useNavigate: () => () => {} },
     "@/components/ui": { Spinner: empty },
     "@/components/RemoteMenu": { RemoteDialog: empty },
+    "@/components/SessionHistoryDialog": { default: empty, SessionHistoryIcon: empty },
     "@/components/useSessionTitleMenu": {
       useSessionTitleMenu: () => ({ titleProps: () => ({}), onTitleKeyDown() {}, menu: null }),
     },

@@ -1086,6 +1086,31 @@ export interface CreateTermArgs {
   resume?: boolean;
 }
 
+/** An agent-owned conversation saved on the active host, including conversations
+ * started outside VibeStudio. The provider keeps the transcript; this is metadata. */
+export interface SessionHistoryEntry {
+  agent: string;
+  sessionId: string;
+  title: string;
+  cwd: string;
+  /** Unix seconds from the agent's saved conversation. */
+  createdAt: number;
+  updatedAt: number;
+  canResume: boolean;
+  resumeUnavailableReason?: string;
+  /** Open this terminal instead of starting a second copy of the conversation. */
+  activeTerminalId?: string;
+}
+
+export interface SessionHistoryPage {
+  sessions: SessionHistoryEntry[];
+  warnings: string[];
+  /** More matching entries are available at the next offset. */
+  hasMore: boolean;
+  /** A provider hit its bounded scan limit; separate from pagination. */
+  truncated: boolean;
+}
+
 // --- skill mining (a skill-miner run in an interactive agent terminal) ---
 
 /** A transcript source the miner can read, with its in-window session count. */
@@ -1186,6 +1211,18 @@ export const mineContinue = () => http<{ terminalId: string }>("POST", "mine/con
 
 export const terminalAgents = () => http<AgentOption[]>("GET", "terminal/agents");
 export const terminalList = () => http<TermSession[]>("GET", "terminal/list");
+export const terminalHistory = (options: { query?: string; agent?: string; offset?: number; limit?: number } = {}) => {
+  const params = new URLSearchParams();
+  if (options.query) params.set("query", options.query);
+  if (options.agent) params.set("agent", options.agent);
+  if (options.offset != null) params.set("offset", String(options.offset));
+  if (options.limit != null) params.set("limit", String(options.limit));
+  // The host query parser uses percent decoding, rather than form decoding.
+  return http<SessionHistoryPage>("GET", `terminal/history?${params.toString().replace(/\+/g, "%20")}`);
+};
+/** Resume this exact conversation. Never substitutes the latest in its folder. */
+export const terminalResumeHistory = (args: { agent: string; sessionId: string }) =>
+  http<TermSession>("POST", "terminal/history/resume", { ...args });
 export const terminalCreate = (a: CreateTermArgs) => http<TermSession>("POST", "terminal/create", { ...a });
 /** Set a display title, or restore the automatic title with null. */
 export const terminalRename = (id: string, title: string | null) =>

@@ -7,10 +7,12 @@ pub fn codex_title(_cwd: &Path, _created: i64, session_id: Option<&str>) -> Opti
     // skill-term resolves the actual process's rollout UUID. Without it, even a
     // single recent conversation in this cwd might belong to another terminal.
     let id = session_id.filter(|s| !s.is_empty())?;
-    let base = std::env::var_os("CODEX_HOME")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home().map(|h| h.join(".codex")))?;
+    let (base, db_dir) = homes()?;
+    from_home(&base, &db_dir, id)
+}
+
+pub(crate) fn homes() -> Option<(PathBuf, PathBuf)> {
+    let base = provider_home("CODEX_HOME", ".codex")?;
     let db_dir = (|| {
         let config: toml::Value = fs::read_to_string(base.join("config.toml"))
             .ok()?
@@ -29,7 +31,7 @@ pub fn codex_title(_cwd: &Path, _created: i64, session_id: Option<&str>) -> Opti
             .map(PathBuf::from)
     })
     .unwrap_or_else(|| base.clone());
-    from_home(&base, &db_dir, id)
+    Some((base, db_dir))
 }
 
 struct Thread {
@@ -53,7 +55,7 @@ fn from_home(base: &Path, db_dir: &Path, id: &str) -> Option<String> {
         return Some(name);
     }
     if let Some(thread) = thread {
-        if let Some(prompt) = clean_prompt(&thread.prompt) {
+        if let Some(prompt) = clean_codex_prompt(&thread.prompt) {
             return Some(truncate(&prompt));
         }
         return cached(&thread.rollout, parse_codex);
@@ -64,14 +66,14 @@ fn from_home(base: &Path, db_dir: &Path, id: &str) -> Option<String> {
     cached(&rollout(base, id)?, parse_codex)
 }
 
-fn display_name(raw: &str) -> Option<String> {
+pub(crate) fn display_name(raw: &str) -> Option<String> {
     // Saved names may be user-authored. Preserve the full value for editing;
     // the UI truncates visually, while prompt fallbacks keep their short budget.
     let name = raw.trim();
     (!name.is_empty()).then(|| name.to_string())
 }
 
-fn state_db(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn state_db(dir: &Path) -> Option<PathBuf> {
     fs::read_dir(dir)
         .ok()?
         .filter_map(Result::ok)
@@ -274,6 +276,15 @@ mod tests {
         drop(_conn);
         fs::remove_file(f.0.join("state_5.sqlite")).unwrap();
         assert_eq!(f.title("alpha").as_deref(), Some("Rename alpha task"));
+    }
+
+    #[test]
+    fn sqlite_prompt_fallback_cleans_the_same_wrappers_as_rollouts() {
+        let f = Fixture::new();
+        let conn = f.db(false);
+        let prompt = "# Context from my IDE setup:\n## My request for Codex:\n<image name=example>attachment</image>Fix the <system-reminder>noise</system-reminder> parser";
+        conn.execute("UPDATE threads SET title = ?1 WHERE id = 'alpha'", [prompt]).unwrap();
+        assert_eq!(f.title("alpha").as_deref(), Some("Fix the parser"));
     }
 
     #[test]

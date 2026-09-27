@@ -4,6 +4,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayo
 import { useLocation, useNavigate } from "react-router-dom";
 import NavBar from "@/components/NavBar";
 import NewSessionDialog from "@/components/NewSessionDialog";
+import SessionHistoryDialog, { SessionHistoryIcon } from "@/components/SessionHistoryDialog";
 import RenameSessionDialog from "@/components/RenameSessionDialog";
 import { useSessionTitleMenu } from "@/components/useSessionTitleMenu";
 import { sessionTitle } from "@/lib/sessionTitle";
@@ -51,8 +52,8 @@ function OpenExternalIcon() {
 
 /**
  * The Sessions workspace: a rail of live tmux-backed sessions plus the
- * active terminal. Sessions persist across UI disconnects and are reaped when
- * the backend process exits (see skill-term). The list lives in the shared
+ * active terminal. Sessions live in tmux independently of UI disconnects and
+ * host-service restarts. The list lives in the shared
  * store (lib/sessions.ts), pushed fresh by its /api/events stream; this
  * component adds a 5s poll as the backstop, so externally exited /
  * watchdog-reaped sessions drop out even without the stream.
@@ -89,9 +90,15 @@ export default function SessionsWorkspace({
   const { sessions, loading, seen } = store.useSessions();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [renaming, setRenaming] = useState<TermSession | null>(null);
   const titleMenu = useSessionTitleMenu(setRenaming, visible);
-  useEffect(() => { if (!visible) setRenaming(null); }, [visible]);
+  useEffect(() => {
+    if (!visible) {
+      setRenaming(null);
+      setHistoryOpen(false);
+    }
+  }, [visible]);
   const soundEnabled = useAttentionSound();
   // Web Push offer — shown until the user decides (mainly the installed phone
   // app, where watching desktop-started agents is the whole point).
@@ -350,6 +357,18 @@ export default function SessionsWorkspace({
       Sounds {soundEnabled ? "on" : "off"}
     </button>
   );
+  const historyButton = (
+    <button
+      type="button"
+      onClick={() => setHistoryOpen(true)}
+      aria-label="Session history"
+      title="Session history"
+      className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-muted hover:bg-panel hover:text-fg"
+    >
+      <SessionHistoryIcon />
+      {!embedded && <span className="hidden text-xs sm:inline">History</span>}
+    </button>
+  );
 
   return (
     <div ref={rootRef} className={`flex ${embedded ? "h-full" : "h-dvh"} flex-col bg-app text-fg`}>
@@ -377,6 +396,7 @@ export default function SessionsWorkspace({
               <span className="hidden text-xs sm:inline">Open in {editorName}</span>
             </button>
           )}
+          {historyButton}
           <button
             type="button"
             onClick={() => setNewOpen(true)}
@@ -461,6 +481,7 @@ export default function SessionsWorkspace({
                 <OpenExternalIcon />
               </button>
             )}
+            {embedded && historyButton}
             <button
               type="button"
               onClick={() => setNewOpen(true)}
@@ -498,6 +519,7 @@ export default function SessionsWorkspace({
                       <OpenExternalIcon />
                     </button>
                   )}
+                  {historyButton}
                   <button
                     type="button"
                     onClick={() => setNewOpen(true)}
@@ -581,6 +603,16 @@ export default function SessionsWorkspace({
             setNewOpen(false);
             store.noteCreated(s);
             setActiveId(s.id);
+          }}
+        />
+      )}
+      {historyOpen && visible && (
+        <SessionHistoryDialog
+          onClose={() => setHistoryOpen(false)}
+          onResumed={(session) => {
+            setHistoryOpen(false);
+            store.noteCreated(session);
+            setActiveId(session.id);
           }}
         />
       )}

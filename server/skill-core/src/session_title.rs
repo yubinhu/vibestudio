@@ -30,6 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod codex;
 pub use codex::codex_title;
+pub(crate) use codex::{display_name as codex_saved_title, homes as codex_homes, state_db as codex_state_db};
 
 const MAX_LEN: usize = 72;
 
@@ -39,6 +40,11 @@ const PREVIEW_LEN: usize = 180;
 
 fn home() -> Option<PathBuf> {
     dirs::home_dir()
+}
+
+fn provider_home(variable: &str, fallback: &str) -> Option<PathBuf> {
+    std::env::var_os(variable).filter(|path| !path.is_empty()).map(PathBuf::from)
+        .or_else(|| home().map(|dir| dir.join(fallback)))
 }
 
 /// Parsed titles keyed by file, precise modification time, and length. `terminal/list` is polled every few
@@ -107,7 +113,7 @@ fn truncate(s: &str) -> String {
 
 /// Truncate to `max` chars (chars, not bytes — the text is UTF-8), backing off to
 /// the last space so a word is never sliced, and marking the cut with an ellipsis.
-fn truncate_to(s: &str, max: usize) -> String {
+pub(crate) fn truncate_to(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -150,7 +156,7 @@ fn strip_tag_blocks(text: &str, tags: &[&str]) -> String {
 }
 
 /// Clean a raw first-user-message into a title, or None if it's a system artifact.
-fn clean_prompt(raw: &str) -> Option<String> {
+pub(crate) fn clean_prompt(raw: &str) -> Option<String> {
     let stripped = strip_tag_blocks(raw, &["system-reminder", "ide_selection", "ide_opened"]);
     let t = tidy(&stripped);
     if t.is_empty() {
@@ -160,6 +166,19 @@ fn clean_prompt(raw: &str) -> Option<String> {
         return None;
     }
     Some(t)
+}
+
+/// Native Codex prompts can include image blocks and IDE context before the ask.
+/// Use the same cleanup for a live title and a saved-history preview.
+pub(crate) fn clean_codex_prompt(raw: &str) -> Option<String> {
+    let text = strip_tag_blocks(raw, &["image"]);
+    let ask = text.rsplit_once("## My request for Codex:").map(|(_, ask)| ask).unwrap_or(&text);
+    clean_prompt(ask)
+}
+
+pub(crate) fn claude_saved_title(raw: &str) -> Option<String> {
+    let title = tidy(raw);
+    (!title.is_empty()).then_some(title)
 }
 
 /// Extract the human text of a Claude/OpenClaw-style `user` record's message.
@@ -229,9 +248,8 @@ fn claude_encode(cwd: &Path) -> String {
     slug
 }
 
-fn claude_projects() -> Option<PathBuf> {
-    Some(std::env::var_os("CLAUDE_CONFIG_DIR").filter(|path| !path.is_empty())
-        .map(PathBuf::from).or_else(|| home().map(|dir| dir.join(".claude")))?.join("projects"))
+pub(crate) fn claude_projects() -> Option<PathBuf> {
+    Some(provider_home("CLAUDE_CONFIG_DIR", ".claude")?.join("projects"))
 }
 
 pub fn claude_title(cwd: &Path, created: i64, session_id: Option<&str>) -> Option<String> {
@@ -373,7 +391,7 @@ fn parse_claude(file: &Path) -> Option<String> {
     // User names outrank regenerated AI titles, regardless of append order.
     // Preserve authored titles for editing; only prompt fallbacks are shortened.
     claude_tail_custom_title(file).or_else(sidecar).or(custom_title).filter(|title| !title.trim().is_empty())
-        .or(last_title).map(|title| tidy(&title))
+        .or(last_title).as_deref().and_then(claude_saved_title)
         .or_else(|| summary.map(|title| truncate(&tidy(&title))))
         .or_else(|| first_user.map(|prompt| truncate(&prompt)))
 }
@@ -412,10 +430,7 @@ fn parse_codex(file: &Path) -> Option<String> {
             })
         } else { None };
         if let Some(text) = text {
-            let text = strip_tag_blocks(&text, &["image"]);
-            // IDE-launched Codex wraps the real ask under this marker.
-            let ask = text.rsplit_once("## My request for Codex:").map(|(_, ask)| ask).unwrap_or(&text);
-            if let Some(prompt) = clean_prompt(ask) {
+            if let Some(prompt) = clean_codex_prompt(&text) {
                 return Some(truncate(&prompt));
             }
         }

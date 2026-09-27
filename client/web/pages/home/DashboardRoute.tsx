@@ -8,6 +8,7 @@ import { Spinner } from "@/components/ui";
 import PhoneModal from "@/components/PhoneModal";
 import { RemoteDialog } from "@/components/RemoteMenu";
 import NewSessionDialog from "@/components/NewSessionDialog";
+import SessionHistoryDialog, { SessionHistoryIcon } from "@/components/SessionHistoryDialog";
 import RenameSessionDialog from "@/components/RenameSessionDialog";
 import { useSessionTitleMenu } from "@/components/useSessionTitleMenu";
 import RecentStrip from "@/components/RecentStrip";
@@ -270,6 +271,7 @@ export function Component() {
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [phoneOpen, setPhoneOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [openDialogOpen, setOpenDialogOpen] = useState(false);
   const [renaming, setRenaming] = useState<TermSession | null>(null);
   const titleMenu = useSessionTitleMenu(setRenaming);
@@ -347,6 +349,10 @@ export function Component() {
             <button type="button" onClick={openNewSession} className={`${actionBase} bg-action text-action-fg hover:bg-action-hover`}>
               <TerminalIcon />
               New session
+            </button>
+            <button type="button" onClick={() => setHistoryOpen(true)} aria-label="Session history" className={`${actionBase} border border-border text-muted hover:bg-panel hover:text-fg`}>
+              <SessionHistoryIcon />
+              History
             </button>
           </div>
         </section>
@@ -500,6 +506,16 @@ export function Component() {
         />
       )}
       {phoneOpen && <PhoneModal onClose={() => setPhoneOpen(false)} />}
+      {historyOpen && (
+        <SessionHistoryDialog
+          onClose={() => setHistoryOpen(false)}
+          onResumed={(session) => {
+            setHistoryOpen(false);
+            noteCreated(session);
+            navigate(sessionsPath(session.id));
+          }}
+        />
+      )}
       {newSessionOpen && (
         <NewSessionDialog
           onClose={() => setNewSessionOpen(false)}

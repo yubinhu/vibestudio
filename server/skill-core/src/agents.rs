@@ -13,6 +13,8 @@
 //!   moment the agent ends its turn and kills its background tasks.)
 //! - **resume** — how to reopen the terminal cwd's most recent conversation
 //!   as the interactive TUI after the original terminal is gone.
+//! - **history** — passive native conversation discovery and exact-ID resume,
+//!   independent of terminal lifetime and of neighboring sessions in the cwd.
 //!
 //! Features (mining, install, terminals) consult this registry instead of
 //! matching on family names, so supporting a new agent = filling in one entry.
@@ -44,6 +46,20 @@ pub struct ResumeCtx<'a> {
     pub bin: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
+}
+
+/// Resume one native conversation, independent of other sessions in its cwd.
+/// Callers resolve and validate this ID through `session_history::find` first.
+pub struct ExactResumeCtx<'a> {
+    pub bin: &'a str,
+    pub session_id: &'a str,
+}
+
+#[derive(Clone, Copy)]
+pub struct SessionHistoryCapability {
+    pub list: fn() -> Result<crate::session_history::HistoryPage, String>,
+    pub find: fn(&str) -> Result<Option<crate::session_history::HistoryEntry>, String>,
+    pub resume: fn(&ExactResumeCtx) -> String,
 }
 
 /// Extract a live terminal's title from the agent's own session store, given
@@ -89,6 +105,9 @@ pub struct AgentDef {
     pub reads_shared: bool,
     pub launch: Option<fn(&LaunchCtx) -> String>,
     pub resume: Option<fn(&ResumeCtx) -> String>,
+    /// Read the provider's saved conversations and reopen an exact native ID.
+    /// Separate from cwd-latest `resume`, which mining uses in isolated run dirs.
+    pub history: Option<SessionHistoryCapability>,
     /// How to point the agent at a remote MCP server through VibeStudio's
     /// loopback gateway (None = the agent can't consume a remote HTTP MCP). See
     /// [`McpWiring`]. The agent is handed only the gateway URL — VibeStudio
@@ -159,6 +178,11 @@ pub const AGENTS: &[AgentDef] = &[
         reads_shared: false,
         launch: Some(claude_launch),
         resume: Some(claude_resume),
+        history: Some(SessionHistoryCapability {
+            list: crate::session_history::claude_history,
+            find: crate::session_history::claude_find,
+            resume: claude_resume_session,
+        }),
         mcp: Some(McpWiring::Cli { bin: "claude", add: claude_mcp_add, remove: claude_mcp_remove }),
         connector_discovery: Some(crate::connectors::ConnectorAdapter::ClaudeCode),
         connector_runtime: Some(ConnectorRuntime::Claude),
@@ -176,6 +200,11 @@ pub const AGENTS: &[AgentDef] = &[
         reads_shared: true,
         launch: Some(codex_launch),
         resume: Some(codex_resume),
+        history: Some(SessionHistoryCapability {
+            list: crate::session_history::codex_history,
+            find: crate::session_history::codex_find,
+            resume: codex_resume_session,
+        }),
         mcp: Some(McpWiring::Cli { bin: "codex", add: codex_mcp_add, remove: codex_mcp_remove }),
         connector_discovery: Some(crate::connectors::ConnectorAdapter::Codex),
         connector_runtime: Some(ConnectorRuntime::Codex),
@@ -195,6 +224,7 @@ pub const AGENTS: &[AgentDef] = &[
         // `cursor-agent resume` targets the GLOBAL latest session, not the
         // cwd's — wiring it could reopen an unrelated conversation.
         resume: None,
+        history: None,
         // No `mcp add` CLI; both the IDE and cursor-agent read ~/.cursor/mcp.json.
         mcp: Some(McpWiring::JsonFile {
             present_dir: ".cursor",
@@ -221,6 +251,7 @@ pub const AGENTS: &[AgentDef] = &[
         reads_shared: true,
         launch: Some(gemini_launch),
         resume: Some(gemini_resume),
+        history: None,
         mcp: Some(McpWiring::Cli { bin: "gemini", add: gemini_mcp_add, remove: gemini_mcp_remove }),
         connector_discovery: Some(crate::connectors::ConnectorAdapter::Json {
             user: ".gemini/settings.json", project: ".gemini/settings.json", key: "mcpServers",
@@ -241,6 +272,7 @@ pub const AGENTS: &[AgentDef] = &[
         reads_shared: false,
         launch: None,
         resume: None,
+        history: None,
         mcp: None,
         connector_discovery: None,
         connector_runtime: None,
@@ -263,6 +295,7 @@ pub const AGENTS: &[AgentDef] = &[
         reads_shared: true,
         launch: Some(opencode_launch),
         resume: Some(opencode_resume),
+        history: None,
         // Own a dedicated opencode.json (opencode merges it with the user's
         // opencode.jsonc), so we never parse/rewrite their JSONC file.
         mcp: Some(McpWiring::JsonFile {
@@ -284,7 +317,7 @@ pub const AGENTS: &[AgentDef] = &[
         skills_dirs: &[".hermes/skills"], reads_shared: false,
         launch: Some(hermes_launch),
         // Hermes's latest-session lookup can fall back to a different cwd.
-        resume: None, mcp: None, connector_discovery: None, connector_runtime: None,
+        resume: None, history: None, mcp: None, connector_discovery: None, connector_runtime: None,
         session_title: Some(crate::hermes_sessions::title),
         last_message: Some(crate::hermes_sessions::last_message),
         attention_detector: Some("hermes"),
@@ -294,7 +327,7 @@ pub const AGENTS: &[AgentDef] = &[
         cli: Some(plain_cli("pi", &[])),
         home_dir: ".pi/agent", project_marker: Some(".pi"),
         skills_dirs: &[".pi/agent/skills"], reads_shared: true,
-        launch: Some(pi_launch), resume: Some(pi_resume),
+        launch: Some(pi_launch), resume: Some(pi_resume), history: None,
         mcp: None, connector_discovery: None, connector_runtime: None,
         session_title: Some(crate::pi_sessions::title),
         last_message: Some(crate::pi_sessions::last_message),
@@ -396,6 +429,10 @@ fn claude_resume(c: &ResumeCtx) -> String {
     format!("{} --continue{}", q(c.bin), claude_tune(c.model, c.effort))
 }
 
+fn claude_resume_session(c: &ExactResumeCtx) -> String {
+    format!("{} --resume {}", q(c.bin), q(c.session_id))
+}
+
 fn claude_tune(model: Option<&str>, effort: Option<&str>) -> String {
     let mut tune = String::new();
     if let Some(m) = model {
@@ -432,6 +469,10 @@ fn codex_launch(c: &LaunchCtx) -> String {
 /// the tuning is the session's own.
 fn codex_resume(c: &ResumeCtx) -> String {
     format!("{} resume --last", q(c.bin))
+}
+
+fn codex_resume_session(c: &ExactResumeCtx) -> String {
+    format!("{} resume {}", q(c.bin), q(c.session_id))
 }
 
 // ────────────────────────────── Cursor / Gemini ──────────────────────────────

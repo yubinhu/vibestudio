@@ -39,6 +39,7 @@ use serde::Serialize;
 
 /// Bounded, attachment-independent tmux observations for agent state detection.
 pub mod detection_snapshot;
+pub mod history;
 mod terminal_links;
 pub use terminal_links::resolve_file_link;
 
@@ -637,6 +638,12 @@ fn unique_codex_rollout_session_id<'a>(paths: impl Iterator<Item = &'a PathBuf>)
 /// even run tmux" (`None`) — [`sweep_stale`] must not treat a transient spawn
 /// failure as "every session is gone" and reap the whole registry.
 pub fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
+    list_sessions_result().ok()
+}
+
+/// History must distinguish an empty server from a failed inventory before it
+/// decides whether to create another terminal for a saved conversation.
+fn list_sessions_result() -> Result<Vec<SessionInfo>, String> {
     // The wire carries ONLY safe alphabets — a minted [a-z0-9-] name and two
     // numeric fields and an OS-owned pane TTY, space-separated — so no locale, sanitizer, tmux version,
     // or user session name can corrupt the parse. Free text used to ride this
@@ -650,11 +657,16 @@ pub fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
     // session's activity.
     let out = tmux()
         .args(["list-sessions", "-F", "#{session_name} #{window_activity} #{pane_tty} #{@ass_bell_at}"])
+        .env("LC_ALL", "C")
         .output()
-        .ok()?;
-    // Non-zero exit just means "no tmux server running yet" → no sessions.
+        .map_err(|error| format!("Could not check existing terminals: {error}"))?;
     if !out.status.success() {
-        return Some(vec![]);
+        let error = String::from_utf8_lossy(&out.stderr);
+        if error.starts_with("no server running on ")
+            || (error.starts_with("error connecting to ") && error.contains("(No such file or directory)")) {
+            return Ok(vec![]);
+        }
+        return Err(format!("Could not check existing terminals: {}", error.trim()));
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut sessions = Vec::new();
@@ -686,7 +698,7 @@ pub fn list_sessions_checked() -> Option<Vec<SessionInfo>> {
             session_id,
         });
     }
-    Some(sessions)
+    Ok(sessions)
 }
 
 /// One-time migration: a session created by an older backend has its metadata
@@ -1149,13 +1161,20 @@ fn create_session_inner(
         })
         .unwrap_or_default();
 
+    // Record completion before entering the keep-alive shell. History can then
+    // distinguish a running/starting conversation from retained scrollback,
+    // without racing process discovery during a fresh launch.
+    let mark_exited = format!(
+        "{} set-option -t {} @ass_agent_exited 1 >/dev/null 2>&1",
+        shell_quote(&tmux_bin()), shell_quote(&name),
+    );
     // `; exec bash -l` keeps the pane (and the agent's scrollback) alive after
     // the agent exits, so a finished run stays reviewable from any client —
     // the GC only collects it once it's been idle for a week (see sweep_stale).
     let line = if agent_cmd.is_empty() {
         format!("{env_source}exec bash -l")
     } else {
-        format!("{env_source}{agent_cmd}; exec bash -l")
+        format!("{env_source}{agent_cmd}; {mark_exited}; exec bash -l")
     };
     let line = format!("{}{}{line}", startup.shell_prefix(&cwd_resolved), shell_open_file_limit());
     let bootstrap = startup.bootstrap(&cwd_resolved, &line);
@@ -1212,6 +1231,9 @@ fn create_session_inner(
     set("@ass_agent", &opt.agent);
     set("@ass_cwd", &cwd_resolved);
     set("@ass_created", &secs.to_string());
+    if !agent_cmd.is_empty() {
+        set("@ass_agent_exited", "0");
+    }
     // The forced agent session id (claude), so title extraction maps this terminal
     // to its own transcript; absent for shells / resumes / pre-existing sessions.
     if let Some(sid) = session_id {
@@ -1467,7 +1489,7 @@ fn ext_finds(spec: &Spec) -> Vec<(&'static str, String)> {
     found
 }
 
-fn compute_agents() -> Vec<AgentOption> {
+fn compute_agents(probe_versions: bool) -> Vec<AgentOption> {
     let mut out = Vec::new();
 
     // A plain login shell is always offered.
@@ -1492,7 +1514,7 @@ fn compute_agents() -> Vec<AgentOption> {
                 label: def.label.into(),
                 flavor: "cli".into(),
                 flavor_label: "CLI".into(),
-                version: bin_version(&bin),
+                version: probe_versions.then(|| bin_version(&bin)).flatten(),
                 bin,
                 supports_ide: spec.supports_ide,
                 can_mine: skill_core::agents::can_launch(def.family),
@@ -1505,7 +1527,7 @@ fn compute_agents() -> Vec<AgentOption> {
                 label: def.label.into(),
                 flavor: "extension".into(),
                 flavor_label: format!("{editor} extension"),
-                version: bin_version(&bin),
+                version: probe_versions.then(|| bin_version(&bin)).flatten(),
                 bin,
                 supports_ide: spec.supports_ide,
                 can_mine: skill_core::agents::can_launch(def.family),
@@ -1519,7 +1541,7 @@ fn compute_agents() -> Vec<AgentOption> {
 /// mid-session, and `<bin> --version` probes are relatively slow).
 pub fn detect_agents() -> Vec<AgentOption> {
     static CACHE: OnceLock<Vec<AgentOption>> = OnceLock::new();
-    CACHE.get_or_init(compute_agents).clone()
+    CACHE.get_or_init(|| compute_agents(true)).clone()
 }
 
 // ─────────────────────────────────── tests ───────────────────────────────────
