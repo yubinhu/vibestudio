@@ -2,7 +2,7 @@
 # skill-server releases don't resolve desktop dependencies. See design.md.
 [workspace]
 members = ["server/skill-core", "server/skill-server", "server/skill-term"]
-exclude = ["client/desktop"]
+exclude = ["client/desktop", "server/vendor/tiny_http"]
 resolver = "2"
 
 # Server version source. scripts/stamp-version.sh keeps this and the desktop package
@@ -15,3 +15,7 @@ panic = "abort"
 lto = "thin"
 opt-level = "s"
 strip = true
+
+# Keep connection-reader burst scheduling consistent with the desktop shell.
+[patch.crates-io]
+tiny_http = { path = "server/vendor/tiny_http" }

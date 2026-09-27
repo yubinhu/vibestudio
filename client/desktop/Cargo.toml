@@ -91,3 +91,7 @@ panic = "abort"
 lto = "thin"
 opt-level = "s"
 strip = true
+
+# This standalone Cargo workspace must use the same HTTP fix as the server.
+[patch.crates-io]
+tiny_http = { path = "../../server/vendor/tiny_http" }

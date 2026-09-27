@@ -96,6 +96,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace --all-targets
+      - name: Test HTTP connection scheduler regression
+        run: cargo test -p tiny_http --lib --locked
       - name: Test mobile SSH transport
         run: cargo test -p skill-server --no-default-features --features russh-transport --lib --locked
 
