@@ -137,9 +137,11 @@ jobs:
       - run: npm ci
       - name: Build SPA (tauri-build needs frontendDist)
         run: npm run build
-      # The on-device llama.cpp engine is no longer a bundle resource (commit-message
-      # drafting shells out to a logged-in coding-agent CLI by default), so there's
-      # nothing to stub before the desktop `cargo check`.
+      # Direct cargo check skips Tauri's beforeBuildCommand, which normally
+      # prepares the pinned macOS tmux sidecar and its bundled license files.
+      - name: Prepare macOS tmux sidecar
+        if: runner.os == 'macOS'
+        run: bash scripts/fetch-tmux.sh
       - name: cargo check (desktop shell)
         working-directory: client/desktop
         run: cargo check --all-targets --locked
