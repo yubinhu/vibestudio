@@ -38,6 +38,30 @@ jobs:
       - run: npm run lint
       - run: npm run build
 
+  e2e:
+    name: Browser E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:e2e
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-failures
+          path: test-results/
+          retention-days: 7
+
   # The transport-agnostic backend (server/skill-core, skill-term, skill-server).
   # No webkit/Tauri deps, so clippy + the existing unit/integration tests (incl.
   # server/skill-server/tests/proxy_smoke.rs) run fast and cache cleanly. Run on

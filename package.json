@@ -13,6 +13,7 @@
     "dev": "cd client/desktop && tauri dev",
     "lint": "eslint .",
     "test": "node --test scripts/*.test.mjs",
+    "test:e2e": "npm run build && cargo build -p skill-server --locked && playwright test",
     "icons:generate": "node scripts/generate-brand-assets.mjs"
   },
   "dependencies": {
@@ -39,6 +40,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4",
     "@tauri-apps/cli": "^2",
     "@types/katex": "^0.16.8",
